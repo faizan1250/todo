@@ -17,7 +17,11 @@ export const metadata: Metadata = {
   description: "High-performance task orchestration for engineering workflows",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
     <html
       lang="en"
