@@ -1,0 +1,13 @@
+{
+  "name": "todo-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:backend": "bun --filter @todo/backend dev",
+    "dev:frontend": "bun --filter @todo/frontend dev",
+    "build": "bun --filter '*' build",
+    "test": "bun test"
+  }
+}
