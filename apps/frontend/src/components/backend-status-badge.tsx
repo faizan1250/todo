@@ -1,21 +1,14 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
-import { ServerIcon, RefreshIcon, AlertCircleIcon, CheckCircle2Icon } from "./icons";
-
-interface HealthData {
-  status: string;
-  timestamp: string;
-}
+import { useEffect, useState, useTransition, useCallback } from "react";
+import { ServerIcon, RefreshIcon } from "./icons";
 
 export function BackendStatusBadge() {
   const [status, setStatus] = useState<"checking" | "online" | "offline">("checking");
-  const [healthData, setHealthData] = useState<HealthData | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const checkHealth = async () => {
-    setStatus("checking");
+  const pingBackend = useCallback(async () => {
     const startTime = performance.now();
     try {
       const response = await fetch("http://localhost:3001/health", {
@@ -25,34 +18,70 @@ export function BackendStatusBadge() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}`);
+        throw new Error(`HTTP ${response.status}`);
       }
 
-      const data = (await response.json()) as HealthData;
+      await response.json();
       const duration = Math.round(performance.now() - startTime);
 
       startTransition(() => {
-        setHealthData(data);
         setLatencyMs(duration);
         setStatus("online");
       });
     } catch {
       startTransition(() => {
-        setHealthData(null);
         setLatencyMs(null);
         setStatus("offline");
       });
     }
+  }, []);
+
+  const handleManualRefresh = () => {
+    setStatus("checking");
+    void pingBackend();
   };
 
   useEffect(() => {
-    void checkHealth();
-    // Poll every 15s to keep status accurate
+    let ignore = false;
+    const fetchInitial = async () => {
+      const startTime = performance.now();
+      try {
+        const response = await fetch("http://localhost:3001/health", {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        await response.json();
+        const duration = Math.round(performance.now() - startTime);
+
+        if (!ignore) {
+          setLatencyMs(duration);
+          setStatus("online");
+        }
+      } catch {
+        if (!ignore) {
+          setLatencyMs(null);
+          setStatus("offline");
+        }
+      }
+    };
+
+    void fetchInitial();
+
     const interval = setInterval(() => {
-      void checkHealth();
+      void pingBackend();
     }, 15000);
-    return () => clearInterval(interval);
-  }, []);
+
+    return () => {
+      ignore = true;
+      clearInterval(interval);
+    };
+  }, [pingBackend]);
 
   return (
     <div
@@ -103,7 +132,7 @@ export function BackendStatusBadge() {
 
       <button
         type="button"
-        onClick={() => void checkHealth()}
+        onClick={handleManualRefresh}
         disabled={status === "checking" || isPending}
         className="ml-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
         title="Refresh backend status"
