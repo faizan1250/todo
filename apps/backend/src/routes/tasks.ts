@@ -165,9 +165,17 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
 
       // Archived filter
       if (query.archived === "true") {
-        conditions.push(isNotNull(schema.tasks.archivedAt));
+        conditions.push(
+          or(
+            isNotNull(schema.tasks.archivedAt),
+            sql`EXISTS (SELECT 1 FROM lists WHERE lists.id = tasks.list_id AND lists.archived_at IS NOT NULL)`
+          )!
+        );
       } else {
         conditions.push(isNull(schema.tasks.archivedAt));
+        conditions.push(
+          sql`NOT EXISTS (SELECT 1 FROM lists WHERE lists.id = tasks.list_id AND lists.archived_at IS NOT NULL)`
+        );
       }
 
       // List filter
@@ -811,19 +819,19 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
 
           case "archive": {
             const now = new Date();
-            await tx
-              .update(schema.tasks)
-              .set({
-                archivedAt: now,
-                version: sql`${schema.tasks.version} + 1`,
-                updatedAt: now,
-              })
-              .where(
-                and(
-                  inArray(schema.tasks.id, ids),
-                  eq(schema.tasks.userId, user.id)
-                )
-              );
+            const nowMs = now.getTime();
+            const placeholders = ids.map(() => "?").join(",");
+            sqlite.run(
+              `WITH RECURSIVE sub(id) AS (
+                SELECT id FROM tasks WHERE id IN (${placeholders}) AND user_id = ? AND deleted_at IS NULL
+                UNION ALL
+                SELECT t.id FROM tasks t JOIN sub ON t.parent_id = sub.id WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.archived_at IS NULL
+              )
+              UPDATE tasks
+              SET archived_at = ?, updated_at = ?, version = version + 1
+              WHERE id IN (SELECT id FROM sub) AND (id IN (${placeholders}) OR archived_at IS NULL);`,
+              [...ids, user.id, user.id, nowMs, nowMs, ...ids]
+            );
 
             return { success: true, count: ids.length, action: "archive" };
           }
@@ -1555,6 +1563,117 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           )
         )
         .returning();
+
+      return updated;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/:id/archive - archive task and its unarchived descendants
+  .post(
+    "/:id/archive",
+    async ({ user, params: { id }, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      const now = new Date();
+      const nowMs = now.getTime();
+
+      sqlite.run(
+        `WITH RECURSIVE sub(id) AS (
+          SELECT id FROM tasks WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
+          UNION ALL
+          SELECT t.id FROM tasks t JOIN sub ON t.parent_id = sub.id WHERE t.user_id = ?2 AND t.deleted_at IS NULL AND t.archived_at IS NULL
+        )
+        UPDATE tasks
+        SET archived_at = ?3, updated_at = ?3, version = version + 1
+        WHERE id IN (SELECT id FROM sub) AND (id = ?1 OR archived_at IS NULL);`,
+        [id, user.id, nowMs]
+      );
+
+      const [updated] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id)
+          )
+        );
+
+      return updated;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/:id/unarchive - unarchive task and descendants with exact same stamp
+  .post(
+    "/:id/unarchive",
+    async ({ user, params: { id }, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      if (!existing.archivedAt) {
+        return existing;
+      }
+
+      const targetStamp = existing.archivedAt.getTime();
+      const now = new Date();
+      const nowMs = now.getTime();
+
+      sqlite.run(
+        `WITH RECURSIVE sub(id) AS (
+          SELECT id FROM tasks WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
+          UNION ALL
+          SELECT t.id FROM tasks t JOIN sub ON t.parent_id = sub.id WHERE t.user_id = ?2 AND t.deleted_at IS NULL
+        )
+        UPDATE tasks
+        SET archived_at = NULL, updated_at = ?4, version = version + 1
+        WHERE id IN (SELECT id FROM sub) AND archived_at = ?3;`,
+        [id, user.id, targetStamp, nowMs]
+      );
+
+      const [updated] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id)
+          )
+        );
 
       return updated;
     },
