@@ -22,6 +22,14 @@ import {
   deleteTask,
   completeTask,
   reopenTask,
+  archiveTask,
+  unarchiveTask,
+  duplicateTask,
+  saveTaskAsTemplate,
+  createChecklistItem,
+  updateChecklistItem,
+  deleteChecklistItem,
+  replaceTaskTags,
   restoreTrash,
   deleteList,
   archiveList,
@@ -960,6 +968,243 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     [isAuthenticated, tasks, toast]
   );
 
+  const handleDuplicateTask = useCallback(
+    async (taskId: string) => {
+      const original = tasks.find((t) => t.id === taskId);
+      if (!original) return;
+
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        try {
+          const backendDuplicated = await duplicateTask(taskId);
+          const mapped = backendTaskToTaskItem(backendDuplicated, {
+            listOverride: original.list,
+            folderOverride: original.folder,
+          });
+          const originalIndex = tasks.findIndex((t) => t.id === taskId);
+          setTasks((prev) => {
+            const next = [...prev];
+            next.splice(originalIndex + 1, 0, mapped);
+            return next;
+          });
+          setSelectedTaskId(mapped.id);
+          success(`Duplicated "${original.title}"`);
+        } catch (err) {
+          console.error("Failed to duplicate task on backend:", err);
+          toast({
+            title: "Duplicate failed",
+            message: err instanceof Error ? err.message : "Could not duplicate task",
+            type: "error",
+          });
+        }
+      } else {
+        const duplicateItem: TaskItem = {
+          ...original,
+          id: `temp-${Date.now()}`,
+          title: `${original.title} (Copy)`,
+          createdAt: "Just now",
+          updatedAt: "Just now",
+        };
+        const originalIndex = tasks.findIndex((t) => t.id === taskId);
+        setTasks((prev) => {
+          const next = [...prev];
+          next.splice(originalIndex + 1, 0, duplicateItem);
+          return next;
+        });
+        setSelectedTaskId(duplicateItem.id);
+        success(`Duplicated "${original.title}"`);
+      }
+    },
+    [tasks, isAuthenticated, success, toast]
+  );
+
+  const handleArchiveTask = useCallback(
+    async (taskId: string) => {
+      const target = tasks.find((t) => t.id === taskId);
+      if (!target) return;
+
+      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+      if (selectedTaskId === taskId) {
+        setSelectedTaskId(null);
+      }
+
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        try {
+          await archiveTask(taskId);
+          toast({
+            title: "Task archived",
+            message: `"${target.title}" moved to archive.`,
+            actionLabel: "Undo",
+            onAction: () => {
+              setTasks((prev) => [target, ...prev]);
+              setSelectedTaskId(target.id);
+              unarchiveTask(taskId).catch((err) => {
+                console.error("Failed to unarchive task:", err);
+                setTasks((prev) => prev.filter((t) => t.id !== taskId));
+                toast({
+                  title: "Undo failed",
+                  message: err instanceof Error ? err.message : "Could not restore archived task",
+                  type: "error",
+                });
+              });
+            },
+          });
+        } catch (err) {
+          console.error("Failed to archive task:", err);
+          setTasks((prev) => [target, ...prev]);
+          toast({
+            title: "Archive failed",
+            message: err instanceof Error ? err.message : "Could not archive task",
+            type: "error",
+          });
+        }
+      } else {
+        toast({
+          title: "Task archived",
+          message: `"${target.title}" moved to archive.`,
+          actionLabel: "Undo",
+          onAction: () => {
+            setTasks((prev) => [target, ...prev]);
+            setSelectedTaskId(target.id);
+          },
+        });
+      }
+    },
+    [tasks, selectedTaskId, isAuthenticated, toast]
+  );
+
+  const handleSaveAsTemplate = useCallback(
+    async (taskId: string, name: string) => {
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        try {
+          await saveTaskAsTemplate(taskId, name);
+          success(`Saved "${name}" as template`);
+        } catch (err) {
+          console.error("Failed to save template on backend:", err);
+          toast({
+            title: "Template save failed",
+            message: err instanceof Error ? err.message : "Could not save template",
+            type: "error",
+          });
+        }
+      } else {
+        success(`Saved "${name}" as template`);
+      }
+    },
+    [isAuthenticated, success, toast]
+  );
+
+  const handleToggleSubtask = useCallback(
+    (subtaskId: string, completed: boolean) => {
+      if (isAuthenticated && !subtaskId.startsWith("st-") && !subtaskId.startsWith("temp-")) {
+        const apiCall = completed ? completeTask(subtaskId) : reopenTask(subtaskId);
+        apiCall.catch((err) => {
+          console.error("Failed to toggle subtask on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated]
+  );
+
+  const handleAddSubtask = useCallback(
+    (title: string, parentId: string) => {
+      const targetBackendListId =
+        activeListId || userLists.find((l) => l.isInbox)?.id || userLists[0]?.id;
+
+      if (isAuthenticated && targetBackendListId && !parentId.startsWith("temp-") && !parentId.startsWith("task-")) {
+        createTask({
+          title,
+          parentId,
+          listId: targetBackendListId,
+          priority: 1,
+        }).catch((err) => {
+          console.error("Failed to create subtask on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated, activeListId, userLists]
+  );
+
+  const handleDeleteSubtask = useCallback(
+    (subtaskId: string) => {
+      if (isAuthenticated && !subtaskId.startsWith("st-") && !subtaskId.startsWith("temp-")) {
+        deleteTask(subtaskId).catch((err) => {
+          console.error("Failed to delete subtask on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated]
+  );
+
+  const handleAddChecklistItem = useCallback(
+    (text: string) => {
+      if (
+        isAuthenticated &&
+        selectedTaskId &&
+        !selectedTaskId.startsWith("temp-") &&
+        !selectedTaskId.startsWith("task-")
+      ) {
+        createChecklistItem(selectedTaskId, text)
+          .then((createdItem) => {
+            setTasks((prev) =>
+              prev.map((t) => {
+                if (t.id !== selectedTaskId) return t;
+                const updatedList = t.checklist.map((ci) =>
+                  ci.text === text && ci.id.startsWith("ci-")
+                    ? { ...ci, id: createdItem.id }
+                    : ci
+                );
+                return { ...t, checklist: updatedList };
+              })
+            );
+          })
+          .catch((err) => {
+            console.error("Failed to create checklist item on backend:", err);
+          });
+      }
+    },
+    [isAuthenticated, selectedTaskId]
+  );
+
+  const handleToggleChecklistItem = useCallback(
+    (itemId: string, done: boolean) => {
+      if (isAuthenticated && !itemId.startsWith("ci-")) {
+        updateChecklistItem(itemId, { done }).catch((err) => {
+          console.error("Failed to update checklist item on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated]
+  );
+
+  const handleDeleteChecklistItem = useCallback(
+    (itemId: string) => {
+      if (isAuthenticated && !itemId.startsWith("ci-")) {
+        deleteChecklistItem(itemId).catch((err) => {
+          console.error("Failed to delete checklist item on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated]
+  );
+
+  const handleUpdateTags = useCallback(
+    (tagNames: string[], tagIds?: string[]) => {
+      if (
+        isAuthenticated &&
+        selectedTaskId &&
+        tagIds &&
+        tagIds.length > 0 &&
+        !selectedTaskId.startsWith("temp-") &&
+        !selectedTaskId.startsWith("task-")
+      ) {
+        replaceTaskTags(selectedTaskId, tagIds).catch((err) => {
+          console.error("Failed to replace tags on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated, selectedTaskId]
+  );
+
   // Cycle folders for mobile nav
   const handleCycleFolder = useCallback(() => {
     const folders: (FolderId | null)[] = [null, "engineering", "design", "personal"];
@@ -1025,6 +1270,16 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           onClose={() => setSelectedTaskId(null)}
           onUpdateTask={handleUpdateTask}
           onDeleteTask={handleDeleteTask}
+          onDuplicateTask={handleDuplicateTask}
+          onArchiveTask={handleArchiveTask}
+          onSaveAsTemplate={handleSaveAsTemplate}
+          onToggleSubtask={handleToggleSubtask}
+          onAddSubtask={handleAddSubtask}
+          onDeleteSubtask={handleDeleteSubtask}
+          onToggleChecklistItem={handleToggleChecklistItem}
+          onAddChecklistItem={handleAddChecklistItem}
+          onDeleteChecklistItem={handleDeleteChecklistItem}
+          onUpdateTags={handleUpdateTags}
         />
       )}
 
