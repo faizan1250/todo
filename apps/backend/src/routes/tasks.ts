@@ -1,9 +1,9 @@
 import { Elysia, t } from "elysia";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
-import { positionBetween } from "../utils/position";
+import { positionBetween, generateNKeysBetween } from "../utils/position";
 import { decodeCursor, paginateResults } from "../utils/cursor";
 import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks } from "../utils/tasks";
 
@@ -452,6 +452,67 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         allDay: t.Optional(t.Boolean()),
         estimateMin: t.Optional(t.Union([t.Integer(), t.Null()])),
         tagIds: t.Optional(t.Array(t.String())),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/bulk - execute batch transactional operations across tasks
+  .post(
+    "/bulk",
+    async ({ user, body, status }) => {
+      const { ids, action, payload } = body;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 200) {
+        return status(400, { error: "ids must be a non-empty array with at most 200 IDs" });
+      }
+
+      const uniqueIds = Array.from(new Set(ids));
+      if (uniqueIds.length !== ids.length) {
+        return status(400, { error: "ids array contains duplicate IDs" });
+      }
+
+      return await db.transaction(async (tx) => {
+        // Query all matching tasks
+        const existingTasks = await tx
+          .select()
+          .from(schema.tasks)
+          .where(
+            and(
+              inArray(schema.tasks.id, ids),
+              eq(schema.tasks.userId, user.id),
+              isNull(schema.tasks.deletedAt)
+            )
+          );
+
+        const foundMap = new Set(existingTasks.map((t) => t.id));
+        const missingIds = ids.filter((id) => !foundMap.has(id));
+
+        if (missingIds.length > 0) {
+          return status(404, {
+            error: "One or more tasks not found",
+            missingIds,
+          });
+        }
+
+        switch (action) {
+          default:
+            return status(400, { error: `Unsupported bulk action: ${action}` });
+        }
+      });
+    },
+    {
+      auth: true,
+      body: t.Object({
+        ids: t.Array(t.String(), { minItems: 1, maxItems: 200 }),
+        action: t.Union([
+          t.Literal("move"),
+          t.Literal("tag"),
+          t.Literal("untag"),
+          t.Literal("complete"),
+          t.Literal("reopen"),
+          t.Literal("archive"),
+          t.Literal("delete"),
+          t.Literal("set_priority"),
+        ]),
+        payload: t.Optional(t.Any()),
       }),
     }
   )
