@@ -3,14 +3,9 @@
 import * as React from "react";
 import { useState, useEffect, useRef } from "react";
 import { authClient } from "@/lib/auth-client";
-import { useInviteValidator } from "@/hooks/use-invite-validator";
-import { Button, Input, Badge } from "@/components/ui";
-import {
-  AlertCircleIcon,
-  CheckCircle2Icon,
-  SparklesIcon,
-} from "@/components/icons";
-import { Lock, Mail, User, ShieldCheck, KeyRound, X } from "lucide-react";
+import { Button, Input } from "@/components/ui";
+import { AlertCircleIcon, SparklesIcon } from "@/components/icons";
+import { Lock, Mail, User, ShieldCheck, X } from "lucide-react";
 
 export type AuthMode = "sign-in" | "sign-up" | "2fa";
 
@@ -40,12 +35,6 @@ function AuthModalDialog({
 
   const [isLoading, setIsLoading] = useState(false);
   const [generalError, setGeneralError] = useState<string | null>(null);
-
-  // Invite code validator hook
-  const inviteValidator = useInviteValidator({
-    debounceMs: 400,
-    autoValidate: true,
-  });
 
   const firstInputRef = useRef<HTMLInputElement>(null);
   const modalContainerRef = useRef<HTMLDivElement>(null);
@@ -115,36 +104,15 @@ function AuthModalDialog({
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setGeneralError(null);
-
-    // Ensure invite code is present and valid
-    const trimmedInvite = inviteValidator.code.trim();
-    if (!trimmedInvite) {
-      setGeneralError("An invite code is required to create an account.");
-      return;
-    }
-
     setIsLoading(true);
 
     try {
-      // Pre-flight check invite code if not yet validated
-      if (inviteValidator.status !== "valid") {
-        const validation = await inviteValidator.validate(trimmedInvite);
-        if (!validation.valid) {
-          setGeneralError(
-            validation.reason || "The invite code entered is not valid."
-          );
-          setIsLoading(false);
-          return;
-        }
-      }
-
-      // Call Better Auth signUp with inviteCode in body
+      // Call Better Auth signUp with open registration (name, email, password)
       const res = await authClient.signUp.email({
         name: name.trim(),
         email: email.trim(),
         password,
-        inviteCode: trimmedInvite,
-      } as unknown as Parameters<typeof authClient.signUp.email>[0]);
+      });
 
       if (res.error) {
         setGeneralError(res.error.message || "Failed to create account.");
@@ -250,7 +218,7 @@ function AuthModalDialog({
             {mode === "sign-in" &&
               "Access your orchestrated sprints, tasks, and team milestones."}
             {mode === "sign-up" &&
-              "Enter your invite code to claim exclusive early access."}
+              "Create your account to unlock your workspace immediately."}
             {mode === "2fa" &&
               "Provide the 6-digit TOTP code from your mobile authenticator app."}
           </p>
@@ -284,7 +252,7 @@ function AuthModalDialog({
                     : "text-[#5B6478] hover:text-[#0B1220] dark:text-[#9BB0D3] dark:hover:text-white"
                 }`}
               >
-                Sign Up (Invite)
+                Sign Up
               </button>
             </div>
           )}
@@ -371,13 +339,13 @@ function AuthModalDialog({
                   }}
                   className="focus-ring-pink text-xs text-[#09318D] underline-offset-4 hover:underline dark:text-[#FFA8D7]"
                 >
-                  Have an invite code? Create an account →
+                  Don&apos;t have an account? Create an account →
                 </button>
               </div>
             </form>
           )}
 
-          {/* SIGN UP FORM WITH INVITE CODE GUARD */}
+          {/* SIGN UP FORM */}
           {mode === "sign-up" && (
             <form onSubmit={handleSignUp} className="space-y-3.5">
               <div>
@@ -448,100 +416,6 @@ function AuthModalDialog({
                     className="pl-9"
                   />
                   <Lock className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#5B6478] dark:text-[#9BB0D3]" />
-                </div>
-              </div>
-
-              {/* INVITE CODE FIELD WITH REAL-TIME PREFLIGHT */}
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <label
-                    htmlFor="signup-invite-code"
-                    className="block text-xs font-medium text-[#0B1220] dark:text-[#F8FAFC]"
-                  >
-                    Invite code
-                  </label>
-                  <span className="text-[10px] text-[#5B6478] dark:text-[#9BB0D3]">
-                    Required for registration
-                  </span>
-                </div>
-
-                <div className="relative">
-                  <Input
-                    id="signup-invite-code"
-                    type="text"
-                    required
-                    placeholder="e.g. VIP-BETA-2026"
-                    value={inviteValidator.code}
-                    onChange={(e) => inviteValidator.setCode(e.target.value.toUpperCase())}
-                    onBlur={() => inviteValidator.validate()}
-                    className="pl-9 font-mono uppercase tracking-wider"
-                    error={inviteValidator.status === "invalid"}
-                    aria-describedby="invite-code-feedback"
-                  />
-                  <KeyRound className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#5B6478] dark:text-[#9BB0D3]" />
-                </div>
-
-                {/* Validation status badge and message */}
-                <div
-                  id="invite-code-feedback"
-                  aria-live="polite"
-                  className="mt-1.5 min-h-[22px]"
-                >
-                  {inviteValidator.status === "checking" && (
-                    <div className="flex items-center gap-1.5 text-[11px] text-[#09318D] dark:text-[#9BB0D3]">
-                      <svg
-                        className="h-3 w-3 animate-spin text-current"
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                        />
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        />
-                      </svg>
-                      <span>Verifying invite code against backend...</span>
-                    </div>
-                  )}
-
-                  {inviteValidator.status === "valid" && (
-                    <div className="flex items-center gap-1.5">
-                      <Badge
-                        variant="secondary"
-                        className="bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800"
-                      >
-                        <CheckCircle2Icon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-                        Valid Invite Code
-                      </Badge>
-                      <span className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                        ({inviteValidator.validationResult?.remainingUses ?? 1} use available)
-                      </span>
-                    </div>
-                  )}
-
-                  {inviteValidator.status === "invalid" && (
-                    <div className="flex items-center gap-1.5">
-                      <Badge
-                        variant="accent"
-                        className="bg-[#FFE8F5] text-red-800 border-red-300 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800"
-                      >
-                        <AlertCircleIcon className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
-                        Invalid Code
-                      </Badge>
-                      <span className="text-[11px] text-red-700 dark:text-red-300">
-                        {inviteValidator.errorMessage}
-                      </span>
-                    </div>
-                  )}
                 </div>
               </div>
 
