@@ -2,7 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer, twoFactor } from "better-auth/plugins";
 import { APIError, createAuthMiddleware } from "better-auth/api";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "./db";
 import * as schema from "./db/schema";
 
@@ -31,6 +31,34 @@ export const auth = betterAuth({
       twoFactor: schema.twoFactors,
     },
   }),
+  databaseHooks: {
+    user: {
+      create: {
+        async after(user) {
+          if (user?.id) {
+            const [existing] = await db
+              .select()
+              .from(schema.lists)
+              .where(
+                and(
+                  eq(schema.lists.userId, user.id),
+                  eq(schema.lists.isInbox, true)
+                )
+              );
+
+            if (!existing) {
+              await db.insert(schema.lists).values({
+                userId: user.id,
+                name: "Inbox",
+                isInbox: true,
+                position: "a0",
+              });
+            }
+          }
+        },
+      },
+    },
+  },
   emailAndPassword: {
     enabled: true,
   },
