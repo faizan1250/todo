@@ -263,7 +263,36 @@ describe("Frontend Phase 1 Polish & Profile Sync", () => {
 
       expect(
         updateCurrentProfile({ preferences: { theme: "invalid-theme" } })
-      ).rejects.toThrow("Invalid preference schema");
+      ).rejects.toThrow(ApiError);
+
+      globalThis.fetch = originalFetch;
+    });
+
+    it("retrieves user profile preferences via getCurrentProfile()", async () => {
+      globalThis.fetch = mock(async () => {
+        return new Response(
+          JSON.stringify({
+            id: "usr_faizan",
+            name: "Faizan",
+            email: "faizan@example.com",
+            emailVerified: true,
+            image: null,
+            twoFactorEnabled: false,
+            role: "admin",
+            timezone: "UTC",
+            locale: "en-US",
+            weekStartsOn: 1,
+            preferences: { theme: "dark", defaultListId: "today" },
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      });
+
+      const profile = await getCurrentProfile();
+      expect(profile?.preferences.theme).toBe("dark");
+      expect(profile?.preferences.defaultListId).toBe("today");
 
       globalThis.fetch = originalFetch;
     });

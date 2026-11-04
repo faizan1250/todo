@@ -137,26 +137,23 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const auth = useOptionalAuth();
 
   const [tasks, setTasks] = useState<TaskItem[]>(INITIAL_WORKSPACE_TASKS);
-  const [activeList, setActiveList] = useState<ListId>(() => {
-    const pref = auth?.profile?.preferences?.defaultListId as ListId | undefined;
-    if (pref && ["today", "upcoming", "backlog", "completed"].includes(pref)) {
-      return pref;
-    }
-    return "today";
-  });
+  const [selectedListOverride, setSelectedListOverride] = useState<ListId | null>(null);
+
+  const prefList = auth?.profile?.preferences?.defaultListId as ListId | undefined;
+  const effectiveDefaultList: ListId =
+    prefList && ["today", "upcoming", "backlog", "completed"].includes(prefList)
+      ? prefList
+      : "today";
+  const activeList = selectedListOverride ?? effectiveDefaultList;
+  const setActiveList = useCallback((list: ListId) => {
+    setSelectedListOverride(list);
+  }, []);
+
   const [activeFolder, setActiveFolder] = useState<FolderId | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>("task-3");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
-
-  // Sync preference list if updated later
-  useEffect(() => {
-    const pref = auth?.profile?.preferences?.defaultListId as ListId | undefined;
-    if (pref && ["today", "upcoming", "backlog", "completed"].includes(pref)) {
-      setActiveList(pref);
-    }
-  }, [auth?.profile?.preferences?.defaultListId]);
 
   // Streak State
   const [streakCount, setStreakCount] = useState(5);

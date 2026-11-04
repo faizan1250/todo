@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useEffect, useRef } from "react";
-import { X, Keyboard, Command, Sparkles } from "lucide-react";
+import { X, Keyboard, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface ShortcutItem {

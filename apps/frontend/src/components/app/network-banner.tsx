@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { useState, useEffect, useCallback } from "react";
-import { WifiOff, RefreshCw, X, ShieldAlert } from "lucide-react";
+import { useState, useEffect, useCallback, useSyncExternalStore } from "react";
+import { WifiOff, RefreshCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { API_BASE_URL } from "@/lib/auth-client";
 
@@ -11,24 +11,37 @@ export interface NetworkBannerProps {
   forceOffline?: boolean;
 }
 
+const subscribeOnline = (callback: () => void) => {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener("online", callback);
+  window.addEventListener("offline", callback);
+  return () => {
+    window.removeEventListener("online", callback);
+    window.removeEventListener("offline", callback);
+  };
+};
+
+const getOnlineSnapshot = () =>
+  typeof navigator !== "undefined" ? navigator.onLine : true;
+const getServerSnapshot = () => true;
+
 export function NetworkBanner({ className, forceOffline }: NetworkBannerProps) {
-  const [isOffline, setIsOffline] = useState(forceOffline ?? false);
+  const isBrowserOnline = useSyncExternalStore(
+    subscribeOnline,
+    getOnlineSnapshot,
+    getServerSnapshot
+  );
+
+  const [isServerOffline, setIsServerOffline] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDismissed, setIsDismissed] = useState(false);
 
-  const checkConnectivity = useCallback(async () => {
-    if (forceOffline !== undefined) {
-      setIsOffline(forceOffline);
-      return;
-    }
+  const isOffline =
+    forceOffline !== undefined
+      ? forceOffline
+      : !isBrowserOnline || isServerOffline;
 
-    // Check browser offline status
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      setIsOffline(true);
-      return;
-    }
-
-    // Ping backend health
+  const pingBackend = useCallback(async () => {
     try {
       setIsRetrying(true);
       const res = await fetch(`${API_BASE_URL}/health`, {
@@ -37,49 +50,49 @@ export function NetworkBanner({ className, forceOffline }: NetworkBannerProps) {
         cache: "no-store",
       });
 
+      setIsServerOffline(!res.ok);
       if (res.ok) {
-        setIsOffline(false);
-        setIsDismissed(false); // Reset dismissal when back online
-      } else {
-        setIsOffline(true);
+        setIsDismissed(false);
       }
     } catch {
-      setIsOffline(true);
+      setIsServerOffline(true);
     } finally {
       setIsRetrying(false);
     }
-  }, [forceOffline]);
+  }, []);
 
   useEffect(() => {
-    if (forceOffline !== undefined) {
-      setIsOffline(forceOffline);
-      return;
-    }
+    if (forceOffline !== undefined) return;
 
-    void checkConnectivity();
-
-    const handleWindowOnline = () => {
-      void checkConnectivity();
+    let ignore = false;
+    const initialCheck = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/health`, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!ignore) {
+          setIsServerOffline(!res.ok);
+        }
+      } catch {
+        if (!ignore) {
+          setIsServerOffline(true);
+        }
+      }
     };
 
-    const handleWindowOffline = () => {
-      setIsOffline(true);
-      setIsDismissed(false);
-    };
-
-    window.addEventListener("online", handleWindowOnline);
-    window.addEventListener("offline", handleWindowOffline);
+    void initialCheck();
 
     const interval = setInterval(() => {
-      void checkConnectivity();
+      void pingBackend();
     }, 20000);
 
     return () => {
-      window.removeEventListener("online", handleWindowOnline);
-      window.removeEventListener("offline", handleWindowOffline);
+      ignore = true;
       clearInterval(interval);
     };
-  }, [checkConnectivity, forceOffline]);
+  }, [forceOffline, pingBackend]);
 
   if (!isOffline || isDismissed) {
     return null;
@@ -110,7 +123,7 @@ export function NetworkBanner({ className, forceOffline }: NetworkBannerProps) {
       <div className="flex items-center gap-2 shrink-0">
         <button
           type="button"
-          onClick={() => void checkConnectivity()}
+          onClick={() => void pingBackend()}
           disabled={isRetrying}
           className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-900 shadow-2xs hover:bg-amber-100/60 focus-ring-pink disabled:opacity-50 dark:border-amber-800 dark:bg-amber-900/60 dark:text-amber-100 dark:hover:bg-amber-800/80 cursor-pointer"
         >
