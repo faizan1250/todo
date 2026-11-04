@@ -16,6 +16,7 @@ export const auth = betterAuth({
   trustedOrigins,
   secret: process.env.BETTER_AUTH_SECRET ?? "dev-secret-key-change-in-production-todo-app",
   advanced: {
+    disableOriginCheck: false,
     database: {
       validateSchema: false,
     },
