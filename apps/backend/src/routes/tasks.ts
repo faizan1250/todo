@@ -1,0 +1,1001 @@
+import { Elysia, t } from "elysia";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { db } from "../db";
+import * as schema from "../db/schema";
+import { authMacro } from "../plugins/auth-macro";
+import { positionBetween } from "../utils/position";
+import { decodeCursor, paginateResults } from "../utils/cursor";
+import { validateSubtaskHierarchy, getTaskDescendants } from "../utils/tasks";
+
+/**
+ * Normalizes notes string:
+ * - normalizes \r\n to \n
+ * - enforces <= 100KB limit
+ */
+function normalizeNotes(notes?: string | null): string | null | undefined {
+  if (notes === undefined) return undefined;
+  if (notes === null) return null;
+  const normalized = notes.replace(/\r\n/g, "\n");
+  if (Buffer.byteLength(normalized, "utf8") > 100 * 1024) {
+    throw new Error("Notes cannot exceed 100KB");
+  }
+  return normalized;
+}
+
+/**
+ * Parses date input into a Date object or null
+ */
+function parseDate(val: any): Date | null | undefined {
+  if (val === undefined) return undefined;
+  if (val === null || val === "") return null;
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return null;
+  return d;
+}
+
+/**
+ * Batch loads subtasks, checklist items, and tags in at most 3 queries total.
+ * Stitches results in-memory with zero N+1 queries.
+ */
+export async function attachTaskIncludes<T extends { id: string; userId: string }>(
+  taskList: T[],
+  includeParam?: string | string[] | null,
+  userId?: string
+): Promise<Array<T & { subtasks?: any[]; checklist?: any[]; tags?: any[] }>> {
+  if (taskList.length === 0 || !includeParam) {
+    return taskList;
+  }
+
+  const includeParts = (
+    Array.isArray(includeParam)
+      ? includeParam.join(",")
+      : includeParam
+  )
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  const shouldIncludeSubtasks = includeParts.includes("subtasks");
+  const shouldIncludeChecklist = includeParts.includes("checklist");
+  const shouldIncludeTags = includeParts.includes("tags");
+
+  if (!shouldIncludeSubtasks && !shouldIncludeChecklist && !shouldIncludeTags) {
+    return taskList;
+  }
+
+  const taskIds = taskList.map((t) => t.id);
+  const effectiveUserId = userId ?? taskList[0].userId;
+
+  const [subtasksRows, checklistRows, tagRows] = await Promise.all([
+    shouldIncludeSubtasks
+      ? db
+          .select()
+          .from(schema.tasks)
+          .where(
+            and(
+              inArray(schema.tasks.parentId, taskIds),
+              eq(schema.tasks.userId, effectiveUserId),
+              isNull(schema.tasks.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.tasks.position), asc(schema.tasks.id))
+      : Promise.resolve([]),
+
+    shouldIncludeChecklist
+      ? db
+          .select()
+          .from(schema.checklistItems)
+          .where(
+            and(
+              inArray(schema.checklistItems.taskId, taskIds),
+              eq(schema.checklistItems.userId, effectiveUserId),
+              isNull(schema.checklistItems.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.checklistItems.position))
+      : Promise.resolve([]),
+
+    shouldIncludeTags
+      ? db
+          .select({
+            taskId: schema.taskTags.taskId,
+            tag: schema.tags,
+          })
+          .from(schema.taskTags)
+          .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
+          .where(
+            and(
+              inArray(schema.taskTags.taskId, taskIds),
+              eq(schema.tags.userId, effectiveUserId),
+              isNull(schema.tags.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.tags.name))
+      : Promise.resolve([]),
+  ]);
+
+  // Group subtasks by parent task ID
+  const subtasksByParent = new Map<string, any[]>();
+  for (const st of subtasksRows) {
+    if (st.parentId) {
+      if (!subtasksByParent.has(st.parentId)) {
+        subtasksByParent.set(st.parentId, []);
+      }
+      subtasksByParent.get(st.parentId)!.push(st);
+    }
+  }
+
+  // Group checklist items by task ID
+  const checklistByTask = new Map<string, any[]>();
+  for (const item of checklistRows) {
+    if (!checklistByTask.has(item.taskId)) {
+      checklistByTask.set(item.taskId, []);
+    }
+    checklistByTask.get(item.taskId)!.push(item);
+  }
+
+  // Group tags by task ID
+  const tagsByTask = new Map<string, any[]>();
+  for (const row of tagRows) {
+    if (!tagsByTask.has(row.taskId)) {
+      tagsByTask.set(row.taskId, []);
+    }
+    tagsByTask.get(row.taskId)!.push(row.tag);
+  }
+
+  return taskList.map((task) => ({
+    ...task,
+    ...(shouldIncludeSubtasks ? { subtasks: subtasksByParent.get(task.id) ?? [] } : {}),
+    ...(shouldIncludeChecklist ? { checklist: checklistByTask.get(task.id) ?? [] } : {}),
+    ...(shouldIncludeTags ? { tags: tagsByTask.get(task.id) ?? [] } : {}),
+  }));
+}
+
+export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
+  .use(authMacro)
+  // GET /api/v1/tasks - list tasks with cursor pagination, filters, and batch includes
+  .get(
+    "/",
+    async ({ user, query, status }) => {
+      const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 100);
+      const conditions: SQL[] = [
+        eq(schema.tasks.userId, user.id),
+        isNull(schema.tasks.deletedAt),
+      ];
+
+      // Archived filter
+      if (query.archived === "true") {
+        conditions.push(isNotNull(schema.tasks.archivedAt));
+      } else {
+        conditions.push(isNull(schema.tasks.archivedAt));
+      }
+
+      // List filter
+      if (query.listId) {
+        conditions.push(eq(schema.tasks.listId, query.listId));
+      }
+
+      // Section filter
+      if (query.sectionId !== undefined) {
+        if (query.sectionId === "null" || query.sectionId === "") {
+          conditions.push(isNull(schema.tasks.sectionId));
+        } else {
+          conditions.push(eq(schema.tasks.sectionId, query.sectionId));
+        }
+      }
+
+      // Parent ID filter (subtasks vs top-level)
+      if (query.parentId !== undefined && query.parentId !== "all") {
+        if (query.parentId === "null" || query.parentId === "") {
+          conditions.push(isNull(schema.tasks.parentId));
+        } else {
+          conditions.push(eq(schema.tasks.parentId, query.parentId));
+        }
+      }
+
+      // Status filter
+      if (query.status) {
+        conditions.push(eq(schema.tasks.status, query.status as any));
+      }
+
+      // Tag filter (by tag ID or tag name)
+      if (query.tag) {
+        const matchingTagTasks = await db
+          .select({ taskId: schema.taskTags.taskId })
+          .from(schema.taskTags)
+          .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
+          .where(
+            and(
+              eq(schema.tags.userId, user.id),
+              isNull(schema.tags.deletedAt),
+              or(
+                eq(schema.tags.id, query.tag),
+                sql`lower(${schema.tags.name}) = lower(${query.tag})`
+              )
+            )
+          );
+
+        const taskIds = matchingTagTasks.map((t) => t.taskId);
+        if (taskIds.length === 0) {
+          return { items: [], nextCursor: null, hasMore: false };
+        }
+        conditions.push(inArray(schema.tasks.id, taskIds));
+      }
+
+      // Cursor keyset filter on (position, id)
+      const decodedCursor = decodeCursor(query.cursor);
+      if (decodedCursor) {
+        conditions.push(
+          or(
+            gt(schema.tasks.position, decodedCursor.position),
+            and(
+              eq(schema.tasks.position, decodedCursor.position),
+              gt(schema.tasks.id, decodedCursor.id)
+            )
+          )!
+        );
+      }
+
+      // Query limit + 1 items to determine if hasMore is true
+      const rawTasks = await db
+        .select()
+        .from(schema.tasks)
+        .where(and(...conditions))
+        .orderBy(asc(schema.tasks.position), asc(schema.tasks.id))
+        .limit(limit + 1);
+
+      const paginated = paginateResults(rawTasks, limit);
+
+      // Batch load includes if requested
+      const itemsWithIncludes = await attachTaskIncludes(
+        paginated.items,
+        query.include,
+        user.id
+      );
+
+      return {
+        items: itemsWithIncludes,
+        nextCursor: paginated.nextCursor,
+        hasMore: paginated.hasMore,
+      };
+    },
+    {
+      auth: true,
+      query: t.Object({
+        limit: t.Optional(t.String()),
+        cursor: t.Optional(t.String()),
+        listId: t.Optional(t.String()),
+        sectionId: t.Optional(t.String()),
+        parentId: t.Optional(t.String()),
+        status: t.Optional(t.String()),
+        tag: t.Optional(t.String()),
+        archived: t.Optional(t.String()),
+        include: t.Optional(t.String()),
+      }),
+    }
+  )
+  // POST /api/v1/tasks - create task
+  .post(
+    "/",
+    async ({ user, body, status }) => {
+      const trimmedTitle = body.title.trim();
+      if (!trimmedTitle) {
+        return status(400, { error: "Title cannot be empty" });
+      }
+
+      let normalizedNotesText: string | null = null;
+      try {
+        normalizedNotesText = normalizeNotes(body.notes) ?? null;
+      } catch (err: any) {
+        return status(400, { error: err.message });
+      }
+
+      let finalListId = body.listId;
+      const finalParentId = body.parentId ?? null;
+
+      // Validate subtask hierarchy & depth <= 3
+      if (finalParentId) {
+        const validation = validateSubtaskHierarchy(user.id, null, finalParentId);
+        if (!validation.valid) {
+          return status(validation.statusCode ?? 400, { error: validation.error });
+        }
+        // Subtask always inherits parent's listId
+        finalListId = validation.parent!.listId;
+      } else {
+        // Top-level task requires listId
+        if (!finalListId) {
+          return status(400, { error: "listId is required for top-level tasks" });
+        }
+        // Verify list exists and belongs to user
+        const [list] = await db
+          .select()
+          .from(schema.lists)
+          .where(
+            and(
+              eq(schema.lists.id, finalListId),
+              eq(schema.lists.userId, user.id),
+              isNull(schema.lists.deletedAt)
+            )
+          );
+        if (!list) {
+          return status(404, { error: "List not found" });
+        }
+      }
+
+      // Verify sectionId if specified
+      const finalSectionId = body.sectionId ?? null;
+      if (finalSectionId) {
+        const [section] = await db
+          .select()
+          .from(schema.sections)
+          .where(
+            and(
+              eq(schema.sections.id, finalSectionId),
+              eq(schema.sections.userId, user.id),
+              eq(schema.sections.listId, finalListId),
+              isNull(schema.sections.deletedAt)
+            )
+          );
+        if (!section) {
+          return status(404, { error: "Section not found or does not belong to list" });
+        }
+      }
+
+      // Verify tagIds if provided
+      if (body.tagIds && body.tagIds.length > 0) {
+        const userTags = await db
+          .select({ id: schema.tags.id })
+          .from(schema.tags)
+          .where(
+            and(
+              eq(schema.tags.userId, user.id),
+              inArray(schema.tags.id, body.tagIds),
+              isNull(schema.tags.deletedAt)
+            )
+          );
+        if (userTags.length !== body.tagIds.length) {
+          return status(400, { error: "One or more tag IDs are invalid" });
+        }
+      }
+
+      // Calculate position within scope
+      const positionConditions = [
+        eq(schema.tasks.userId, user.id),
+        eq(schema.tasks.listId, finalListId),
+        isNull(schema.tasks.deletedAt),
+      ];
+      if (finalParentId) {
+        positionConditions.push(eq(schema.tasks.parentId, finalParentId));
+      } else {
+        positionConditions.push(isNull(schema.tasks.parentId));
+      }
+      if (finalSectionId) {
+        positionConditions.push(eq(schema.tasks.sectionId, finalSectionId));
+      } else {
+        positionConditions.push(isNull(schema.tasks.sectionId));
+      }
+
+      let position = body.position;
+      if (!position) {
+        position = await positionBetween(
+          {
+            table: schema.tasks,
+            where: and(...positionConditions),
+          },
+          body.afterId,
+          body.beforeId
+        );
+      }
+
+      // Insert task in transaction
+      const task = await db.transaction(async (tx) => {
+        const [newTask] = await tx
+          .insert(schema.tasks)
+          .values({
+            userId: user.id,
+            listId: finalListId,
+            sectionId: finalSectionId,
+            parentId: finalParentId,
+            title: trimmedTitle,
+            notes: normalizedNotesText,
+            priority: body.priority ?? 0,
+            status: body.status ?? "todo",
+            position,
+            startAt: parseDate(body.startAt) ?? null,
+            dueAt: parseDate(body.dueAt) ?? null,
+            deadlineAt: parseDate(body.deadlineAt) ?? null,
+            allDay: body.allDay ?? false,
+            estimateMin: body.estimateMin ?? null,
+            completedAt: body.status === "done" ? new Date() : null,
+          })
+          .returning();
+
+        if (body.tagIds && body.tagIds.length > 0) {
+          await tx.insert(schema.taskTags).values(
+            body.tagIds.map((tagId) => ({
+              taskId: newTask.id,
+              tagId,
+            }))
+          );
+        }
+
+        return newTask;
+      });
+
+      // Optionally attach includes if tags were linked
+      const [result] = await attachTaskIncludes([task], "tags", user.id);
+      return status(201, result);
+    },
+    {
+      auth: true,
+      body: t.Object({
+        title: t.String({ minLength: 1, maxLength: 500 }),
+        listId: t.Optional(t.String()),
+        sectionId: t.Optional(t.Union([t.String(), t.Null()])),
+        parentId: t.Optional(t.Union([t.String(), t.Null()])),
+        notes: t.Optional(t.Union([t.String(), t.Null()])),
+        priority: t.Optional(t.Integer({ minimum: 0, maximum: 4 })),
+        status: t.Optional(
+          t.Union([
+            t.Literal("todo"),
+            t.Literal("in_progress"),
+            t.Literal("done"),
+            t.Literal("cancelled"),
+          ])
+        ),
+        position: t.Optional(t.String()),
+        afterId: t.Optional(t.Union([t.String(), t.Null()])),
+        beforeId: t.Optional(t.Union([t.String(), t.Null()])),
+        startAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
+        dueAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
+        deadlineAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
+        allDay: t.Optional(t.Boolean()),
+        estimateMin: t.Optional(t.Union([t.Integer(), t.Null()])),
+        tagIds: t.Optional(t.Array(t.String())),
+      }),
+    }
+  )
+  // GET /api/v1/tasks/:id - get single task with optional includes
+  .get(
+    "/:id",
+    async ({ user, params: { id }, query, status }) => {
+      const [task] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!task) {
+        return status(404, { error: "Task not found" });
+      }
+
+      const [withIncludes] = await attachTaskIncludes([task], query.include, user.id);
+      return withIncludes;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+      query: t.Object({
+        include: t.Optional(t.String()),
+      }),
+    }
+  )
+  // PATCH /api/v1/tasks/:id - update task
+  .patch(
+    "/:id",
+    async ({ user, params: { id }, body, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      // Title validation
+      let nextTitle = existing.title;
+      if (body.title !== undefined) {
+        const trimmed = body.title.trim();
+        if (!trimmed) {
+          return status(400, { error: "Title cannot be empty" });
+        }
+        nextTitle = trimmed;
+      }
+
+      // Notes normalization & limit
+      let nextNotes = existing.notes;
+      if (body.notes !== undefined) {
+        try {
+          nextNotes = normalizeNotes(body.notes) ?? null;
+        } catch (err: any) {
+          return status(400, { error: err.message });
+        }
+      }
+
+      let nextListId = existing.listId;
+      let nextParentId = existing.parentId;
+      let shouldUpdateDescendantList = false;
+
+      // Handle parentId update (and hierarchy validation)
+      if (body.parentId !== undefined) {
+        const targetParentId = body.parentId ?? null;
+        const validation = validateSubtaskHierarchy(user.id, id, targetParentId);
+        if (!validation.valid) {
+          return status(validation.statusCode ?? 400, { error: validation.error });
+        }
+
+        nextParentId = targetParentId;
+        if (targetParentId) {
+          nextListId = validation.parent!.listId;
+          shouldUpdateDescendantList = nextListId !== existing.listId;
+        }
+      }
+
+      // Handle listId update when not locked by parent
+      if (body.listId !== undefined && body.listId !== existing.listId) {
+        if (nextParentId) {
+          // If task has a parent, listId must match parent
+          return status(400, { error: "Subtasks must belong to the same list as their parent" });
+        }
+        const [targetList] = await db
+          .select()
+          .from(schema.lists)
+          .where(
+            and(
+              eq(schema.lists.id, body.listId),
+              eq(schema.lists.userId, user.id),
+              isNull(schema.lists.deletedAt)
+            )
+          );
+        if (!targetList) {
+          return status(404, { error: "Target list not found" });
+        }
+        nextListId = body.listId;
+        shouldUpdateDescendantList = true;
+      }
+
+      // Handle sectionId update
+      let nextSectionId = existing.sectionId;
+      if (body.sectionId !== undefined) {
+        if (body.sectionId === null || body.sectionId === "") {
+          nextSectionId = null;
+        } else {
+          const [sec] = await db
+            .select()
+            .from(schema.sections)
+            .where(
+              and(
+                eq(schema.sections.id, body.sectionId),
+                eq(schema.sections.userId, user.id),
+                eq(schema.sections.listId, nextListId),
+                isNull(schema.sections.deletedAt)
+              )
+            );
+          if (!sec) {
+            return status(404, { error: "Section not found or does not belong to task's list" });
+          }
+          nextSectionId = body.sectionId;
+        }
+      }
+
+      // Handle status and completedAt
+      const nextStatus = body.status !== undefined ? body.status : existing.status;
+      let nextCompletedAt = existing.completedAt;
+      if (body.completedAt !== undefined) {
+        nextCompletedAt = parseDate(body.completedAt) ?? null;
+      } else if (body.status !== undefined) {
+        if (body.status === "done" && existing.status !== "done") {
+          nextCompletedAt = new Date();
+        } else if (body.status !== "done" && existing.status === "done") {
+          nextCompletedAt = null;
+        }
+      }
+
+      // Handle archivedAt
+      let nextArchivedAt = existing.archivedAt;
+      if (body.archivedAt !== undefined) {
+        nextArchivedAt = parseDate(body.archivedAt) ?? null;
+      }
+
+      // Perform update in transaction
+      const updated = await db.transaction(async (tx) => {
+        // If listId changed, cascade listId to all descendants
+        if (shouldUpdateDescendantList) {
+          const descendants = getTaskDescendants(id, user.id);
+          if (descendants.length > 0) {
+            await tx
+              .update(schema.tasks)
+              .set({
+                listId: nextListId,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, descendants.map((d) => d.id)),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+          }
+        }
+
+        const [res] = await tx
+          .update(schema.tasks)
+          .set({
+            title: nextTitle,
+            notes: nextNotes,
+            listId: nextListId,
+            sectionId: nextSectionId,
+            parentId: nextParentId,
+            priority: body.priority !== undefined ? body.priority : existing.priority,
+            status: nextStatus,
+            position: body.position !== undefined ? body.position : existing.position,
+            startAt: body.startAt !== undefined ? (parseDate(body.startAt) ?? null) : existing.startAt,
+            dueAt: body.dueAt !== undefined ? (parseDate(body.dueAt) ?? null) : existing.dueAt,
+            deadlineAt: body.deadlineAt !== undefined ? (parseDate(body.deadlineAt) ?? null) : existing.deadlineAt,
+            allDay: body.allDay !== undefined ? body.allDay : existing.allDay,
+            estimateMin: body.estimateMin !== undefined ? body.estimateMin : existing.estimateMin,
+            completedAt: nextCompletedAt,
+            archivedAt: nextArchivedAt,
+            version: sql`${schema.tasks.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.tasks.id, id),
+              eq(schema.tasks.userId, user.id)
+            )
+          )
+          .returning();
+
+        return res;
+      });
+
+      return updated;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+      body: t.Object({
+        title: t.Optional(t.String({ minLength: 1, maxLength: 500 })),
+        notes: t.Optional(t.Union([t.String(), t.Null()])),
+        listId: t.Optional(t.String()),
+        sectionId: t.Optional(t.Union([t.String(), t.Null()])),
+        parentId: t.Optional(t.Union([t.String(), t.Null()])),
+        priority: t.Optional(t.Integer({ minimum: 0, maximum: 4 })),
+        status: t.Optional(
+          t.Union([
+            t.Literal("todo"),
+            t.Literal("in_progress"),
+            t.Literal("done"),
+            t.Literal("cancelled"),
+          ])
+        ),
+        position: t.Optional(t.String()),
+        startAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
+        dueAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
+        deadlineAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
+        allDay: t.Optional(t.Boolean()),
+        estimateMin: t.Optional(t.Union([t.Integer(), t.Null()])),
+        completedAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
+        archivedAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
+      }),
+    }
+  )
+  // DELETE /api/v1/tasks/:id - soft delete task and its descendants
+  .delete(
+    "/:id",
+    async ({ user, params: { id }, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      const descendants = getTaskDescendants(id, user.id);
+      const allIds = [id, ...descendants.map((d) => d.id)];
+
+      await db
+        .update(schema.tasks)
+        .set({
+          deletedAt: new Date(),
+          version: sql`${schema.tasks.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            inArray(schema.tasks.id, allIds),
+            eq(schema.tasks.userId, user.id)
+          )
+        );
+
+      return { success: true };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/:id/move - move task between positions/sections/lists
+  .post(
+    "/:id/move",
+    async ({ user, params: { id }, body, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      let nextListId = existing.listId;
+      let nextParentId = existing.parentId;
+      let nextSectionId = existing.sectionId;
+      let shouldUpdateDescendantList = false;
+
+      // Parent ID change check
+      if (body.parentId !== undefined) {
+        const targetParentId = body.parentId ?? null;
+        const validation = validateSubtaskHierarchy(user.id, id, targetParentId);
+        if (!validation.valid) {
+          return status(validation.statusCode ?? 400, { error: validation.error });
+        }
+        nextParentId = targetParentId;
+        if (targetParentId) {
+          nextListId = validation.parent!.listId;
+          shouldUpdateDescendantList = nextListId !== existing.listId;
+        }
+      }
+
+      // List ID change check
+      if (body.listId !== undefined && body.listId !== existing.listId) {
+        if (nextParentId) {
+          return status(400, { error: "Subtasks must belong to the same list as their parent" });
+        }
+        const [targetList] = await db
+          .select()
+          .from(schema.lists)
+          .where(
+            and(
+              eq(schema.lists.id, body.listId),
+              eq(schema.lists.userId, user.id),
+              isNull(schema.lists.deletedAt)
+            )
+          );
+        if (!targetList) {
+          return status(404, { error: "Target list not found" });
+        }
+        nextListId = body.listId;
+        shouldUpdateDescendantList = true;
+      }
+
+      // Section ID change check
+      if (body.sectionId !== undefined) {
+        if (body.sectionId === null || body.sectionId === "") {
+          nextSectionId = null;
+        } else {
+          const [sec] = await db
+            .select()
+            .from(schema.sections)
+            .where(
+              and(
+                eq(schema.sections.id, body.sectionId),
+                eq(schema.sections.userId, user.id),
+                eq(schema.sections.listId, nextListId),
+                isNull(schema.sections.deletedAt)
+              )
+            );
+          if (!sec) {
+            return status(404, { error: "Section not found or does not belong to task's list" });
+          }
+          nextSectionId = body.sectionId;
+        }
+      }
+
+      // Determine scope for new position
+      const scopeConditions = [
+        eq(schema.tasks.userId, user.id),
+        eq(schema.tasks.listId, nextListId),
+        isNull(schema.tasks.deletedAt),
+      ];
+      if (nextParentId) {
+        scopeConditions.push(eq(schema.tasks.parentId, nextParentId));
+      } else {
+        scopeConditions.push(isNull(schema.tasks.parentId));
+      }
+      if (nextSectionId) {
+        scopeConditions.push(eq(schema.tasks.sectionId, nextSectionId));
+      } else {
+        scopeConditions.push(isNull(schema.tasks.sectionId));
+      }
+
+      const newPosition = await positionBetween(
+        {
+          table: schema.tasks,
+          where: and(...scopeConditions),
+          excludeId: id,
+        },
+        body.afterId,
+        body.beforeId
+      );
+
+      const updated = await db.transaction(async (tx) => {
+        if (shouldUpdateDescendantList) {
+          const descendants = getTaskDescendants(id, user.id);
+          if (descendants.length > 0) {
+            await tx
+              .update(schema.tasks)
+              .set({
+                listId: nextListId,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, descendants.map((d) => d.id)),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+          }
+        }
+
+        const [res] = await tx
+          .update(schema.tasks)
+          .set({
+            position: newPosition,
+            listId: nextListId,
+            sectionId: nextSectionId,
+            parentId: nextParentId,
+            version: sql`${schema.tasks.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.tasks.id, id),
+              eq(schema.tasks.userId, user.id)
+            )
+          )
+          .returning();
+
+        return res;
+      });
+
+      return updated;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+      body: t.Object({
+        afterId: t.Optional(t.Union([t.String(), t.Null()])),
+        beforeId: t.Optional(t.Union([t.String(), t.Null()])),
+        listId: t.Optional(t.String()),
+        sectionId: t.Optional(t.Union([t.String(), t.Null()])),
+        parentId: t.Optional(t.Union([t.String(), t.Null()])),
+      }),
+    }
+  )
+  // PUT /api/v1/tasks/:id/tags - replace task tags set
+  .put(
+    "/:id/tags",
+    async ({ user, params: { id }, body, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      // Verify all tagIds belong to user
+      const uniqueTagIds = [...new Set(body.tagIds)];
+      if (uniqueTagIds.length > 0) {
+        const userTags = await db
+          .select({ id: schema.tags.id })
+          .from(schema.tags)
+          .where(
+            and(
+              eq(schema.tags.userId, user.id),
+              inArray(schema.tags.id, uniqueTagIds),
+              isNull(schema.tags.deletedAt)
+            )
+          );
+
+        if (userTags.length !== uniqueTagIds.length) {
+          return status(400, { error: "One or more tag IDs are invalid or belong to another user" });
+        }
+      }
+
+      // Replace tag associations inside a single transaction
+      await db.transaction(async (tx) => {
+        // Delete all existing tag mappings for this task
+        await tx
+          .delete(schema.taskTags)
+          .where(eq(schema.taskTags.taskId, id));
+
+        // Insert new mappings
+        if (uniqueTagIds.length > 0) {
+          await tx.insert(schema.taskTags).values(
+            uniqueTagIds.map((tagId) => ({
+              taskId: id,
+              tagId,
+            }))
+          );
+        }
+
+        // Bump task version
+        await tx
+          .update(schema.tasks)
+          .set({
+            version: sql`${schema.tasks.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.tasks.id, id),
+              eq(schema.tasks.userId, user.id)
+            )
+          );
+      });
+
+      // Return updated task with tags included
+      const [updatedTask] = await db
+        .select()
+        .from(schema.tasks)
+        .where(eq(schema.tasks.id, id));
+
+      const [withTags] = await attachTaskIncludes([updatedTask], "tags", user.id);
+      return withTags;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+      body: t.Object({
+        tagIds: t.Array(t.String()),
+      }),
+    }
+  );
