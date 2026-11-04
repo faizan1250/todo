@@ -361,3 +361,91 @@ Todo Studio provides an embedded Swagger UI for interactive exploration, schema 
 | `DELETE` | `/api/v1/trash/purge` | Permanently purge a specific soft-deleted record |
 | `DELETE` | `/api/v1/trash` | Permanently purge all soft-deleted items currently in trash |
 | `GET` | `/health` | Unauthenticated uptime health check with server timestamp |
+
+---
+
+## 🎨 Design System & Frontend Architecture
+
+Todo Studio features a bespoke, tactile user interface crafted with **Next.js 16.4.5 App Router**, **React 19.3.0**, and **Tailwind CSS v4**. It rejects generic, monotone corporate dashboards in favor of an ergonomic, high-contrast aesthetic calibrated for sustained focus and visual delight.
+
+### Visual Palette & Tactile Tokens
+
+The color system anchors around contrasting deep maritime hues and vibrant tactile accents:
+
+| Token | Hex Value | Role & Semantic Purpose |
+| :--- | :--- | :--- |
+| **Deep Blue** | `#051A4D` | Primary brand anchor, header accents, and high-contrast dark surface backgrounds |
+| **Navy Surface** | `#082363` | Elevated cards, dark mode modal containers, and floating panels |
+| **Midnight Trench** | `#061B4A` | Nested list backgrounds, dark mode dividers, and recessed input fields |
+| **Bubblegum Pink** | `#FD91CC` | High-energy focal accents, interactive sparks, toggle states, and key highlights |
+| **Soft Flamingo** | `#FFA8D7` | Hover states, keyboard keycap text, and subtle focus halos |
+| **Canvas Light** | `#F2F5FC` | Soft off-white neutral canvas background reducing eye fatigue |
+| **Hairline Border** | `#E4E8F2` | Ultra-subtle border strokes maintaining crisp structure without visual clutter |
+| **Ink Navy** | `#0B1220` | High-legibility deep typography for effortless scanning |
+
+### Component Architecture & State Management
+
+The frontend codebase is organized into modular layers balancing fast rendering with zero state tearing:
+
+```
+apps/frontend/src/
+├── app/                       # Next.js 16 App Router pages, global metadata, font loader
+│   ├── layout.tsx             # Root HTML shell, theme script, and font declarations
+│   ├── page.tsx               # Unauthenticated landing page & live interactive demo
+│   └── globals.css            # Tailwind CSS v4 directives and CSS variable definitions
+├── components/
+│   ├── app/                   # Core application interface components
+│   │   ├── command-palette.tsx    # Global Cmd+K fuzzy action and navigation modal
+│   │   ├── task-pane.tsx          # Virtualized task row list, sections, and inline quick-add
+│   │   ├── task-detail-panel.tsx  # Slide-over inspector (notes, due dates, subtasks, checklists)
+│   │   ├── bulk-action-toolbar.tsx# Floating contextual toolbar for multi-selected tasks
+│   │   ├── sidebar.tsx            # Collapsible navigation tree (Folders, Lists, Inbox, Trash)
+│   │   ├── trash-modal.tsx        # Trash bin browser with 1-click restore and purge
+│   │   ├── templates-modal.tsx    # Reusable task hierarchy template manager
+│   │   └── keyboard-shortcuts-modal.tsx # Interactive keyboard shortcuts cheat sheet
+│   ├── auth/                  # Authentication & session controls
+│   │   ├── auth-modal.tsx         # Tabbed Sign-In, Sign-Up, and 2FA verification dialog
+│   │   ├── auth-provider.tsx      # React Context managing session tokens and user state
+│   │   └── profile-modal.tsx      # User settings, preferences, and session management
+│   └── ui/                    # Primitive accessible UI elements
+│       ├── button.tsx, badge.tsx, card.tsx, input.tsx, skeleton.tsx
+├── hooks/                     # Custom hooks (shortcuts, focus traps, invite validation)
+└── lib/                       # Type-safe API client, adapters, and Better Auth client
+```
+
+#### React 19 Paradigms:
+- **Zero Cascading Effects**: Eliminates problematic `useEffect` dependency chains. State transformations use derived values computed during render.
+- **Optimistic UI Mutations**: Toggling a task checkbox or checklist item applies immediate visual feedback, asynchronously syncing with the backend and gracefully rolling back on unexpected network failure.
+- **Accessible Focus Management**: Built-in ARIA attributes, focus trap cycling, and clean event-listener teardowns across all modals and slide-out drawers.
+
+---
+
+## ⌨️ Keyboard Shortcuts Reference
+
+Todo Studio is engineered to be operated entirely without a mouse. Master your workspace with low-latency keyboard shortcuts available across all views:
+
+### Navigation Shortcuts
+
+| Shortcut | Action | Description | Scope |
+| :---: | :--- | :--- | :--- |
+| <kbd>J</kbd> or <kbd>↓</kbd> | Next Task | Move cursor focus to the next task in the active list | Task List |
+| <kbd>K</kbd> or <kbd>↑</kbd> | Previous Task | Move cursor focus to the previous task in the active list | Task List |
+| <kbd>⌘K</kbd> or <kbd>Ctrl + K</kbd> | Command Palette | Open fuzzy command palette to jump between lists or actions | Global |
+| <kbd>/</kbd> | Quick Search | Direct shortcut into the Command Palette search filter | Global |
+| <kbd>Esc</kbd> | Dismiss / Close | Close open modals, drawers, command palette, or clear selection | Global |
+
+### Task Action Shortcuts
+
+| Shortcut | Action | Description | Scope |
+| :---: | :--- | :--- | :--- |
+| <kbd>N</kbd> | Quick Add Task | Instantly focus the task creation input in the active list | Task List |
+| <kbd>Space</kbd> or <kbd>X</kbd> | Toggle Complete | Mark the focused task complete or reopen it | Task List |
+| <kbd>Enter</kbd> | Inspect Task | Open the task detail slide-over panel for rich editing | Task List |
+| <kbd>D</kbd> or <kbd>⌫</kbd> | Delete Task | Soft-delete selected task to trash with an instant undo toast | Task List |
+
+### General & System Shortcuts
+
+| Shortcut | Action | Description | Scope |
+| :---: | :--- | :--- | :--- |
+| <kbd>?</kbd> or <kbd>Shift + /</kbd> | Cheat Sheet | Open the interactive keyboard shortcuts overlay modal | Global |
+| <kbd>Esc</kbd> | Dismiss Panel | Close any open modal dialog or slide-out drawer safely | Global |
