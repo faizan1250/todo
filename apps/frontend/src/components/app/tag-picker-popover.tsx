@@ -40,52 +40,41 @@ export function TagPickerPopover({
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Load available tags when popover opens
-  useEffect(() => {
-    if (!isOpen) return;
-
-    let isMounted = true;
+  // Open and load tags
+  const handleOpen = () => {
+    setIsOpen(true);
     setIsLoading(true);
-
     getTags()
       .then((tags) => {
-        if (!isMounted) return;
         setAvailableTags(tags);
       })
       .catch((err) => {
         console.warn("Could not load remote tags, using active tags:", err);
       })
       .finally(() => {
-        if (isMounted) setIsLoading(false);
+        setIsLoading(false);
       });
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
 
-    return () => {
-      isMounted = false;
-    };
-  }, [isOpen]);
+  const handleClose = () => {
+    setIsOpen(false);
+    setSearchQuery("");
+  };
 
-  // Focus search input when popover opens
-  useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => inputRef.current?.focus(), 50);
-    } else {
-      setSearchQuery("");
-    }
-  }, [isOpen]);
-
-  // Click outside to dismiss
+  // Click outside and escape key to dismiss
   useEffect(() => {
     if (!isOpen) return;
 
     const handleClickOutside = (e: MouseEvent) => {
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
+        handleClose();
       }
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setIsOpen(false);
+        handleClose();
       }
     };
 
@@ -210,7 +199,7 @@ export function TagPickerPopover({
       <button
         type="button"
         disabled={disabled}
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={() => (isOpen ? handleClose() : handleOpen())}
         aria-label="Add or manage tags"
         aria-expanded={isOpen}
         className={cn(
