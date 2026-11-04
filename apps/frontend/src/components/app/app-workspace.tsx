@@ -12,6 +12,9 @@ import { MobileNav } from "./mobile-nav";
 import { ToastProvider, useToast } from "./toast-system";
 import { ListDialog } from "./list-dialog";
 import { FolderDialog } from "./folder-dialog";
+import { BulkActionToolbar } from "./bulk-action-toolbar";
+import { TrashModal } from "./trash-modal";
+import { TemplatesModal } from "./templates-modal";
 import { useAuth } from "@/components/auth";
 import {
   getLists,
@@ -31,11 +34,13 @@ import {
   deleteChecklistItem,
   replaceTaskTags,
   restoreTrash,
+  bulkTasks,
   deleteList,
   archiveList,
   deleteFolder,
   type BackendList,
   type BackendFolder,
+  type BackendTask,
 } from "@/lib/api";
 import {
   backendTaskToTaskItem,
@@ -301,6 +306,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
+  // Bulk Selection State
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set());
+  const [isBulkSubmitting, setIsBulkSubmitting] = useState(false);
+
+  // Library Modals State
+  const [isTrashOpen, setIsTrashOpen] = useState(false);
+  const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+
   // Streak State
   const [streakCount, setStreakCount] = useState(5);
   const [isStreakActive, setIsStreakActive] = useState(false);
@@ -434,87 +447,326 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   );
 
   // Fetch user's lists and folders when authenticated
-  useEffect(() => {
+  const loadContainers = useCallback(async () => {
     if (!isAuthenticated) return;
+    try {
+      const [lists, folders] = await Promise.all([
+        getLists(),
+        getFolders(),
+      ]);
 
-    let isMounted = true;
+      setUserLists(lists);
+      setUserFolders(folders);
 
-    async function loadContainers() {
-      try {
-        const [lists, folders] = await Promise.all([
-          getLists(),
-          getFolders(),
-        ]);
-
-        if (!isMounted) return;
-        setUserLists(lists);
-        setUserFolders(folders);
-
-        // Automatically pick the default Inbox list (or first active list) if no list is selected
-        const inbox = lists.find((l) => l.isInbox) || lists[0];
-        if (inbox) {
-          setActiveListId((prev) => prev || inbox.id);
-        }
-      } catch (err) {
-        if (!isMounted) return;
-        console.error("Failed to load containers:", err);
+      // Automatically pick the default Inbox list (or first active list) if no list is selected
+      const inbox = lists.find((l) => l.isInbox) || lists[0];
+      if (inbox) {
+        setActiveListId((prev) => prev || inbox.id);
       }
+    } catch (err) {
+      console.error("Failed to load containers:", err);
     }
-
-    void loadContainers();
-
-    return () => {
-      isMounted = false;
-    };
   }, [isAuthenticated]);
 
-  // Fetch tasks for active list or active smart view
   useEffect(() => {
+    void loadContainers();
+  }, [loadContainers]);
+
+  // Fetch tasks for active list or active smart view
+  const loadTasks = useCallback(async () => {
     if (!isAuthenticated) return;
+    setIsLoadingTasks(true);
+    try {
+      const queryParams: { listId?: string; include: string } = {
+        include: "subtasks,checklist,tags",
+      };
+      if (activeListId) {
+        queryParams.listId = activeListId;
+      }
+      const res = await getTasks(queryParams);
+      const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+      setTasks(mapped);
+      if (mapped.length > 0) {
+        setSelectedTaskId((prev) =>
+          prev && mapped.some((t) => t.id === prev) ? prev : mapped[0].id
+        );
+      } else {
+        setSelectedTaskId(null);
+      }
+    } catch (err) {
+      console.error("Failed to load tasks:", err);
+      toast({
+        title: "Failed to load tasks",
+        message: err instanceof Error ? err.message : "Network error",
+        type: "error",
+      });
+    } finally {
+      setIsLoadingTasks(false);
+    }
+  }, [isAuthenticated, activeListId, toast]);
 
-    let isMounted = true;
+  useEffect(() => {
+    void loadTasks();
+  }, [loadTasks]);
 
-    async function loadTasks() {
-      setIsLoadingTasks(true);
-      try {
-        const queryParams: { listId?: string; include: string } = {
-          include: "subtasks,checklist,tags",
-        };
-        if (activeListId) {
-          queryParams.listId = activeListId;
+  // Bulk Selection Handlers
+  const handleToggleSelectTask = useCallback(
+    (id: string, shiftKey?: boolean, visibleTaskIds?: string[]) => {
+      setSelectedTaskIds((prev) => {
+        const next = new Set(prev);
+        if (shiftKey && visibleTaskIds && visibleTaskIds.length > 0) {
+          const lastId = Array.from(prev).pop();
+          if (lastId && lastId !== id) {
+            const startIdx = visibleTaskIds.indexOf(lastId);
+            const endIdx = visibleTaskIds.indexOf(id);
+            if (startIdx !== -1 && endIdx !== -1) {
+              const low = Math.min(startIdx, endIdx);
+              const high = Math.max(startIdx, endIdx);
+              for (let i = low; i <= high; i++) {
+                next.add(visibleTaskIds[i]);
+              }
+              return next;
+            }
+          }
         }
-        const res = await getTasks(queryParams);
-        if (!isMounted) return;
-        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
-        setTasks(mapped);
-        if (mapped.length > 0) {
-          setSelectedTaskId((prev) =>
-            prev && mapped.some((t) => t.id === prev) ? prev : mapped[0].id
-          );
+
+        if (next.has(id)) {
+          next.delete(id);
         } else {
-          setSelectedTaskId(null);
+          next.add(id);
         }
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleSelectAllTasks = useCallback(() => {
+    setSelectedTaskIds(new Set(tasks.map((t) => t.id)));
+  }, [tasks]);
+
+  const handleClearTaskSelection = useCallback(() => {
+    setSelectedTaskIds(new Set());
+  }, []);
+
+  // Bulk Actions
+  const handleBulkComplete = useCallback(async () => {
+    if (selectedTaskIds.size === 0) return;
+    const ids = Array.from(selectedTaskIds);
+    setIsBulkSubmitting(true);
+    try {
+      if (isAuthenticated) {
+        await bulkTasks(ids, "complete", { completeSubtasks: true });
+      }
+      setTasks((prev) =>
+        prev.map((t) => (ids.includes(t.id) ? { ...t, completed: true } : t))
+      );
+      success(`Completed ${ids.length} ${ids.length === 1 ? "task" : "tasks"}`);
+      setSelectedTaskIds(new Set());
+    } catch (err) {
+      console.error("Bulk complete failed:", err);
+      toast({
+        title: "Action failed",
+        message: err instanceof Error ? err.message : "Failed to complete tasks",
+        type: "error",
+      });
+    } finally {
+      setIsBulkSubmitting(false);
+    }
+  }, [isAuthenticated, selectedTaskIds, success, toast]);
+
+  const handleBulkReopen = useCallback(async () => {
+    if (selectedTaskIds.size === 0) return;
+    const ids = Array.from(selectedTaskIds);
+    setIsBulkSubmitting(true);
+    try {
+      if (isAuthenticated) {
+        await bulkTasks(ids, "reopen");
+      }
+      setTasks((prev) =>
+        prev.map((t) => (ids.includes(t.id) ? { ...t, completed: false } : t))
+      );
+      success(`Reopened ${ids.length} ${ids.length === 1 ? "task" : "tasks"}`);
+      setSelectedTaskIds(new Set());
+    } catch (err) {
+      console.error("Bulk reopen failed:", err);
+      toast({
+        title: "Action failed",
+        message: err instanceof Error ? err.message : "Failed to reopen tasks",
+        type: "error",
+      });
+    } finally {
+      setIsBulkSubmitting(false);
+    }
+  }, [isAuthenticated, selectedTaskIds, success, toast]);
+
+  const handleBulkMove = useCallback(
+    async (targetListId: string) => {
+      if (selectedTaskIds.size === 0) return;
+      const ids = Array.from(selectedTaskIds);
+      const targetList = userLists.find((l) => l.id === targetListId);
+      setIsBulkSubmitting(true);
+      try {
+        if (isAuthenticated) {
+          await bulkTasks(ids, "move", { listId: targetListId });
+        }
+        setTasks((prev) =>
+          prev.map((t) => (ids.includes(t.id) ? { ...t, listId: targetListId } : t))
+        );
+        success(
+          `Moved ${ids.length} ${ids.length === 1 ? "task" : "tasks"} to ${targetList?.name || "list"}`
+        );
+        setSelectedTaskIds(new Set());
       } catch (err) {
-        if (!isMounted) return;
-        console.error("Failed to load tasks:", err);
+        console.error("Bulk move failed:", err);
         toast({
-          title: "Failed to load tasks",
-          message: err instanceof Error ? err.message : "Network error",
+          title: "Action failed",
+          message: err instanceof Error ? err.message : "Failed to move tasks",
           type: "error",
         });
       } finally {
-        if (isMounted) {
-          setIsLoadingTasks(false);
-        }
+        setIsBulkSubmitting(false);
       }
+    },
+    [isAuthenticated, selectedTaskIds, userLists, success, toast]
+  );
+
+  const handleBulkSetPriority = useCallback(
+    async (priority: number) => {
+      if (selectedTaskIds.size === 0) return;
+      const ids = Array.from(selectedTaskIds);
+      const priorityMap: Record<number, Priority> = {
+        4: "high",
+        3: "high",
+        2: "med",
+        1: "low",
+        0: "low",
+      };
+      const uiPriority = priorityMap[priority] || "med";
+      setIsBulkSubmitting(true);
+      try {
+        if (isAuthenticated) {
+          await bulkTasks(ids, "set_priority", { priority });
+        }
+        setTasks((prev) =>
+          prev.map((t) => (ids.includes(t.id) ? { ...t, priority: uiPriority } : t))
+        );
+        success(
+          `Updated priority for ${ids.length} ${ids.length === 1 ? "task" : "tasks"}`
+        );
+        setSelectedTaskIds(new Set());
+      } catch (err) {
+        console.error("Bulk priority update failed:", err);
+        toast({
+          title: "Action failed",
+          message: err instanceof Error ? err.message : "Failed to update priority",
+          type: "error",
+        });
+      } finally {
+        setIsBulkSubmitting(false);
+      }
+    },
+    [isAuthenticated, selectedTaskIds, success, toast]
+  );
+
+  const handleBulkArchive = useCallback(async () => {
+    if (selectedTaskIds.size === 0) return;
+    const ids = Array.from(selectedTaskIds);
+    setIsBulkSubmitting(true);
+    try {
+      if (isAuthenticated) {
+        await bulkTasks(ids, "archive");
+      }
+      setTasks((prev) => prev.filter((t) => !ids.includes(t.id)));
+      if (selectedTaskId && ids.includes(selectedTaskId)) {
+        setSelectedTaskId(null);
+      }
+      success(`Archived ${ids.length} ${ids.length === 1 ? "task" : "tasks"}`);
+      setSelectedTaskIds(new Set());
+    } catch (err) {
+      console.error("Bulk archive failed:", err);
+      toast({
+        title: "Action failed",
+        message: err instanceof Error ? err.message : "Failed to archive tasks",
+        type: "error",
+      });
+    } finally {
+      setIsBulkSubmitting(false);
     }
+  }, [isAuthenticated, selectedTaskId, selectedTaskIds, success, toast]);
 
-    void loadTasks();
+  const handleBulkDelete = useCallback(async () => {
+    if (selectedTaskIds.size === 0) return;
+    const ids = Array.from(selectedTaskIds);
+    const deletedTasks = tasks.filter((t) => ids.includes(t.id));
 
-    return () => {
-      isMounted = false;
-    };
-  }, [isAuthenticated, activeListId, toast]);
+    // Optimistic removal
+    setTasks((prev) => prev.filter((t) => !ids.includes(t.id)));
+    if (selectedTaskId && ids.includes(selectedTaskId)) {
+      setSelectedTaskId(null);
+    }
+    setSelectedTaskIds(new Set());
+
+    try {
+      if (isAuthenticated) {
+        await bulkTasks(ids, "delete");
+      }
+
+      toast({
+        title: "Deleted",
+        message: `Moved ${ids.length} ${ids.length === 1 ? "task" : "tasks"} to Trash`,
+        actionLabel: "Undo",
+        onAction: async () => {
+          try {
+            if (isAuthenticated) {
+              await Promise.all(ids.map((id) => restoreTrash("task", id)));
+            }
+            setTasks((prev) => [...deletedTasks, ...prev]);
+            success(`Restored ${ids.length} ${ids.length === 1 ? "task" : "tasks"}`);
+          } catch (err) {
+            console.error("Failed to restore tasks:", err);
+            toast({
+              title: "Restore failed",
+              message: "Could not restore tasks from trash",
+              type: "error",
+            });
+          }
+        },
+        durationMs: 6000,
+      });
+    } catch (err) {
+      console.error("Bulk delete failed:", err);
+      setTasks((prev) => [...deletedTasks, ...prev]);
+      toast({
+        title: "Delete failed",
+        message: err instanceof Error ? err.message : "Failed to delete tasks",
+        type: "error",
+      });
+    }
+  }, [isAuthenticated, selectedTaskId, selectedTaskIds, tasks, success, toast]);
+
+  // Trash & Template callback handlers
+  const handleItemRestored = useCallback(
+    (type: "task" | "list" | "folder" | "section") => {
+      success(`Restored ${type} from trash`);
+      if (type === "task") {
+        void loadTasks();
+      } else {
+        void loadContainers();
+      }
+    },
+    [loadTasks, loadContainers, success]
+  );
+
+  const handleTemplateInstantiated = useCallback(
+    (newTask: BackendTask) => {
+      const mapped = backendTaskToTaskItem(newTask);
+      setTasks((prev) => [mapped, ...prev]);
+      setSelectedTaskId(mapped.id);
+      success("Template instantiated into list!");
+    },
+    [success]
+  );
 
   const handleOpenShortcuts = useCallback(() => {
     setIsShortcutsOpen(true);
@@ -1244,6 +1496,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onCreateFolder={handleCreateFolder}
         onEditFolder={handleEditFolder}
         onDeleteFolder={handleDeleteFolder}
+        onOpenTrash={() => setIsTrashOpen(true)}
+        onOpenTemplates={() => setIsTemplatesOpen(true)}
         className="hidden md:flex"
       />
 
@@ -1255,6 +1509,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         activeListName={activeListName}
         activeFolder={activeFolder}
         selectedTaskId={selectedTaskId}
+        selectedTaskIds={selectedTaskIds}
+        onToggleSelectTask={handleToggleSelectTask}
         onSelectTask={(task) => setSelectedTaskId(task.id)}
         onToggleComplete={handleToggleComplete}
         onDeleteTask={handleDeleteTask}
@@ -1305,6 +1561,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onToggleSidebar={() => setIsSidebarCollapsed((prev) => !prev)}
         onOpenAuth={onOpenAuth}
         onOpenShortcuts={handleOpenShortcuts}
+        onOpenTrash={() => setIsTrashOpen(true)}
+        onOpenTemplates={() => setIsTemplatesOpen(true)}
       />
 
       {/* Global Keyboard Shortcuts Modal */}
@@ -1345,6 +1603,38 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         mode={folderDialogMode}
         folderToEdit={folderToEdit}
         onSuccess={handleFolderSuccess}
+      />
+
+      {/* Floating Tactile Bulk Action Toolbar */}
+      <BulkActionToolbar
+        selectedCount={selectedTaskIds.size}
+        totalCount={tasks.length}
+        lists={userLists}
+        onSelectAll={handleSelectAllTasks}
+        onClearSelection={handleClearTaskSelection}
+        onComplete={handleBulkComplete}
+        onReopen={handleBulkReopen}
+        onMoveToList={handleBulkMove}
+        onSetPriority={handleBulkSetPriority}
+        onArchive={handleBulkArchive}
+        onDelete={handleBulkDelete}
+        isSubmitting={isBulkSubmitting}
+      />
+
+      {/* Trash Modal */}
+      <TrashModal
+        isOpen={isTrashOpen}
+        onClose={() => setIsTrashOpen(false)}
+        onItemRestored={handleItemRestored}
+      />
+
+      {/* Templates Modal */}
+      <TemplatesModal
+        isOpen={isTemplatesOpen}
+        onClose={() => setIsTemplatesOpen(false)}
+        lists={userLists}
+        defaultListId={activeListId}
+        onTemplateInstantiated={handleTemplateInstantiated}
       />
     </div>
   );
