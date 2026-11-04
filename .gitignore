@@ -31,3 +31,7 @@ coverage/
 # System files
 .DS_Store
 Thumbs.db
+
+# Database files
+*.db*
+
