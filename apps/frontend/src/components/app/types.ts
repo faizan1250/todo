@@ -6,14 +6,21 @@ export type FolderId = "engineering" | "design" | "personal" | (string & {});
 
 export type Priority = "high" | "med" | "low";
 
-export interface Subtask {
+export interface HierarchicalSubtask {
   id: string;
+  parentId?: string | null;
   title: string;
   completed: boolean;
+  priority?: Priority;
+  depth: number;
+  subtasks?: HierarchicalSubtask[];
 }
+
+export type Subtask = HierarchicalSubtask;
 
 export interface ChecklistItemUi {
   id: string;
+  taskId?: string;
   text: string;
   done: boolean;
   position?: string;
@@ -30,10 +37,11 @@ export interface TaskItem {
   list: ListId;
   folder: FolderId;
   tags: string[];
+  tagIds?: string[];
   dueDate?: string;
   dueAt?: string | number | null;
-  subtasks: Subtask[];
-  checklist?: ChecklistItemUi[];
+  subtasks: HierarchicalSubtask[];
+  checklist: ChecklistItemUi[];
   createdAt: string;
   updatedAt: string;
   listId?: string;

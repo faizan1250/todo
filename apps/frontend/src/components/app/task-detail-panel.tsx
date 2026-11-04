@@ -58,6 +58,8 @@ export function TaskDetailPanel({
       id: `st-${Date.now()}`,
       title: trimmed,
       completed: false,
+      depth: 2,
+      subtasks: [],
     };
     onUpdateTask({
       ...task,
