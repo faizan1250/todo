@@ -19,6 +19,7 @@ import { placeRoutes } from "./routes/places";
 import { geofenceRoutes } from "./routes/geofences";
 import { viewRoutes } from "./routes/views";
 import { filterRoutes } from "./routes/filters";
+import { searchRoutes } from "./routes/search";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
 
@@ -75,6 +76,7 @@ export const app = new Elysia()
   .use(geofenceRoutes)
   .use(viewRoutes)
   .use(filterRoutes)
+  .use(searchRoutes)
   .get(
     "/health",
     () => ({
