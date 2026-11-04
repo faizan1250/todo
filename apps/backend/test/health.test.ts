@@ -45,6 +45,25 @@ describe("GET /health", () => {
     );
   });
 
+  it("handles preflight OPTIONS request for auth endpoints from frontend origin", async () => {
+    const res = await app.handle(
+      new Request("http://localhost:3001/api/auth/sign-up/email", {
+        method: "OPTIONS",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "Content-Type",
+        },
+      })
+    );
+
+    expect([200, 204]).toContain(res.status);
+    expect(res.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:3000"
+    );
+    expect(res.headers.get("access-control-allow-credentials")).toBe("true");
+  });
+
   it("returns 404 for non-existent route", async () => {
     const res = await app.handle(new Request("http://localhost:3001/non-existent"));
     expect(res.status).toBe(404);
