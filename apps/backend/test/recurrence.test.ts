@@ -40,7 +40,7 @@ describe("Phase 3 Recurrence Engine & Routes", () => {
             dtstart: marchStart,
             referenceDueAt: currentDue,
             allDay: false,
-            now: currentDue, // pretend now is currentDue
+            now: currentDue ?? undefined, // pretend now is currentDue
           });
           expect(next).not.toBeNull();
           const localDt = DateTime.fromJSDate(next!).setZone(tz);
@@ -64,7 +64,7 @@ describe("Phase 3 Recurrence Engine & Routes", () => {
             dtstart: octStart,
             referenceDueAt: currentDue,
             allDay: false,
-            now: currentDue,
+            now: currentDue ?? undefined,
           });
           expect(next).not.toBeNull();
           const localDt = DateTime.fromJSDate(next!).setZone(tz);
