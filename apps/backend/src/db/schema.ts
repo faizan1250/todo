@@ -37,6 +37,7 @@ export type Preferences = {
   defaultListId?: string;
   quietHours?: { start: string; end: string };
   dailyDigestTime?: string; // "08:00" in user's timezone
+  defaultReminderTime?: string; // "09:00" in user's timezone
 };
 
 export const users = sqliteTable("user", {
@@ -180,7 +181,7 @@ export const sections = sqliteTable(
 );
 
 /* =====================================================
-   PHASE 3: SCHEDULING (recurrences defined before tasks)
+   PHASE 3: SCHEDULING (recurrences and places defined before tasks)
    ===================================================== */
 export const recurrences = sqliteTable(
   "recurrences",
@@ -197,6 +198,19 @@ export const recurrences = sqliteTable(
     active: bool("active").notNull().default(true),
   },
   (t) => [index("recurrence_user_idx").on(t.userId)]
+);
+
+export const places = sqliteTable(
+  "places",
+  {
+    ...base(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    lat: real("lat").notNull(),
+    lng: real("lng").notNull(),
+    radiusM: integer("radius_m").notNull().default(200),
+  },
+  (t) => [index("place_user_idx").on(t.userId)]
 );
 
 export const tasks = sqliteTable(
@@ -225,6 +239,7 @@ export const tasks = sqliteTable(
     recurrenceId: text("recurrence_id").references(() => recurrences.id, { onDelete: "set null" }),
 
     // location reminders (geofencing runs client-side)
+    placeId: text("place_id").references(() => places.id, { onDelete: "set null" }),
     locationName: text("location_name"),
     lat: real("lat"),
     lng: real("lng"),
@@ -241,6 +256,7 @@ export const tasks = sqliteTable(
     index("task_section_pos_idx").on(t.sectionId, t.position),
     index("task_parent_idx").on(t.parentId, t.position),
     index("task_recurrence_idx").on(t.recurrenceId),
+    index("task_place_idx").on(t.placeId),
   ]
 );
 
@@ -319,4 +335,19 @@ export const reminders = sqliteTable(
     index("reminder_due_idx").on(t.firedAt, t.remindAt), // scheduler scan
     index("reminder_task_idx").on(t.taskId),
   ]
+);
+
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    ...base(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    taskId: text("task_id").references(() => tasks.id, { onDelete: "set null" }),
+    type: text("type").notNull().default("location_trigger"),
+    title: text("title").notNull(),
+    body: text("body"),
+    read: bool("read").notNull().default(false),
+    triggeredAt: ts("triggered_at").notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [index("notification_user_idx").on(t.userId)]
 );
