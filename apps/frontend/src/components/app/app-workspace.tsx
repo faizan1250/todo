@@ -21,6 +21,7 @@ import {
   getFolders,
   getTasks,
   createTask,
+  quickAddTask,
   updateTask,
   deleteTask,
   completeTask,
@@ -1344,6 +1345,44 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     [activeListId, userLists, isAuthenticated, success, toast]
   );
 
+  const handleQuickAddTask = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      if (!isAuthenticated) {
+        handleAddTask({
+          title: trimmed,
+          priority: "med",
+          folder: activeFolder || "none",
+          list: activeList === "completed" ? "today" : activeList,
+        });
+        return;
+      }
+
+      try {
+        const created = await quickAddTask({
+          text: trimmed,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          listId: activeListId || undefined,
+        });
+        const taskItem = backendTaskToTaskItem(created);
+        setTasks((prev) => [taskItem, ...prev]);
+        setSelectedTaskId(taskItem.id);
+        success(`Created "${taskItem.title}"`);
+      } catch (err) {
+        console.error("Quick add failed, falling back to standard create:", err);
+        handleAddTask({
+          title: trimmed,
+          priority: "med",
+          folder: activeFolder || "none",
+          list: activeList === "completed" ? "today" : activeList,
+        });
+      }
+    },
+    [isAuthenticated, activeFolder, activeList, activeListId, handleAddTask, success]
+  );
+
   const handleUpdateTask = useCallback(
     (updated: TaskItem) => {
       const prevTask = tasks.find((t) => t.id === updated.id);
@@ -1662,6 +1701,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onToggleComplete={handleToggleComplete}
         onDeleteTask={handleDeleteTask}
         onAddTask={handleAddTask}
+        onQuickAddTask={handleQuickAddTask}
         isLoading={isLoadingTasks}
       />
 

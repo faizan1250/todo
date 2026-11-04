@@ -29,11 +29,47 @@ export function formatEstimate(min?: number | null): string {
 }
 
 /**
+ * Format due date into a human-friendly string ("Today", "Tomorrow", "Yesterday", or "Oct 24")
+ */
+export function formatDueDate(dueAt?: string | number | Date | null): string | undefined {
+  if (!dueAt) return undefined;
+
+  const date =
+    dueAt instanceof Date
+      ? dueAt
+      : typeof dueAt === "number" || typeof dueAt === "string"
+      ? new Date(dueAt)
+      : null;
+  if (!date || isNaN(date.getTime())) return undefined;
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const targetDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  const diffMs = targetDay.getTime() - today.getTime();
+  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Tomorrow";
+  if (diffDays === -1) return "Yesterday";
+  if (diffDays > 1 && diffDays <= 7) {
+    return date.toLocaleDateString("en-US", { weekday: "short" });
+  }
+
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/**
  * Format a date/time stamp nicely. If allDay is true, returns date only.
  */
-export function formatDateWithTime(date?: string | number | null, allDay?: boolean): string {
+export function formatDateWithTime(date?: string | number | Date | null, allDay?: boolean): string {
   if (!date) return "";
-  const d = typeof date === "number" || typeof date === "string" ? new Date(date) : null;
+  const d =
+    date instanceof Date
+      ? date
+      : typeof date === "number" || typeof date === "string"
+      ? new Date(date)
+      : null;
   if (!d || isNaN(d.getTime())) return "";
 
   const datePart = formatDueDate(date) || d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -42,6 +78,39 @@ export function formatDateWithTime(date?: string | number | null, allDay?: boole
   }
   const timePart = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   return `${datePart} at ${timePart}`;
+}
+
+/**
+ * Format creation or update timestamp
+ */
+export function formatTimestamp(ts?: string | number | null): string {
+  if (!ts) return "Just now";
+
+  const date = typeof ts === "number" || typeof ts === "string" ? new Date(ts) : null;
+  if (!date || isNaN(date.getTime())) return "Just now";
+
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHours = Math.floor(diffMin / 60);
+
+  if (diffSec < 60) return "Just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHours < 24 && date.getDate() === now.getDate()) {
+    return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  }
+
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (
+    date.getFullYear() === yesterday.getFullYear() &&
+    date.getMonth() === yesterday.getMonth() &&
+    date.getDate() === yesterday.getDate()
+  ) {
+    return "Yesterday";
+  }
+
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /**
@@ -94,65 +163,6 @@ export function priorityUiToBackend(priority: Priority): number {
     default:
       return 1;
   }
-}
-
-/**
- * Format due date into a human-friendly string ("Today", "Tomorrow", "Yesterday", or "Oct 24")
- */
-export function formatDueDate(dueAt?: string | number | null): string | undefined {
-  if (!dueAt) return undefined;
-
-  const date = typeof dueAt === "number" || typeof dueAt === "string" ? new Date(dueAt) : null;
-  if (!date || isNaN(date.getTime())) return undefined;
-
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const targetDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  const diffMs = targetDay.getTime() - today.getTime();
-  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Tomorrow";
-  if (diffDays === -1) return "Yesterday";
-  if (diffDays > 1 && diffDays <= 7) {
-    return date.toLocaleDateString("en-US", { weekday: "short" });
-  }
-
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-/**
- * Format creation or update timestamp
- */
-export function formatTimestamp(ts?: string | number | null): string {
-  if (!ts) return "Just now";
-
-  const date = typeof ts === "number" || typeof ts === "string" ? new Date(ts) : null;
-  if (!date || isNaN(date.getTime())) return "Just now";
-
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  const diffMin = Math.floor(diffSec / 60);
-  const diffHours = Math.floor(diffMin / 60);
-
-  if (diffSec < 60) return "Just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHours < 24 && date.getDate() === now.getDate()) {
-    return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  }
-
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-  if (
-    date.getFullYear() === yesterday.getFullYear() &&
-    date.getMonth() === yesterday.getMonth() &&
-    date.getDate() === yesterday.getDate()
-  ) {
-    return "Yesterday";
-  }
-
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /**
