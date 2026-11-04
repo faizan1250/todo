@@ -15,6 +15,13 @@
       "when": 1793791557241,
       "tag": "0001_phase2_schema_tweaks",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1793821588175,
+      "tag": "0002_quick_kat_farrell",
+      "breakpoints": true
     }
   ]
 }

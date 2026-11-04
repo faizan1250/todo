@@ -5,7 +5,11 @@ import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
 import { positionBetween, generateNKeysBetween } from "../utils/position";
 import { decodeCursor, paginateResults } from "../utils/cursor";
-import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks } from "../utils/tasks";
+import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks, getTasksWithIncludes } from "../utils/tasks";
+import { toUtcMidnight, validateStartDue, validateEstimateMin, validateLocationCoords } from "../utils/dates";
+import { recomputeTaskReminders, firePendingTaskReminders, calculateRelativeRemindAt } from "../services/reminders";
+import { spawnNextRecurrenceInstance } from "../services/recurrence";
+import { parseNaturalLanguage, type ParsedTaskResult } from "../utils/parser";
 
 /**
  * Normalizes notes string:
@@ -34,122 +38,9 @@ function parseDate(val: any): Date | null | undefined {
 }
 
 /**
- * Batch loads subtasks, checklist items, and tags in at most 3 queries total.
- * Stitches results in-memory with zero N+1 queries.
+ * Batch loads subtasks, checklist items, tags, and computes estimateTotal rollup (root estimate + all descendant estimates)
  */
-export async function attachTaskIncludes<T extends { id: string; userId: string }>(
-  taskList: T[],
-  includeParam?: string | string[] | null,
-  userId?: string
-): Promise<Array<T & { subtasks?: any[]; checklist?: any[]; tags?: any[] }>> {
-  if (taskList.length === 0 || !includeParam) {
-    return taskList;
-  }
-
-  const includeParts = (
-    Array.isArray(includeParam)
-      ? includeParam.join(",")
-      : includeParam
-  )
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-
-  const shouldIncludeSubtasks = includeParts.includes("subtasks");
-  const shouldIncludeChecklist = includeParts.includes("checklist");
-  const shouldIncludeTags = includeParts.includes("tags");
-
-  if (!shouldIncludeSubtasks && !shouldIncludeChecklist && !shouldIncludeTags) {
-    return taskList;
-  }
-
-  const taskIds = taskList.map((t) => t.id);
-  const effectiveUserId = userId ?? taskList[0].userId;
-
-  const [subtasksRows, checklistRows, tagRows] = await Promise.all([
-    shouldIncludeSubtasks
-      ? db
-          .select()
-          .from(schema.tasks)
-          .where(
-            and(
-              inArray(schema.tasks.parentId, taskIds),
-              eq(schema.tasks.userId, effectiveUserId),
-              isNull(schema.tasks.deletedAt)
-            )
-          )
-          .orderBy(asc(schema.tasks.position), asc(schema.tasks.id))
-      : Promise.resolve([]),
-
-    shouldIncludeChecklist
-      ? db
-          .select()
-          .from(schema.checklistItems)
-          .where(
-            and(
-              inArray(schema.checklistItems.taskId, taskIds),
-              eq(schema.checklistItems.userId, effectiveUserId),
-              isNull(schema.checklistItems.deletedAt)
-            )
-          )
-          .orderBy(asc(schema.checklistItems.position))
-      : Promise.resolve([]),
-
-    shouldIncludeTags
-      ? db
-          .select({
-            taskId: schema.taskTags.taskId,
-            tag: schema.tags,
-          })
-          .from(schema.taskTags)
-          .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
-          .where(
-            and(
-              inArray(schema.taskTags.taskId, taskIds),
-              eq(schema.tags.userId, effectiveUserId),
-              isNull(schema.tags.deletedAt)
-            )
-          )
-          .orderBy(asc(schema.tags.name))
-      : Promise.resolve([]),
-  ]);
-
-  // Group subtasks by parent task ID
-  const subtasksByParent = new Map<string, any[]>();
-  for (const st of subtasksRows) {
-    if (st.parentId) {
-      if (!subtasksByParent.has(st.parentId)) {
-        subtasksByParent.set(st.parentId, []);
-      }
-      subtasksByParent.get(st.parentId)!.push(st);
-    }
-  }
-
-  // Group checklist items by task ID
-  const checklistByTask = new Map<string, any[]>();
-  for (const item of checklistRows) {
-    if (!checklistByTask.has(item.taskId)) {
-      checklistByTask.set(item.taskId, []);
-    }
-    checklistByTask.get(item.taskId)!.push(item);
-  }
-
-  // Group tags by task ID
-  const tagsByTask = new Map<string, any[]>();
-  for (const row of tagRows) {
-    if (!tagsByTask.has(row.taskId)) {
-      tagsByTask.set(row.taskId, []);
-    }
-    tagsByTask.get(row.taskId)!.push(row.tag);
-  }
-
-  return taskList.map((task) => ({
-    ...task,
-    ...(shouldIncludeSubtasks ? { subtasks: subtasksByParent.get(task.id) ?? [] } : {}),
-    ...(shouldIncludeChecklist ? { checklist: checklistByTask.get(task.id) ?? [] } : {}),
-    ...(shouldIncludeTags ? { tags: tagsByTask.get(task.id) ?? [] } : {}),
-  }));
-}
+export const attachTaskIncludes = getTasksWithIncludes;
 
 export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
   .use(authMacro)
@@ -349,7 +240,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         }
       }
 
-      // Verify tagIds if provided
+      // Validate tagIds if provided
       if (body.tagIds && body.tagIds.length > 0) {
         const userTags = await db
           .select({ id: schema.tags.id })
@@ -363,6 +254,52 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           );
         if (userTags.length !== body.tagIds.length) {
           return status(400, { error: "One or more tag IDs are invalid" });
+        }
+      }
+
+      // Dates and floating all-day rule
+      const finalAllDay = body.allDay ?? false;
+      let finalStartAt = parseDate(body.startAt) ?? null;
+      let finalDueAt = parseDate(body.dueAt) ?? null;
+      let finalDeadlineAt = parseDate(body.deadlineAt) ?? null;
+
+      if (finalAllDay) {
+        if (finalDueAt) finalDueAt = toUtcMidnight(finalDueAt);
+        if (finalStartAt) finalStartAt = toUtcMidnight(finalStartAt);
+        if (finalDeadlineAt) finalDeadlineAt = toUtcMidnight(finalDeadlineAt);
+      }
+
+      const dateValidation = validateStartDue(finalStartAt, finalDueAt);
+      if (!dateValidation.valid) {
+        return status(400, { error: dateValidation.error });
+      }
+
+      if (body.estimateMin !== undefined && body.estimateMin !== null) {
+        const estValidation = validateEstimateMin(body.estimateMin);
+        if (!estValidation.valid) {
+          return status(400, { error: estValidation.error });
+        }
+      }
+
+      const locValidation = validateLocationCoords(body.lat, body.lng, body.radiusM);
+      if (!locValidation.valid) {
+        return status(400, { error: locValidation.error });
+      }
+
+      let finalPlaceId = body.placeId ?? null;
+      if (finalPlaceId) {
+        const [place] = await db
+          .select()
+          .from(schema.places)
+          .where(
+            and(
+              eq(schema.places.id, finalPlaceId),
+              eq(schema.places.userId, user.id),
+              isNull(schema.places.deletedAt)
+            )
+          );
+        if (!place) {
+          return status(404, { error: "Place not found" });
         }
       }
 
@@ -409,11 +346,17 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
             priority: body.priority ?? 0,
             status: body.status ?? "todo",
             position,
-            startAt: parseDate(body.startAt) ?? null,
-            dueAt: parseDate(body.dueAt) ?? null,
-            deadlineAt: parseDate(body.deadlineAt) ?? null,
-            allDay: body.allDay ?? false,
+            startAt: finalStartAt,
+            dueAt: finalDueAt,
+            deadlineAt: finalDeadlineAt,
+            allDay: finalAllDay,
             estimateMin: body.estimateMin ?? null,
+            placeId: finalPlaceId,
+            locationName: body.locationName ?? null,
+            lat: body.lat ?? null,
+            lng: body.lng ?? null,
+            radiusM: body.radiusM ?? (body.lat ? 200 : null),
+            locationTrigger: body.locationTrigger ?? null,
             completedAt: body.status === "done" ? new Date() : null,
           })
           .returning();
@@ -459,6 +402,14 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         deadlineAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
         allDay: t.Optional(t.Boolean()),
         estimateMin: t.Optional(t.Union([t.Integer(), t.Null()])),
+        placeId: t.Optional(t.Union([t.String(), t.Null()])),
+        locationName: t.Optional(t.Union([t.String(), t.Null()])),
+        lat: t.Optional(t.Union([t.Number(), t.Null()])),
+        lng: t.Optional(t.Union([t.Number(), t.Null()])),
+        radiusM: t.Optional(t.Union([t.Integer(), t.Null()])),
+        locationTrigger: t.Optional(
+          t.Union([t.Literal("arrive"), t.Literal("leave"), t.Null()])
+        ),
         tagIds: t.Optional(t.Array(t.String())),
       }),
     }
@@ -791,6 +742,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
               );
 
             for (const task of completedTasks) {
+              await firePendingTaskReminders(task.id, user.id, tx);
               await runCompleteHooks(task);
             }
 
@@ -899,6 +851,250 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           t.Literal("set_priority"),
         ]),
         payload: t.Optional(t.Any()),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/parse - parse task text into structured components
+  .post(
+    "/parse",
+    async ({ user, body, status }) => {
+      const userLists = await db
+        .select({ id: schema.lists.id, name: schema.lists.name, isInbox: schema.lists.isInbox })
+        .from(schema.lists)
+        .where(
+          and(
+            eq(schema.lists.userId, user.id),
+            isNull(schema.lists.deletedAt)
+          )
+        );
+
+      const [userInfo] = await db
+        .select({ timezone: schema.users.timezone })
+        .from(schema.users)
+        .where(eq(schema.users.id, user.id));
+
+      const timezone = body.timezone || userInfo?.timezone || "UTC";
+
+      try {
+        const parsed = parseNaturalLanguage(body.text, userLists, timezone);
+        return parsed;
+      } catch (err: any) {
+        if (err.message === "EMPTY_TITLE") {
+          return status(422, {
+            error: "EMPTY_TITLE",
+            message: "Title cannot be empty after parsing",
+          });
+        }
+        return status(400, { error: err.message });
+      }
+    },
+    {
+      auth: true,
+      body: t.Object({
+        text: t.String(),
+        timezone: t.Optional(t.String()),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/quick - parse and create task with tags, reminders, recurrence in ONE atomic transaction
+  .post(
+    "/quick",
+    async ({ user, body, status }) => {
+      const userLists = await db
+        .select({ id: schema.lists.id, name: schema.lists.name, isInbox: schema.lists.isInbox })
+        .from(schema.lists)
+        .where(
+          and(
+            eq(schema.lists.userId, user.id),
+            isNull(schema.lists.deletedAt)
+          )
+        );
+
+      const [userInfo] = await db
+        .select({ timezone: schema.users.timezone, preferences: schema.users.preferences })
+        .from(schema.users)
+        .where(eq(schema.users.id, user.id));
+
+      const timezone = body.timezone || userInfo?.timezone || "UTC";
+      const defaultReminderTime = userInfo?.preferences?.defaultReminderTime || "09:00";
+
+      let parsed: ParsedTaskResult;
+      try {
+        parsed = parseNaturalLanguage(body.text, userLists, timezone);
+      } catch (err: any) {
+        if (err.message === "EMPTY_TITLE") {
+          return status(422, {
+            error: "EMPTY_TITLE",
+            message: "Title cannot be empty after parsing",
+          });
+        }
+        return status(400, { error: err.message });
+      }
+
+      // Determine listId
+      let finalListId = parsed.list?.id;
+      if (!finalListId && body.listId) {
+        finalListId = body.listId;
+      }
+      if (!finalListId) {
+        const inbox = userLists.find((l) => l.isInbox) || userLists[0];
+        if (!inbox) {
+          return status(400, { error: "No available list found for task" });
+        }
+        finalListId = inbox.id;
+      }
+
+      // Execute in ONE atomic transaction
+      const now = new Date();
+      const createdTask = await db.transaction(async (tx) => {
+        // Calculate position in list
+        const position = await positionBetween(
+          {
+            table: schema.tasks,
+            where: and(
+              eq(schema.tasks.userId, user.id),
+              eq(schema.tasks.listId, finalListId),
+              isNull(schema.tasks.parentId),
+              isNull(schema.tasks.deletedAt)
+            ),
+          },
+          null,
+          null
+        );
+
+        const newTaskId = Bun.randomUUIDv7();
+
+        // Recurrence
+        let recId: string | null = null;
+        if (parsed.recurrence) {
+          recId = Bun.randomUUIDv7();
+          await tx.insert(schema.recurrences).values({
+            id: recId,
+            userId: user.id,
+            rrule: parsed.recurrence.rrule,
+            mode: parsed.recurrence.mode,
+            timezone,
+            dtstart: parsed.dueAt || now,
+            completedCount: 0,
+            active: true,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
+        // Insert task
+        const [newTask] = await tx
+          .insert(schema.tasks)
+          .values({
+            id: newTaskId,
+            userId: user.id,
+            listId: finalListId,
+            sectionId: null,
+            parentId: null,
+            title: parsed.title,
+            priority: parsed.priority,
+            status: "todo",
+            position,
+            startAt: null,
+            dueAt: parsed.dueAt,
+            deadlineAt: null,
+            allDay: parsed.allDay,
+            estimateMin: parsed.estimateMin,
+            recurrenceId: recId,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+
+        // Tags: automatically find or create
+        if (parsed.tags.length > 0) {
+          for (const tagName of parsed.tags) {
+            const [existingTag] = await tx
+              .select({ id: schema.tags.id })
+              .from(schema.tags)
+              .where(
+                and(
+                  eq(schema.tags.userId, user.id),
+                  sql`lower(${schema.tags.name}) = lower(${tagName})`,
+                  isNull(schema.tags.deletedAt)
+                )
+              );
+
+            let tagId = existingTag?.id;
+            if (!tagId) {
+              const [createdTag] = await tx
+                .insert(schema.tags)
+                .values({
+                  userId: user.id,
+                  name: tagName,
+                  version: 1,
+                  createdAt: now,
+                  updatedAt: now,
+                })
+                .returning();
+              tagId = createdTag.id;
+            }
+
+            await tx
+              .insert(schema.taskTags)
+              .values({
+                taskId: newTaskId,
+                tagId,
+              })
+              .onConflictDoNothing();
+          }
+        }
+
+        // Reminders
+        if (parsed.reminders.length > 0) {
+          for (const rem of parsed.reminders) {
+            let remindAt: Date;
+            let firedAt: Date | null = null;
+
+            if (rem.kind === "absolute") {
+              remindAt = rem.remindAt || new Date(now.getTime() + 60 * 60 * 1000);
+            } else {
+              const relRes = calculateRelativeRemindAt({
+                anchorDate: parsed.dueAt,
+                offsetMin: rem.offsetMin ?? 0,
+                allDay: parsed.allDay,
+                userTimezone: timezone,
+                defaultReminderTime,
+                now,
+              });
+              remindAt = relRes.remindAt;
+              firedAt = relRes.firedAt;
+            }
+
+            await tx.insert(schema.reminders).values({
+              userId: user.id,
+              taskId: newTaskId,
+              kind: rem.kind,
+              relativeTo: rem.relativeTo ?? "due",
+              offsetMin: rem.offsetMin ?? 0,
+              remindAt,
+              firedAt,
+              version: 1,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+
+        return newTask;
+      });
+
+      const [withIncludes] = await attachTaskIncludes([createdTask], ["tags", "subtasks", "checklist"], user.id);
+      return status(201, withIncludes);
+    },
+    {
+      auth: true,
+      body: t.Object({
+        text: t.String(),
+        listId: t.Optional(t.String()),
+        timezone: t.Optional(t.String()),
       }),
     }
   )
@@ -1058,6 +1254,76 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         nextArchivedAt = parseDate(body.archivedAt) ?? null;
       }
 
+      // Handle dates and floating all-day rule
+      const nextAllDay = body.allDay !== undefined ? body.allDay : Boolean(existing.allDay);
+      let nextStartAt = body.startAt !== undefined ? (parseDate(body.startAt) ?? null) : existing.startAt;
+      let nextDueAt = body.dueAt !== undefined ? (parseDate(body.dueAt) ?? null) : existing.dueAt;
+      let nextDeadlineAt = body.deadlineAt !== undefined ? (parseDate(body.deadlineAt) ?? null) : existing.deadlineAt;
+
+      if (nextAllDay) {
+        if (body.dueAt !== undefined && body.dueAt !== null) {
+          nextDueAt = toUtcMidnight(body.dueAt);
+        } else if (nextDueAt && body.allDay === true && !existing.allDay) {
+          nextDueAt = toUtcMidnight(nextDueAt);
+        }
+        if (body.startAt !== undefined && body.startAt !== null) {
+          nextStartAt = toUtcMidnight(body.startAt);
+        } else if (nextStartAt && body.allDay === true && !existing.allDay) {
+          nextStartAt = toUtcMidnight(nextStartAt);
+        }
+        if (body.deadlineAt !== undefined && body.deadlineAt !== null) {
+          nextDeadlineAt = toUtcMidnight(body.deadlineAt);
+        } else if (nextDeadlineAt && body.allDay === true && !existing.allDay) {
+          nextDeadlineAt = toUtcMidnight(nextDeadlineAt);
+        }
+      }
+
+      const dateValidation = validateStartDue(nextStartAt, nextDueAt);
+      if (!dateValidation.valid) {
+        return status(400, { error: dateValidation.error });
+      }
+
+      const nextEstimateMin = body.estimateMin !== undefined ? body.estimateMin : existing.estimateMin;
+      if (nextEstimateMin !== undefined && nextEstimateMin !== null) {
+        const estValidation = validateEstimateMin(nextEstimateMin);
+        if (!estValidation.valid) {
+          return status(400, { error: estValidation.error });
+        }
+      }
+
+      const nextLat = body.lat !== undefined ? body.lat : existing.lat;
+      const nextLng = body.lng !== undefined ? body.lng : existing.lng;
+      const nextRadiusM = body.radiusM !== undefined ? body.radiusM : existing.radiusM;
+      const locValidation = validateLocationCoords(nextLat, nextLng, nextRadiusM);
+      if (!locValidation.valid) {
+        return status(400, { error: locValidation.error });
+      }
+
+      let nextPlaceId = existing.placeId;
+      if (body.placeId !== undefined) {
+        if (body.placeId === null || body.placeId === "") {
+          nextPlaceId = null;
+        } else {
+          const [place] = await db
+            .select()
+            .from(schema.places)
+            .where(
+              and(
+                eq(schema.places.id, body.placeId),
+                eq(schema.places.userId, user.id),
+                isNull(schema.places.deletedAt)
+              )
+            );
+          if (!place) {
+            return status(404, { error: "Place not found" });
+          }
+          nextPlaceId = body.placeId;
+        }
+      }
+
+      const nextLocationName = body.locationName !== undefined ? body.locationName : existing.locationName;
+      const nextLocationTrigger = body.locationTrigger !== undefined ? body.locationTrigger : existing.locationTrigger;
+
       // Perform update in transaction
       const updated = await db.transaction(async (tx) => {
         // If listId changed, cascade listId to all descendants
@@ -1080,6 +1346,12 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           }
         }
 
+        const datesChanged =
+          (body.dueAt !== undefined && nextDueAt?.getTime() !== existing.dueAt?.getTime()) ||
+          (body.startAt !== undefined && nextStartAt?.getTime() !== existing.startAt?.getTime()) ||
+          (body.deadlineAt !== undefined && nextDeadlineAt?.getTime() !== existing.deadlineAt?.getTime()) ||
+          (body.allDay !== undefined && nextAllDay !== existing.allDay);
+
         const [res] = await tx
           .update(schema.tasks)
           .set({
@@ -1091,11 +1363,17 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
             priority: body.priority !== undefined ? body.priority : existing.priority,
             status: nextStatus,
             position: body.position !== undefined ? body.position : existing.position,
-            startAt: body.startAt !== undefined ? (parseDate(body.startAt) ?? null) : existing.startAt,
-            dueAt: body.dueAt !== undefined ? (parseDate(body.dueAt) ?? null) : existing.dueAt,
-            deadlineAt: body.deadlineAt !== undefined ? (parseDate(body.deadlineAt) ?? null) : existing.deadlineAt,
-            allDay: body.allDay !== undefined ? body.allDay : existing.allDay,
-            estimateMin: body.estimateMin !== undefined ? body.estimateMin : existing.estimateMin,
+            startAt: nextStartAt,
+            dueAt: nextDueAt,
+            deadlineAt: nextDeadlineAt,
+            allDay: nextAllDay,
+            estimateMin: nextEstimateMin,
+            placeId: nextPlaceId,
+            locationName: nextLocationName,
+            lat: nextLat,
+            lng: nextLng,
+            radiusM: nextRadiusM,
+            locationTrigger: nextLocationTrigger,
             completedAt: nextCompletedAt,
             archivedAt: nextArchivedAt,
             version: sql`${schema.tasks.version} + 1`,
@@ -1109,10 +1387,15 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           )
           .returning();
 
+        if (datesChanged) {
+          await recomputeTaskReminders(id, user.id, { task: res, tx });
+        }
+
         return res;
       });
 
-      return updated;
+      const [withIncludes] = await attachTaskIncludes([updated], null, user.id);
+      return withIncludes;
     },
     {
       auth: true,
@@ -1140,6 +1423,14 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         deadlineAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
         allDay: t.Optional(t.Boolean()),
         estimateMin: t.Optional(t.Union([t.Integer(), t.Null()])),
+        placeId: t.Optional(t.Union([t.String(), t.Null()])),
+        locationName: t.Optional(t.Union([t.String(), t.Null()])),
+        lat: t.Optional(t.Union([t.Number(), t.Null()])),
+        lng: t.Optional(t.Union([t.Number(), t.Null()])),
+        radiusM: t.Optional(t.Union([t.Integer(), t.Null()])),
+        locationTrigger: t.Optional(
+          t.Union([t.Literal("arrive"), t.Literal("leave"), t.Null()])
+        ),
         completedAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
         archivedAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
       }),
@@ -1178,6 +1469,23 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         WHERE id IN (SELECT id FROM sub);`,
         [id, user.id, nowMs]
       );
+
+      // Deleting open recurring task deactivates series
+      if (existing.recurrenceId) {
+        await db
+          .update(schema.recurrences)
+          .set({
+            active: false,
+            version: sql`${schema.recurrences.version} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(schema.recurrences.id, existing.recurrenceId),
+              eq(schema.recurrences.userId, user.id)
+            )
+          );
+      }
 
       return { success: true };
     },
@@ -1504,17 +1812,48 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           .where(
             and(
               eq(schema.tasks.id, id),
-              eq(schema.tasks.userId, user.id)
+              eq(schema.tasks.userId, user.id),
+              ne(schema.tasks.status, "done")
             )
           )
           .returning();
 
-        return updated;
+        if (!updated) {
+          // Double-tap safe: already completed, return current state without spawning
+          const [alreadyDone] = await tx
+            .select()
+            .from(schema.tasks)
+            .where(
+              and(
+                eq(schema.tasks.id, id),
+                eq(schema.tasks.userId, user.id)
+              )
+            );
+          return { task: alreadyDone, nextTask: null, alreadyDone: true };
+        }
+
+        await firePendingTaskReminders(id, user.id, tx);
+
+        // Spawn next recurrence instance if recurring
+        const nextTask = await spawnNextRecurrenceInstance({
+          taskId: id,
+          userId: user.id,
+          isSkip: false,
+          tx,
+          now: completedAt,
+        });
+
+        return { task: updated, nextTask, alreadyDone: false };
       });
 
-      await runCompleteHooks(updatedTask);
+      if (!updatedTask.alreadyDone) {
+        await runCompleteHooks(updatedTask.task);
+      }
 
-      return updatedTask;
+      return {
+        ...updatedTask.task,
+        nextTask: updatedTask.nextTask,
+      };
     },
     {
       auth: true,
@@ -1526,6 +1865,83 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           completeSubtasks: t.Optional(t.Boolean()),
         })
       ),
+    }
+  )
+  // POST /api/v1/tasks/:id/skip - cancel current task instance and spawn next recurrence instance without incrementing completedCount
+  .post(
+    "/:id/skip",
+    async ({ user, params: { id }, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      if (existing.status === "cancelled" || existing.status === "done") {
+        return status(400, { error: "Task is already completed or cancelled" });
+      }
+
+      const now = new Date();
+
+      const result = await db.transaction(async (tx) => {
+        const [cancelled] = await tx
+          .update(schema.tasks)
+          .set({
+            status: "cancelled",
+            version: sql`${schema.tasks.version} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(schema.tasks.id, id),
+              eq(schema.tasks.userId, user.id),
+              ne(schema.tasks.status, "cancelled"),
+              ne(schema.tasks.status, "done")
+            )
+          )
+          .returning();
+
+        if (!cancelled) {
+          return null;
+        }
+
+        await firePendingTaskReminders(id, user.id, tx);
+
+        // Spawn next instance without incrementing completedCount
+        const nextTask = await spawnNextRecurrenceInstance({
+          taskId: id,
+          userId: user.id,
+          isSkip: true,
+          tx,
+          now,
+        });
+
+        return { task: cancelled, nextTask };
+      });
+
+      if (!result) {
+        return status(400, { error: "Task could not be skipped" });
+      }
+
+      return {
+        ...result.task,
+        nextTask: result.nextTask,
+      };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
     }
   )
   // POST /api/v1/tasks/:id/reopen - reopen completed task (descendants/ancestors unaffected)

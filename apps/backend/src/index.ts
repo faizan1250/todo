@@ -12,6 +12,11 @@ import { checklistRoutes } from "./routes/checklist";
 import { taskRoutes } from "./routes/tasks";
 import { templateRoutes } from "./routes/templates";
 import { trashRoutes } from "./routes/trash";
+import { reminderRoutes } from "./routes/reminders";
+import { recurrenceRoutes } from "./routes/recurrences";
+import { parseRoutes } from "./routes/parse";
+import { placeRoutes } from "./routes/places";
+import { geofenceRoutes } from "./routes/geofences";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
 
@@ -61,6 +66,11 @@ export const app = new Elysia()
   .use(taskRoutes)
   .use(templateRoutes)
   .use(trashRoutes)
+  .use(reminderRoutes)
+  .use(recurrenceRoutes)
+  .use(parseRoutes)
+  .use(placeRoutes)
+  .use(geofenceRoutes)
   .get(
     "/health",
     () => ({
