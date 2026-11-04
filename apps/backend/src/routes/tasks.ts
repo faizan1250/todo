@@ -1683,4 +1683,421 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         id: t.String(),
       }),
     }
+  )
+  // POST /api/v1/tasks/:id/duplicate - deep duplication with old->new ID map, position right after original
+  .post(
+    "/:id/duplicate",
+    async ({ user, params: { id }, status }) => {
+      const [original] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!original) {
+        return status(404, { error: "Task not found" });
+      }
+
+      // 1. Fetch all descendants
+      const descendants = getTaskDescendants(original.id, user.id);
+      const descendantIds = descendants.map((d) => d.id);
+
+      let descendantTasks: Array<typeof schema.tasks.$inferSelect> = [];
+      if (descendantIds.length > 0) {
+        descendantTasks = await db
+          .select()
+          .from(schema.tasks)
+          .where(
+            and(
+              inArray(schema.tasks.id, descendantIds),
+              eq(schema.tasks.userId, user.id),
+              isNull(schema.tasks.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.tasks.position));
+
+        const depthMap = new Map(descendants.map((d) => [d.id, d.subtreeDepth]));
+        descendantTasks.sort((a, b) => (depthMap.get(a.id) ?? 0) - (depthMap.get(b.id) ?? 0));
+      }
+
+      // 2. Prepare old -> new ID map
+      const oldToNewId = new Map<string, string>();
+      const rootNewId = Bun.randomUUIDv7();
+      oldToNewId.set(original.id, rootNewId);
+
+      for (const dt of descendantTasks) {
+        oldToNewId.set(dt.id, Bun.randomUUIDv7());
+      }
+
+      const allOldTaskIds = [original.id, ...descendantTasks.map((t) => t.id)];
+
+      // 3. Fetch checklist items and tags
+      const oldChecklistItems = await db
+        .select()
+        .from(schema.checklistItems)
+        .where(
+          and(
+            inArray(schema.checklistItems.taskId, allOldTaskIds),
+            eq(schema.checklistItems.userId, user.id),
+            isNull(schema.checklistItems.deletedAt)
+          )
+        )
+        .orderBy(asc(schema.checklistItems.position));
+
+      const oldTaskTags = await db
+        .select({
+          taskId: schema.taskTags.taskId,
+          tagId: schema.taskTags.tagId,
+          tag: schema.tags,
+        })
+        .from(schema.taskTags)
+        .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
+        .where(
+          and(
+            inArray(schema.taskTags.taskId, allOldTaskIds),
+            eq(schema.tags.userId, user.id),
+            isNull(schema.tags.deletedAt)
+          )
+        )
+        .orderBy(asc(schema.tags.name));
+
+      // 4. Calculate position right after original in the same container scope
+      const scopeConditions: SQL[] = [
+        eq(schema.tasks.userId, user.id),
+        eq(schema.tasks.listId, original.listId),
+        isNull(schema.tasks.deletedAt),
+      ];
+      if (original.sectionId) {
+        scopeConditions.push(eq(schema.tasks.sectionId, original.sectionId));
+      } else {
+        scopeConditions.push(isNull(schema.tasks.sectionId));
+      }
+      if (original.parentId) {
+        scopeConditions.push(eq(schema.tasks.parentId, original.parentId));
+      } else {
+        scopeConditions.push(isNull(schema.tasks.parentId));
+      }
+
+      const newRootPosition = await positionBetween(
+        {
+          table: schema.tasks,
+          where: and(...scopeConditions),
+        },
+        original.id,
+        null
+      );
+
+      const now = new Date();
+
+      // 5. Build entities to insert
+      const newRootTask: typeof schema.tasks.$inferInsert = {
+        id: rootNewId,
+        userId: user.id,
+        listId: original.listId,
+        sectionId: original.sectionId,
+        parentId: original.parentId,
+        title: `${original.title} (copy)`,
+        notes: original.notes,
+        status: "todo",
+        priority: original.priority,
+        position: newRootPosition,
+        startAt: original.startAt,
+        dueAt: original.dueAt,
+        deadlineAt: original.deadlineAt,
+        allDay: original.allDay,
+        estimateMin: original.estimateMin,
+        recurrenceId: null,
+        locationName: original.locationName,
+        lat: original.lat,
+        lng: original.lng,
+        radiusM: original.radiusM,
+        locationTrigger: original.locationTrigger,
+        completedAt: null,
+        archivedAt: null,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      };
+
+      const newDescendantTasks: Array<typeof schema.tasks.$inferInsert> = descendantTasks.map((dt) => ({
+        id: oldToNewId.get(dt.id)!,
+        userId: user.id,
+        listId: dt.listId,
+        sectionId: dt.sectionId,
+        parentId: dt.parentId ? oldToNewId.get(dt.parentId)! : null,
+        title: dt.title,
+        notes: dt.notes,
+        status: "todo",
+        priority: dt.priority,
+        position: dt.position,
+        startAt: dt.startAt,
+        dueAt: dt.dueAt,
+        deadlineAt: dt.deadlineAt,
+        allDay: dt.allDay,
+        estimateMin: dt.estimateMin,
+        recurrenceId: null,
+        locationName: dt.locationName,
+        lat: dt.lat,
+        lng: dt.lng,
+        radiusM: dt.radiusM,
+        locationTrigger: dt.locationTrigger,
+        completedAt: null,
+        archivedAt: null,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      }));
+
+      const newChecklistItems: Array<typeof schema.checklistItems.$inferInsert> = oldChecklistItems.map((item) => ({
+        id: Bun.randomUUIDv7(),
+        userId: user.id,
+        taskId: oldToNewId.get(item.taskId)!,
+        text: item.text,
+        done: false,
+        position: item.position,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      }));
+
+      const newTaskTags = oldTaskTags.map((tt) => ({
+        taskId: oldToNewId.get(tt.taskId)!,
+        tagId: tt.tagId,
+      }));
+
+      // 6. Execute in single transaction
+      await db.transaction(async (tx) => {
+        await tx.insert(schema.tasks).values(newRootTask);
+
+        if (newDescendantTasks.length > 0) {
+          await tx.insert(schema.tasks).values(newDescendantTasks);
+        }
+
+        if (newChecklistItems.length > 0) {
+          await tx.insert(schema.checklistItems).values(newChecklistItems);
+        }
+
+        if (newTaskTags.length > 0) {
+          await tx.insert(schema.taskTags).values(newTaskTags);
+        }
+      });
+
+      // 7. Assemble response tree
+      const checklistByNewTaskId = new Map<string, any[]>();
+      for (const item of newChecklistItems) {
+        if (!checklistByNewTaskId.has(item.taskId)) {
+          checklistByNewTaskId.set(item.taskId, []);
+        }
+        checklistByNewTaskId.get(item.taskId)!.push(item);
+      }
+
+      const tagsByNewTaskId = new Map<string, any[]>();
+      for (const row of oldTaskTags) {
+        const newTaskId = oldToNewId.get(row.taskId)!;
+        if (!tagsByNewTaskId.has(newTaskId)) {
+          tagsByNewTaskId.set(newTaskId, []);
+        }
+        tagsByNewTaskId.get(newTaskId)!.push(row.tag);
+      }
+
+      const childrenByParent = new Map<string, any[]>();
+      for (const dt of newDescendantTasks) {
+        if (dt.parentId) {
+          if (!childrenByParent.has(dt.parentId)) {
+            childrenByParent.set(dt.parentId, []);
+          }
+          childrenByParent.get(dt.parentId)!.push(dt);
+        }
+      }
+
+      function buildTree(node: any): any {
+        const children = childrenByParent.get(node.id) ?? [];
+        return {
+          ...node,
+          checklist: checklistByNewTaskId.get(node.id) ?? [],
+          tags: tagsByNewTaskId.get(node.id) ?? [],
+          subtasks: children.map(buildTree),
+        };
+      }
+
+      const tree = buildTree(newRootTask);
+      return status(201, tree);
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/:id/save-as-template - snapshot task tree to template (capped at 100 nodes, depth 3)
+  .post(
+    "/:id/save-as-template",
+    async ({ user, params: { id }, body, status }) => {
+      const trimmedName = body.name?.trim();
+      if (!trimmedName) {
+        return status(400, { error: "Template name cannot be empty" });
+      }
+
+      const [task] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!task) {
+        return status(404, { error: "Task not found" });
+      }
+
+      // Check hierarchy depth and node cap
+      const descendants = getTaskDescendants(task.id, user.id);
+      const totalNodes = 1 + descendants.length;
+      if (totalNodes > 100) {
+        return status(400, { error: "Task tree exceeds maximum template node cap of 100" });
+      }
+
+      const maxSubtreeDepth = descendants.length > 0
+        ? Math.max(...descendants.map((d) => d.subtreeDepth))
+        : 0;
+
+      // Depth: 1 (root) + maxSubtreeDepth
+      const totalDepth = 1 + maxSubtreeDepth;
+      if (totalDepth > 3) {
+        return status(400, { error: "Task hierarchy exceeds maximum template depth of 3" });
+      }
+
+      const descendantIds = descendants.map((d) => d.id);
+      let descendantTasks: Array<typeof schema.tasks.$inferSelect> = [];
+      if (descendantIds.length > 0) {
+        descendantTasks = await db
+          .select()
+          .from(schema.tasks)
+          .where(
+            and(
+              inArray(schema.tasks.id, descendantIds),
+              eq(schema.tasks.userId, user.id),
+              isNull(schema.tasks.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.tasks.position));
+      }
+
+      const allTaskIds = [task.id, ...descendantIds];
+
+      const allChecklistItems = await db
+        .select()
+        .from(schema.checklistItems)
+        .where(
+          and(
+            inArray(schema.checklistItems.taskId, allTaskIds),
+            eq(schema.checklistItems.userId, user.id),
+            isNull(schema.checklistItems.deletedAt)
+          )
+        )
+        .orderBy(asc(schema.checklistItems.position));
+
+      const allTaskTags = await db
+        .select({
+          taskId: schema.taskTags.taskId,
+          tagName: schema.tags.name,
+        })
+        .from(schema.taskTags)
+        .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
+        .where(
+          and(
+            inArray(schema.taskTags.taskId, allTaskIds),
+            eq(schema.tags.userId, user.id),
+            isNull(schema.tags.deletedAt)
+          )
+        )
+        .orderBy(asc(schema.tags.name));
+
+      const checklistByTaskId = new Map<string, string[]>();
+      for (const item of allChecklistItems) {
+        if (!checklistByTaskId.has(item.taskId)) {
+          checklistByTaskId.set(item.taskId, []);
+        }
+        checklistByTaskId.get(item.taskId)!.push(item.text);
+      }
+
+      const tagsByTaskId = new Map<string, string[]>();
+      for (const tt of allTaskTags) {
+        if (!tagsByTaskId.has(tt.taskId)) {
+          tagsByTaskId.set(tt.taskId, []);
+        }
+        tagsByTaskId.get(tt.taskId)!.push(tt.tagName);
+      }
+
+      const childrenByParent = new Map<string, Array<typeof schema.tasks.$inferSelect>>();
+      for (const dt of descendantTasks) {
+        if (dt.parentId) {
+          if (!childrenByParent.has(dt.parentId)) {
+            childrenByParent.set(dt.parentId, []);
+          }
+          childrenByParent.get(dt.parentId)!.push(dt);
+        }
+      }
+
+      function buildTemplatePayload(node: typeof schema.tasks.$inferSelect): schema.TemplatePayload {
+        const payload: schema.TemplatePayload = {
+          title: node.title,
+        };
+        if (node.notes) payload.notes = node.notes;
+        if (node.priority !== undefined && node.priority !== null && node.priority !== 0) {
+          payload.priority = node.priority;
+        }
+        if (node.estimateMin !== undefined && node.estimateMin !== null) {
+          payload.estimateMin = node.estimateMin;
+        }
+        const nodeTags = tagsByTaskId.get(node.id);
+        if (nodeTags && nodeTags.length > 0) {
+          payload.tags = nodeTags;
+        }
+        const nodeChecklist = checklistByTaskId.get(node.id);
+        if (nodeChecklist && nodeChecklist.length > 0) {
+          payload.checklist = nodeChecklist;
+        }
+        const children = childrenByParent.get(node.id);
+        if (children && children.length > 0) {
+          payload.subtasks = children.map(buildTemplatePayload);
+        }
+        return payload;
+      }
+
+      const rootPayload = buildTemplatePayload(task);
+
+      const [createdTemplate] = await db
+        .insert(schema.templates)
+        .values({
+          userId: user.id,
+          name: trimmedName,
+          payload: rootPayload,
+          version: 1,
+        })
+        .returning();
+
+      return status(201, createdTemplate);
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+      body: t.Object({
+        name: t.String({ minLength: 1, maxLength: 255 }),
+      }),
+    }
   );

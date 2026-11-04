@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
+import { swagger } from "@elysiajs/swagger";
 import { auth, trustedOrigins } from "./auth";
 import { meRoutes } from "./routes/me";
 import { inviteRoutes } from "./routes/invite";
@@ -9,11 +10,37 @@ import { sectionRoutes } from "./routes/sections";
 import { tagRoutes } from "./routes/tags";
 import { checklistRoutes } from "./routes/checklist";
 import { taskRoutes } from "./routes/tasks";
+import { templateRoutes } from "./routes/templates";
 import { trashRoutes } from "./routes/trash";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
 
 export const app = new Elysia()
+  .use(
+    swagger({
+      path: "/swagger",
+      documentation: {
+        info: {
+          title: "Todo App API",
+          version: "1.0.0",
+          description: "Production API for Todo App with tasks, subtasks, templates, and fractional ordering",
+        },
+        tags: [
+          { name: "Auth", description: "Authentication endpoints" },
+          { name: "Me", description: "User profile and preferences" },
+          { name: "Invites", description: "Invitation code management" },
+          { name: "Folders", description: "Folder organization" },
+          { name: "Lists", description: "Task lists and projects" },
+          { name: "Sections", description: "List sections / columns" },
+          { name: "Tasks", description: "Tasks, subtasks, duplication, and templates" },
+          { name: "Checklist", description: "Task checklist items" },
+          { name: "Tags", description: "Tag taxonomy" },
+          { name: "Templates", description: "Reusable task templates and instantiation" },
+          { name: "Trash", description: "Soft-deleted items recovery and purge" },
+        ],
+      },
+    })
+  )
   .use(
     cors({
       origin: trustedOrigins,
@@ -32,6 +59,7 @@ export const app = new Elysia()
   .use(tagRoutes)
   .use(checklistRoutes)
   .use(taskRoutes)
+  .use(templateRoutes)
   .use(trashRoutes)
   .get(
     "/health",
