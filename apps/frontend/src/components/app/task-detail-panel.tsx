@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useState, useRef, useMemo, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { X, Check, Trash2, Calendar, Flag, Folder, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BackendFolder } from "@/lib/api";
@@ -127,22 +127,22 @@ export function TaskDetailPanel({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const currentFolderObj = useMemo(() => {
-    if (!task?.folder || task.folder === "none") return null;
-    return (
-      folders.find(
-        (f) => f.id === task.folder || f.name.toLowerCase() === task.folder.toLowerCase()
-      ) || null
-    );
-  }, [task?.folder, folders]);
+  const currentFolderObj =
+    !task?.folder || task.folder === "none"
+      ? null
+      : folders.find(
+          (f) => f.id === task.folder || f.name.toLowerCase() === task.folder.toLowerCase()
+        ) || null;
 
-  const folderDisplayName = useMemo(() => {
-    if (!task?.folder || task.folder === "none") return "None";
-    if (currentFolderObj) return currentFolderObj.name;
-    return task.folder.charAt(0).toUpperCase() + task.folder.slice(1);
-  }, [task?.folder, currentFolderObj]);
+  const folderDisplayName =
+    !task?.folder || task.folder === "none"
+      ? "None"
+      : currentFolderObj
+      ? currentFolderObj.name
+      : task.folder.charAt(0).toUpperCase() + task.folder.slice(1);
 
-  const folderDisplayColor = currentFolderObj?.color || (task?.folder && task.folder !== "none" ? "#09318D" : "#94A3B8");
+  const folderDisplayColor =
+    currentFolderObj?.color || (task?.folder && task.folder !== "none" ? "#09318D" : "#94A3B8");
 
   if (!isOpen || !task) return null;
 

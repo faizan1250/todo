@@ -95,8 +95,8 @@ export function TaskPane({
   // Main New Task form state
   const [newTitle, setNewTitle] = useState("");
   const [newPriority, setNewPriority] = useState<Priority>("med");
-  const [newFolder, setNewFolder] = useState<FolderId>(activeFolder || (folders.length > 0 ? folders[0].id : "none"));
-  const [newDueDate, setNewDueDate] = useState<string>(activeList === "today" ? "Today" : "");
+  const [selectedFolderOverride, setSelectedFolderOverride] = useState<FolderId | null>(null);
+  const [selectedDueDateOverride, setSelectedDueDateOverride] = useState<string | null>(null);
   const [isQuickAddFocused, setIsQuickAddFocused] = useState(false);
   const [openPicker, setOpenPicker] = useState<"due" | "priority" | "folder" | null>(null);
 
@@ -124,25 +124,14 @@ export function TaskPane({
       ? "Completed"
       : "Tasks");
 
-  // Sync folder with activeFolder or folders
-  useEffect(() => {
-    if (activeFolder) {
-      setNewFolder(activeFolder);
-    } else if (folders.length > 0 && (!newFolder || newFolder === "engineering" || newFolder === "none")) {
-      setNewFolder(folders[0].id);
-    }
-  }, [activeFolder, folders]);
+  const effectiveFolder: FolderId =
+    selectedFolderOverride ??
+    activeFolder ??
+    (folders.length > 0 ? folders[0].id : "none");
 
-  // Sync default due date with active list
-  useEffect(() => {
-    if (activeList === "today") {
-      setNewDueDate("Today");
-    } else if (activeList === "upcoming") {
-      setNewDueDate("Tomorrow");
-    } else {
-      setNewDueDate("");
-    }
-  }, [activeList]);
+  const effectiveDueDate: string =
+    selectedDueDateOverride ??
+    (activeList === "today" ? "Today" : activeList === "upcoming" ? "Tomorrow" : "");
 
   // Click outside listener to collapse quick-add and close open pickers
   useEffect(() => {
@@ -158,14 +147,12 @@ export function TaskPane({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [newTitle]);
 
-  const selectedFolderObj = useMemo(() => {
-    if (!newFolder || newFolder === "none") return null;
-    return (
-      folders.find(
-        (f) => f.id === newFolder || f.name.toLowerCase() === newFolder.toLowerCase()
-      ) || null
-    );
-  }, [newFolder, folders]);
+  const selectedFolderObj =
+    !effectiveFolder || effectiveFolder === "none"
+      ? null
+      : folders.find(
+          (f) => f.id === effectiveFolder || f.name.toLowerCase() === effectiveFolder.toLowerCase()
+        ) || null;
 
   // Fetch sections whenever activeListId changes
   useEffect(() => {
@@ -290,12 +277,14 @@ export function TaskPane({
     onAddTask({
       title: trimmed,
       priority: newPriority,
-      folder: newFolder,
+      folder: effectiveFolder,
       list: activeList === "completed" ? "today" : activeList,
-      dueDate: newDueDate || (activeList === "today" ? "Today" : null),
+      dueDate: effectiveDueDate || (activeList === "today" ? "Today" : null),
     });
 
     setNewTitle("");
+    setSelectedDueDateOverride(null);
+    setSelectedFolderOverride(null);
     setOpenPicker(null);
     // Keep focus so users can rapidly type 5 tasks in 10 seconds!
     quickAddInputRef.current?.focus();
@@ -501,7 +490,6 @@ export function TaskPane({
             </div>
           </div>
         </div>
-      </div>
 
       {/* Main Workspace Body */}
       <div className="p-4 sm:p-6 space-y-5 max-w-5xl mx-auto w-full">
@@ -553,13 +541,13 @@ export function TaskPane({
                     onClick={() => setOpenPicker(openPicker === "due" ? null : "due")}
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
-                      newDueDate
+                      effectiveDueDate
                         ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
                         : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3]"
                     )}
                   >
                     <Calendar className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />
-                    <span>{newDueDate || "Due date"}</span>
+                    <span>{effectiveDueDate || "Due date"}</span>
                     <ChevronDown className="h-3 w-3 opacity-60" />
                   </button>
                   {openPicker === "due" && (
@@ -574,18 +562,18 @@ export function TaskPane({
                           key={opt.label}
                           type="button"
                           onClick={() => {
-                            setNewDueDate(opt.value);
+                            setSelectedDueDateOverride(opt.value);
                             setOpenPicker(null);
                           }}
                           className={cn(
                             "flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs text-left cursor-pointer",
-                            newDueDate === opt.value
+                            effectiveDueDate === opt.value
                               ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
                               : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
                           )}
                         >
                           <span>{opt.label}</span>
-                          {newDueDate === opt.value && <Check className="h-3.5 w-3.5" />}
+                          {effectiveDueDate === opt.value && <Check className="h-3.5 w-3.5" />}
                         </button>
                       ))}
                     </div>
@@ -653,7 +641,7 @@ export function TaskPane({
                       style={{ backgroundColor: selectedFolderObj?.color || "#94A3B8" }}
                     />
                     <span className="truncate max-w-[120px]">
-                      {selectedFolderObj ? selectedFolderObj.name : newFolder && newFolder !== "none" ? newFolder : "No folder"}
+                      {selectedFolderObj ? selectedFolderObj.name : effectiveFolder && effectiveFolder !== "none" ? effectiveFolder : "No folder"}
                     </span>
                     <ChevronDown className="h-3 w-3 opacity-60" />
                   </button>
@@ -662,28 +650,28 @@ export function TaskPane({
                       <button
                         type="button"
                         onClick={() => {
-                          setNewFolder("none");
+                          setSelectedFolderOverride("none");
                           setOpenPicker(null);
                         }}
                         className={cn(
                           "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs text-left cursor-pointer",
-                          !newFolder || newFolder === "none"
+                          !effectiveFolder || effectiveFolder === "none"
                             ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
                             : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
                         )}
                       >
                         <span className="h-2 w-2 rounded-full bg-slate-400 shrink-0" />
                         <span className="flex-1">No folder</span>
-                        {(!newFolder || newFolder === "none") && <Check className="h-3.5 w-3.5" />}
+                        {(!effectiveFolder || effectiveFolder === "none") && <Check className="h-3.5 w-3.5" />}
                       </button>
                       {folders.map((f) => {
-                        const isSelected = newFolder === f.id || newFolder.toLowerCase() === f.name.toLowerCase();
+                        const isSelected = effectiveFolder === f.id || effectiveFolder.toLowerCase() === f.name.toLowerCase();
                         return (
                           <button
                             key={f.id}
                             type="button"
                             onClick={() => {
-                              setNewFolder(f.id);
+                              setSelectedFolderOverride(f.id);
                               setOpenPicker(null);
                             }}
                             className={cn(
