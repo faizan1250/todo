@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { Check, Trash2, Calendar, Tag, CheckSquare } from "lucide-react";
+import { Check, Trash2, Calendar, Tag, CheckSquare, Repeat, Clock, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatEstimate } from "@/lib/adapters";
 import type { TaskItem } from "./types";
 
 interface TaskRowProps {
@@ -139,12 +140,45 @@ export function TaskRow({
             {task.title}
           </p>
 
-          {/* Subtitle Details: Due Date, Subtask Progress, Folder */}
+          {/* Subtitle Details: Due Date, Recurrence, Estimate, Location, Subtask Progress, Folder */}
           <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
             {task.dueDate && (
               <span className="flex items-center gap-1 font-mono">
                 <Calendar className="h-3 w-3" />
                 <span>{task.dueDate}</span>
+              </span>
+            )}
+
+            {task.recurrenceId && (
+              <span
+                data-testid="task-recurrence-badge"
+                title="Recurring task"
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium bg-[#09318D]/10 text-[#09318D] dark:bg-[#FD91CC]/15 dark:text-[#FFA8D7]"
+              >
+                <Repeat className="h-3 w-3" />
+                <span>Repeat</span>
+              </span>
+            )}
+
+            {Boolean(task.estimateMin) && (
+              <span
+                data-testid="task-estimate-badge"
+                title={`Estimated: ${formatEstimate(task.estimateMin)}`}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+              >
+                <Clock className="h-3 w-3" />
+                <span>{formatEstimate(task.estimateMin)}</span>
+              </span>
+            )}
+
+            {Boolean(task.locationName) && (
+              <span
+                data-testid="task-location-badge"
+                title={`Location: ${task.locationName}`}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium max-w-[130px] truncate bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+              >
+                <MapPin className="h-3 w-3 shrink-0" />
+                <span className="truncate">{task.locationName}</span>
               </span>
             )}
 

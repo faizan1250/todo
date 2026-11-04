@@ -8,6 +8,7 @@ import {
   BookmarkPlus,
   Archive,
   Trash2,
+  SkipForward,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +17,8 @@ interface TaskActionsMenuProps {
   onSaveAsTemplate: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  isRecurring?: boolean;
+  onSkip?: () => void;
   disabled?: boolean;
 }
 
@@ -24,6 +27,8 @@ export function TaskActionsMenu({
   onSaveAsTemplate,
   onArchive,
   onDelete,
+  isRecurring = false,
+  onSkip,
   disabled = false,
 }: TaskActionsMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -91,6 +96,21 @@ export function TaskActionsMenu({
             <Copy className="h-3.5 w-3.5 text-[#5B6478] dark:text-[#9BB0D3]" />
             <span>Duplicate Task</span>
           </button>
+
+          {/* Skip occurrence (Recurring tasks only) */}
+          {Boolean(isRecurring && onSkip) && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                if (onSkip) handleAction(onSkip);
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[#09318D] hover:bg-[#F2F5FC] transition-colors cursor-pointer dark:text-[#FD91CC] dark:hover:bg-[#082363]"
+            >
+              <SkipForward className="h-3.5 w-3.5" />
+              <span>Skip occurrence</span>
+            </button>
+          )}
 
           {/* Save as Template */}
           <button

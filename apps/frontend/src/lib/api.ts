@@ -70,6 +70,77 @@ export interface BackendTag {
   deletedAt?: string | number | null;
 }
 
+export interface BackendReminder {
+  id: string;
+  userId: string;
+  taskId: string;
+  kind: "absolute" | "relative";
+  relativeTo?: "due" | "start" | "deadline" | null;
+  offsetMin?: number | null;
+  remindAt: string | number;
+  firedAt?: string | number | null;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version: number;
+  deletedAt?: string | number | null;
+}
+
+export interface BackendPlace {
+  id: string;
+  userId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  radiusM: number;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version: number;
+  deletedAt?: string | number | null;
+}
+
+export interface BackendRecurrence {
+  id: string;
+  userId: string;
+  rrule: string;
+  mode: "fixed" | "after_completion";
+  timezone: string;
+  dtstart: string | number;
+  until?: string | number | null;
+  maxCount?: number | null;
+  completedCount: number;
+  active: boolean;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version: number;
+  deletedAt?: string | number | null;
+}
+
+export interface ParsedToken {
+  type: "tag" | "list" | "priority" | "estimate" | "reminder" | "recurrence" | "date";
+  start: number;
+  end: number;
+  raw: string;
+  value?: unknown;
+}
+
+export interface ParsedTaskResult {
+  title: string;
+  dueAt: string | Date | null;
+  allDay: boolean;
+  priority: number;
+  tags: string[];
+  list: { id: string; name: string } | null;
+  estimateMin: number | null;
+  recurrence: { rrule: string; mode: "fixed" | "after_completion" } | null;
+  reminders: Array<{
+    kind: "absolute" | "relative";
+    relativeTo?: "due" | "start" | "deadline" | null;
+    offsetMin?: number | null;
+    remindAt?: string | Date | null;
+  }>;
+  tokens: ParsedToken[];
+}
+
 export interface BackendTask {
   id: string;
   userId: string;
@@ -86,7 +157,11 @@ export interface BackendTask {
   deadlineAt?: string | number | null;
   allDay?: boolean;
   estimateMin?: number | null;
+  estimateTotal?: number | null;
   recurrenceId?: string | null;
+  recurrenceRule?: { rrule: string; mode: "fixed" | "after_completion" } | null;
+  recurrence?: BackendRecurrence | null;
+  placeId?: string | null;
   locationName?: string | null;
   lat?: number | null;
   lng?: number | null;
@@ -101,6 +176,8 @@ export interface BackendTask {
   subtasks?: BackendTask[];
   checklist?: BackendChecklistItem[];
   tags?: BackendTag[];
+  reminders?: BackendReminder[];
+  nextTask?: BackendTask | null;
 }
 
 export interface BackendFolder {
@@ -185,7 +262,20 @@ export interface CreateTaskInput {
   deadlineAt?: string | number | null;
   allDay?: boolean;
   estimateMin?: number | null;
+  placeId?: string | null;
+  locationName?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  radiusM?: number | null;
+  locationTrigger?: "arrive" | "leave" | null;
   tagIds?: string[];
+  recurrenceRule?: { rrule: string; mode?: "fixed" | "after_completion" };
+  reminders?: Array<{
+    kind: "absolute" | "relative";
+    relativeTo?: "due" | "start" | "deadline" | null;
+    offsetMin?: number | null;
+    remindAt?: string | number | null;
+  }>;
 }
 
 export interface UpdateTaskInput {
@@ -202,6 +292,12 @@ export interface UpdateTaskInput {
   deadlineAt?: string | number | null;
   allDay?: boolean;
   estimateMin?: number | null;
+  placeId?: string | null;
+  locationName?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  radiusM?: number | null;
+  locationTrigger?: "arrive" | "leave" | null;
   completedAt?: string | number | null;
   archivedAt?: string | number | null;
   version?: number;
@@ -424,14 +520,197 @@ export async function moveTask(
   });
 }
 
+export interface CreateReminderInput {
+  kind: "absolute" | "relative";
+  relativeTo?: "due" | "start" | "deadline" | null;
+  offsetMin?: number | null;
+  remindAt?: string | number | null;
+}
+
+export interface UpdateReminderInput {
+  kind?: "absolute" | "relative";
+  relativeTo?: "due" | "start" | "deadline" | null;
+  offsetMin?: number | null;
+  remindAt?: string | number | null;
+}
+
+export interface SetRecurrenceInput {
+  rrule: string;
+  mode?: "fixed" | "after_completion";
+  timezone?: string;
+  dtstart?: string;
+  until?: string;
+  maxCount?: number;
+}
+
+export interface TaskCompletionResult extends BackendTask {
+  task?: BackendTask;
+  nextTask?: BackendTask | null;
+}
+
+export interface SkipTaskResponse extends BackendTask {
+  task: BackendTask;
+  nextTask: BackendTask | null;
+}
+
 export async function completeTask(
   id: string,
   completeSubtasks?: boolean
-): Promise<BackendTask> {
-  return apiFetch<BackendTask>(`/api/v1/tasks/${encodeURIComponent(id)}/complete`, {
+): Promise<TaskCompletionResult> {
+  const res = await apiFetch<TaskCompletionResult>(`/api/v1/tasks/${encodeURIComponent(id)}/complete`, {
     method: "POST",
     body: JSON.stringify(completeSubtasks !== undefined ? { completeSubtasks } : {}),
   });
+  return {
+    ...res,
+    task: res.task || res,
+    nextTask: res.nextTask ?? null,
+  };
+}
+
+export async function skipTask(id: string): Promise<SkipTaskResponse> {
+  const res = await apiFetch<SkipTaskResponse>(`/api/v1/tasks/${encodeURIComponent(id)}/skip`, {
+    method: "POST",
+  });
+  const task = res.task || res;
+  const nextTask = res.nextTask ?? null;
+  return {
+    ...res,
+    task,
+    nextTask,
+  };
+}
+
+// -------------------------------------------------------------
+// Recurrence API (/api/v1/tasks/:id/recurrence)
+// -------------------------------------------------------------
+
+export async function setTaskRecurrence(
+  taskId: string,
+  rule: SetRecurrenceInput
+): Promise<{ task: BackendTask; recurrence: BackendRecurrence }> {
+  return apiFetch<{ task: BackendTask; recurrence: BackendRecurrence }>(
+    `/api/v1/tasks/${encodeURIComponent(taskId)}/recurrence`,
+    {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    }
+  );
+}
+
+export async function deleteTaskRecurrence(
+  taskId: string
+): Promise<{ success: boolean; task?: BackendTask }> {
+  return apiFetch<{ success: boolean; task?: BackendTask }>(
+    `/api/v1/tasks/${encodeURIComponent(taskId)}/recurrence`,
+    {
+      method: "DELETE",
+    }
+  );
+}
+
+// -------------------------------------------------------------
+// Reminders API (/api/v1/tasks/:id/reminders & /api/v1/reminders/:id)
+// -------------------------------------------------------------
+
+export async function getTaskReminders(taskId: string): Promise<BackendReminder[]> {
+  return apiFetch<BackendReminder[]>(`/api/v1/tasks/${encodeURIComponent(taskId)}/reminders`);
+}
+
+export async function createTaskReminder(
+  taskId: string,
+  data: CreateReminderInput
+): Promise<BackendReminder> {
+  return apiFetch<BackendReminder>(`/api/v1/tasks/${encodeURIComponent(taskId)}/reminders`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteTaskReminder(id: string): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(`/api/v1/reminders/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function snoozeReminder(
+  id: string,
+  presetOrDate: string | number
+): Promise<BackendReminder> {
+  return apiFetch<BackendReminder>(`/api/v1/reminders/${encodeURIComponent(id)}/snooze`, {
+    method: "POST",
+    body: JSON.stringify({
+      preset: typeof presetOrDate === "string" ? presetOrDate : undefined,
+      time: presetOrDate,
+    }),
+  });
+}
+
+export async function dismissReminder(id: string): Promise<BackendReminder> {
+  return apiFetch<BackendReminder>(`/api/v1/reminders/${encodeURIComponent(id)}/dismiss`, {
+    method: "POST",
+  });
+}
+
+// -------------------------------------------------------------
+// NLP & Quick Add API (/api/v1/parse & /api/v1/tasks/quick)
+// -------------------------------------------------------------
+
+export async function parseNaturalLanguageText(
+  text: string,
+  timezone?: string
+): Promise<ParsedTaskResult> {
+  return apiFetch<ParsedTaskResult>("/api/v1/parse", {
+    method: "POST",
+    body: JSON.stringify({
+      text,
+      timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }),
+  });
+}
+
+export async function quickAddTask(data: {
+  text: string;
+  timezone?: string;
+  listId?: string;
+}): Promise<BackendTask> {
+  return apiFetch<BackendTask>("/api/v1/tasks/quick", {
+    method: "POST",
+    body: JSON.stringify({
+      ...data,
+      timezone: data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }),
+  });
+}
+
+// -------------------------------------------------------------
+// Places & Geofences API (/api/v1/places & /api/v1/geofences)
+// -------------------------------------------------------------
+
+export async function getPlaces(): Promise<BackendPlace[]> {
+  return apiFetch<BackendPlace[]>("/api/v1/places");
+}
+
+export async function createPlace(data: {
+  name: string;
+  lat: number;
+  lng: number;
+  radiusM?: number;
+}): Promise<BackendPlace> {
+  return apiFetch<BackendPlace>("/api/v1/places", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deletePlace(id: string): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(`/api/v1/places/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getGeofences(): Promise<BackendTask[]> {
+  return apiFetch<BackendTask[]>("/api/v1/geofences");
 }
 
 export async function reopenTask(

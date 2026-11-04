@@ -18,6 +18,9 @@ import {
   Calendar,
   Flag,
   Folder,
+  Tag,
+  Repeat,
+  Clock,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -26,9 +29,12 @@ import {
   createSection,
   updateSection,
   deleteSection,
+  parseNaturalLanguageText,
   type BackendSection,
   type BackendFolder,
+  type ParsedTaskResult,
 } from "@/lib/api";
+import { formatEstimate, formatDueDate } from "@/lib/adapters";
 import { TaskRow } from "./task-row";
 import { TaskRowSkeletonList } from "./task-skeleton";
 import { EmptyState } from "./empty-state";
@@ -53,6 +59,7 @@ interface TaskPaneProps {
     sectionId?: string | null;
     dueDate?: string | null;
   }) => void;
+  onQuickAddTask?: (text: string) => Promise<void> | void;
   isLoading?: boolean;
   selectedTaskIds?: Set<string>;
   onToggleSelectTask?: (id: string, shiftKey?: boolean, visibleTaskIds?: string[]) => void;
@@ -70,6 +77,7 @@ export function TaskPane({
   onToggleComplete,
   onDeleteTask,
   onAddTask,
+  onQuickAddTask,
   isLoading = false,
   selectedTaskIds,
   onToggleSelectTask,
@@ -77,6 +85,9 @@ export function TaskPane({
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "completed">("all");
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
+
+  // Natural Language Parsed Preview State
+  const [parsedPreview, setParsedPreview] = useState<ParsedTaskResult | null>(null);
 
   // Sections State
   const [sections, setSections] = useState<BackendSection[]>([]);
@@ -145,6 +156,58 @@ export function TaskPane({
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [newTitle]);
+
+  // Debounced natural language parsing for quick-add input preview
+  useEffect(() => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      parseNaturalLanguageText(trimmed)
+        .then((res) => {
+          setParsedPreview(res);
+        })
+        .catch(() => {
+          // Client-side fallback token extraction
+          const tagsMatch = trimmed.match(/#([a-zA-Z0-9_-]+)/g);
+          const tags = tagsMatch ? tagsMatch.map((t) => t.slice(1)) : [];
+          const estMatch = trimmed.match(/~(\d+)(m|h)?/);
+          let estimateMin: number | null = null;
+          if (estMatch) {
+            const num = parseInt(estMatch[1], 10);
+            estimateMin = estMatch[2] === "h" ? num * 60 : num;
+          }
+          const prioMatch = trimmed.match(/!(urgent|high|med|low|4|3|2|1)/i);
+          let priority = 1;
+          if (prioMatch) {
+            const p = prioMatch[1].toLowerCase();
+            if (p === "urgent" || p === "4") priority = 4;
+            else if (p === "high" || p === "3") priority = 3;
+            else if (p === "med" || p === "2") priority = 2;
+            else priority = 1;
+          }
+          const isRecurring = /every\s+(day|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month)/i.test(trimmed);
+          const recurrence = isRecurring ? { rrule: "FREQ=DAILY;INTERVAL=1", mode: "fixed" as const } : null;
+
+          setParsedPreview({
+            title: trimmed,
+            dueAt: null,
+            allDay: false,
+            priority,
+            tags,
+            list: null,
+            estimateMin,
+            recurrence,
+            reminders: [],
+            tokens: [],
+          });
+        });
+    }, 200);
+
+    return () => clearTimeout(timer);
   }, [newTitle]);
 
   const selectedFolderObj =
@@ -269,23 +332,40 @@ export function TaskPane({
   }, [filteredTasks, effectiveSections]);
 
   // Main task creation handler (rapid keyboard entry supported)
-  const handleCreateTask = (e?: React.FormEvent) => {
+  const handleCreateTask = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const trimmed = newTitle.trim();
     if (!trimmed) return;
 
-    onAddTask({
-      title: trimmed,
-      priority: newPriority,
-      folder: effectiveFolder,
-      list: activeList === "completed" ? "today" : activeList,
-      dueDate: effectiveDueDate || (activeList === "today" ? "Today" : null),
-    });
-
     setNewTitle("");
+    setParsedPreview(null);
     setSelectedDueDateOverride(null);
     setSelectedFolderOverride(null);
     setOpenPicker(null);
+
+    if (onQuickAddTask) {
+      try {
+        await onQuickAddTask(trimmed);
+      } catch (err) {
+        console.error("Quick add failed, falling back to standard create:", err);
+        onAddTask({
+          title: trimmed,
+          priority: newPriority,
+          folder: effectiveFolder,
+          list: activeList === "completed" ? "today" : activeList,
+          dueDate: effectiveDueDate || (activeList === "today" ? "Today" : null),
+        });
+      }
+    } else {
+      onAddTask({
+        title: trimmed,
+        priority: newPriority,
+        folder: effectiveFolder,
+        list: activeList === "completed" ? "today" : activeList,
+        dueDate: effectiveDueDate || (activeList === "today" ? "Today" : null),
+      });
+    }
+
     // Keep focus so users can rapidly type 5 tasks in 10 seconds!
     quickAddInputRef.current?.focus();
   };
@@ -518,7 +598,13 @@ export function TaskPane({
               type="text"
               value={newTitle}
               onFocus={() => setIsQuickAddFocused(true)}
-              onChange={(e) => setNewTitle(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setNewTitle(val);
+                if (!val.trim()) {
+                  setParsedPreview(null);
+                }
+              }}
               onKeyDown={handleInputKeyDown}
               placeholder={`+ Add task to ${resolvedTitle}... (Press Enter)`}
               className="flex-1 bg-transparent py-0.5 text-xs sm:text-sm font-medium text-[#0B1220] placeholder:text-[#5B6478]/60 focus:outline-none dark:text-white dark:placeholder:text-[#9BB0D3]/60"
@@ -529,6 +615,50 @@ export function TaskPane({
               </kbd>
             )}
           </div>
+
+          {/* Natural Language Token Preview Badges */}
+          {newTitle.trim().length > 0 && parsedPreview && (parsedPreview.tags?.length > 0 || parsedPreview.dueAt || parsedPreview.estimateMin || parsedPreview.recurrence || (parsedPreview.priority && parsedPreview.priority > 1) || parsedPreview.list) && (
+            <div data-testid="quick-add-preview" className="mt-2 flex flex-wrap items-center gap-1.5 animate-in fade-in duration-150">
+              <span className="text-[10px] font-mono font-medium text-[#5B6478]/80 dark:text-[#9BB0D3]/80">
+                Parsed:
+              </span>
+              {parsedPreview.tags?.map((t) => (
+                <span key={t} className="inline-flex items-center gap-1 rounded bg-[#09318D]/10 px-1.5 py-0.5 text-[10px] font-mono text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]">
+                  <Tag className="h-2.5 w-2.5" />
+                  <span>#{t}</span>
+                </span>
+              ))}
+              {Boolean(parsedPreview.dueAt) && (
+                <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-mono text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                  <Calendar className="h-2.5 w-2.5" />
+                  <span>{formatDueDate(parsedPreview.dueAt) || "Scheduled"}</span>
+                </span>
+              )}
+              {Boolean(parsedPreview.estimateMin) && (
+                <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-mono text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                  <Clock className="h-2.5 w-2.5" />
+                  <span>~{formatEstimate(parsedPreview.estimateMin)}</span>
+                </span>
+              )}
+              {Boolean(parsedPreview.recurrence) && (
+                <span className="inline-flex items-center gap-1 rounded bg-[#FD91CC]/20 px-1.5 py-0.5 text-[10px] font-mono text-[#09318D] dark:text-[#FD91CC]">
+                  <Repeat className="h-2.5 w-2.5" />
+                  <span>Repeat</span>
+                </span>
+              )}
+              {Boolean(parsedPreview.priority && parsedPreview.priority >= 3) && (
+                <span className="inline-flex items-center gap-1 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-mono text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+                  <Flag className="h-2.5 w-2.5" />
+                  <span>Priority: {parsedPreview.priority >= 4 ? "Urgent" : "High"}</span>
+                </span>
+              )}
+              {Boolean(parsedPreview.list) && (
+                <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                  <span>@{parsedPreview.list?.name}</span>
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Focused State: Gently reveals subtle inline chips below the input */}
           {(isQuickAddFocused || newTitle.trim().length > 0) && (

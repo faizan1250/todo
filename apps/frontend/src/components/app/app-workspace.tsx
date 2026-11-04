@@ -21,9 +21,11 @@ import {
   getFolders,
   getTasks,
   createTask,
+  quickAddTask,
   updateTask,
   deleteTask,
   completeTask,
+  skipTask,
   reopenTask,
   archiveTask,
   unarchiveTask,
@@ -969,8 +971,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         const apiCall = willComplete ? completeTask(id) : reopenTask(id);
         apiCall
           .then((updated) => {
-            setTasks((prev) =>
-              prev.map((t) =>
+            setTasks((prev) => {
+              const mapped = prev.map((t) =>
                 t.id === id
                   ? {
                       ...t,
@@ -979,8 +981,16 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
                       updatedAt: "Just now",
                     }
                   : t
-              )
-            );
+              );
+              // When completing a recurring task, seamlessly add nextTask into state
+              if (updated.nextTask) {
+                const nextItem = backendTaskToTaskItem(updated.nextTask);
+                if (!mapped.some((t) => t.id === nextItem.id)) {
+                  return [nextItem, ...mapped];
+                }
+              }
+              return mapped;
+            });
           })
           .catch((err) => {
             console.error("Failed to update task completion:", err);
@@ -1001,6 +1011,75 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
     },
     [tasks, isAuthenticated, toast]
+  );
+
+  const handleSkipTask = useCallback(
+    async (id: string) => {
+      const target = tasks.find((t) => t.id === id);
+      if (!target) return;
+
+      // Optimistically mark current task cancelled
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === id
+            ? { ...t, completed: true, rawStatus: "cancelled" as const, updatedAt: "Skipped" }
+            : t
+        )
+      );
+
+      try {
+        const res = await skipTask(id);
+        let nextDueDateStr = "";
+
+        setTasks((prev) => {
+          const updated = prev.map((t) =>
+            t.id === id
+              ? {
+                  ...t,
+                  completed: true,
+                  rawStatus: "cancelled" as const,
+                  version: res.task?.version || res.version,
+                  updatedAt: "Skipped",
+                }
+              : t
+          );
+          if (res.nextTask) {
+            const nextItem = backendTaskToTaskItem(res.nextTask);
+            nextDueDateStr =
+              nextItem.dueDate ||
+              (nextItem.dueAt ? new Date(nextItem.dueAt).toLocaleDateString() : "");
+            if (!updated.some((t) => t.id === nextItem.id)) {
+              return [nextItem, ...updated];
+            }
+          }
+          return updated;
+        });
+
+        toast({
+          title: "Occurrence skipped",
+          message: nextDueDateStr
+            ? `Skipped occurrence. Next task due on ${nextDueDateStr}.`
+            : "Skipped occurrence.",
+          type: "info",
+        });
+      } catch (err) {
+        console.error("Failed to skip recurring task occurrence:", err);
+        // Revert status
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === id
+              ? { ...t, completed: target.completed, rawStatus: target.rawStatus }
+              : t
+          )
+        );
+        toast({
+          title: "Skip failed",
+          message: err instanceof Error ? err.message : "Failed to skip recurring task occurrence",
+          type: "error",
+        });
+      }
+    },
+    [tasks, toast]
   );
 
   const handleDeleteTask = useCallback(
@@ -1264,6 +1343,44 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
     },
     [activeListId, userLists, isAuthenticated, success, toast]
+  );
+
+  const handleQuickAddTask = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      if (!isAuthenticated) {
+        handleAddTask({
+          title: trimmed,
+          priority: "med",
+          folder: activeFolder || "none",
+          list: activeList === "completed" ? "today" : activeList,
+        });
+        return;
+      }
+
+      try {
+        const created = await quickAddTask({
+          text: trimmed,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          listId: activeListId || undefined,
+        });
+        const taskItem = backendTaskToTaskItem(created);
+        setTasks((prev) => [taskItem, ...prev]);
+        setSelectedTaskId(taskItem.id);
+        success(`Created "${taskItem.title}"`);
+      } catch (err) {
+        console.error("Quick add failed, falling back to standard create:", err);
+        handleAddTask({
+          title: trimmed,
+          priority: "med",
+          folder: activeFolder || "none",
+          list: activeList === "completed" ? "today" : activeList,
+        });
+      }
+    },
+    [isAuthenticated, activeFolder, activeList, activeListId, handleAddTask, success]
   );
 
   const handleUpdateTask = useCallback(
@@ -1584,6 +1701,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onToggleComplete={handleToggleComplete}
         onDeleteTask={handleDeleteTask}
         onAddTask={handleAddTask}
+        onQuickAddTask={handleQuickAddTask}
         isLoading={isLoadingTasks}
       />
 
@@ -1598,6 +1716,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           onDeleteTask={handleDeleteTask}
           onDuplicateTask={handleDuplicateTask}
           onArchiveTask={handleArchiveTask}
+          onSkipTask={handleSkipTask}
           onSaveAsTemplate={handleSaveAsTemplate}
           onToggleSubtask={handleToggleSubtask}
           onAddSubtask={handleAddSubtask}

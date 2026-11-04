@@ -2,10 +2,34 @@
 
 import * as React from "react";
 import { useState, useRef, useEffect } from "react";
-import { X, Check, Trash2, Calendar, Flag, Folder, ChevronDown } from "lucide-react";
+import {
+  X,
+  Check,
+  Trash2,
+  Calendar,
+  Flag,
+  Folder,
+  ChevronDown,
+  Repeat,
+  Clock,
+  MapPin,
+  Bell,
+  Plus,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { BackendFolder } from "@/lib/api";
-import type { TaskItem, Priority, FolderId, HierarchicalSubtask } from "./types";
+import { formatEstimate, formatDateWithTime } from "@/lib/adapters";
+import {
+  getPlaces,
+  type BackendFolder,
+  type BackendPlace,
+} from "@/lib/api";
+import type {
+  TaskItem,
+  Priority,
+  FolderId,
+  HierarchicalSubtask,
+  ReminderItem,
+} from "./types";
 import { TaskSubtasksSection } from "./task-subtasks-section";
 import { TagPickerPopover } from "./tag-picker-popover";
 import { MarkdownNotesEditor } from "./markdown-notes-editor";
@@ -21,6 +45,7 @@ interface TaskDetailPanelProps {
   onDeleteTask: (id: string) => void;
   onDuplicateTask?: (id: string) => void;
   onArchiveTask?: (id: string) => void;
+  onSkipTask?: (id: string) => void;
   onSaveAsTemplate?: (id: string, name: string) => Promise<void> | void;
   onToggleSubtask?: (subtaskId: string, completed: boolean) => void;
   onAddSubtask?: (title: string, parentId: string) => void;
@@ -97,6 +122,15 @@ function removeSubtaskFromTree(
     });
 }
 
+function getRecurrenceLabel(rrule?: string | null): string {
+  if (!rrule) return "None";
+  if (rrule.includes("FREQ=DAILY")) return "Daily";
+  if (rrule.includes("BYDAY=MO,TU,WE,TH,FR")) return "Weekdays";
+  if (rrule.includes("FREQ=WEEKLY")) return "Weekly";
+  if (rrule.includes("FREQ=MONTHLY")) return "Monthly";
+  return "Custom";
+}
+
 export function TaskDetailPanel({
   task,
   isOpen,
@@ -106,6 +140,7 @@ export function TaskDetailPanel({
   onDeleteTask,
   onDuplicateTask,
   onArchiveTask,
+  onSkipTask,
   onSaveAsTemplate,
   onToggleSubtask,
   onAddSubtask,
@@ -113,7 +148,14 @@ export function TaskDetailPanel({
   onUpdateTags,
 }: TaskDetailPanelProps) {
   const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
-  const [openPicker, setOpenPicker] = useState<"due" | "priority" | "folder" | null>(null);
+  const [openPicker, setOpenPicker] = useState<
+    "due" | "priority" | "folder" | "recurrence" | "estimate" | "location" | null
+  >(null);
+  const [places, setPlaces] = useState<BackendPlace[]>([]);
+  const [customRrule, setCustomRrule] = useState("");
+  const [customMinutes, setCustomMinutes] = useState("");
+  const [isAddingReminder, setIsAddingReminder] = useState(false);
+  const [newReminderCustomTime, setNewReminderCustomTime] = useState("");
   const pillsBarRef = useRef<HTMLDivElement>(null);
 
   // Close open picker on click outside
@@ -126,6 +168,13 @@ export function TaskDetailPanel({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // Fetch saved places when opening location picker
+  useEffect(() => {
+    if (openPicker === "location") {
+      getPlaces().then(setPlaces).catch(() => setPlaces([]));
+    }
+  }, [openPicker]);
 
   const currentFolderObj =
     !task?.folder || task.folder === "none"
@@ -185,6 +234,190 @@ export function TaskDetailPanel({
     });
   };
 
+  const handleStartAtChange = (dateVal: string) => {
+    onUpdateTask({
+      ...task,
+      startAt: dateVal ? new Date(dateVal).toISOString() : null,
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleDeadlineAtChange = (dateVal: string) => {
+    onUpdateTask({
+      ...task,
+      deadlineAt: dateVal ? new Date(dateVal).toISOString() : null,
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleAllDayToggle = (allDay: boolean) => {
+    onUpdateTask({
+      ...task,
+      allDay,
+      updatedAt: "Just now",
+    });
+  };
+
+  // Recurrence Handlers
+  const handleSetRecurrencePreset = (preset: "none" | "daily" | "weekdays" | "weekly" | "monthly") => {
+    if (preset === "none") {
+      onUpdateTask({
+        ...task,
+        recurrenceId: null,
+        recurrenceRule: null,
+        updatedAt: "Just now",
+      });
+      return;
+    }
+
+    let rrule = "FREQ=DAILY;INTERVAL=1";
+    if (preset === "weekdays") rrule = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR";
+    else if (preset === "weekly") rrule = "FREQ=WEEKLY;INTERVAL=1";
+    else if (preset === "monthly") rrule = "FREQ=MONTHLY;INTERVAL=1";
+
+    const mode = task.recurrenceRule?.mode || "fixed";
+    onUpdateTask({
+      ...task,
+      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
+      recurrenceRule: { rrule, mode },
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleSetRecurrenceMode = (mode: "fixed" | "after_completion") => {
+    const currentRule = task.recurrenceRule?.rrule || "FREQ=DAILY;INTERVAL=1";
+    onUpdateTask({
+      ...task,
+      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
+      recurrenceRule: { rrule: currentRule, mode },
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleSetCustomRRule = (customRule: string) => {
+    const mode = task.recurrenceRule?.mode || "fixed";
+    onUpdateTask({
+      ...task,
+      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
+      recurrenceRule: { rrule: customRule, mode },
+      updatedAt: "Just now",
+    });
+  };
+
+  // Estimate Handlers
+  const handleEstimateChange = (minutes: number | null) => {
+    onUpdateTask({
+      ...task,
+      estimateMin: minutes,
+      updatedAt: "Just now",
+    });
+  };
+
+  // Location Handlers
+  const handleSelectPlace = (place: BackendPlace) => {
+    onUpdateTask({
+      ...task,
+      placeId: place.id,
+      locationName: place.name,
+      lat: place.lat,
+      lng: place.lng,
+      radiusM: place.radiusM,
+      locationTrigger: task.locationTrigger || "arrive",
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleManualLocationChange = (name: string, lat?: number | null, lng?: number | null) => {
+    onUpdateTask({
+      ...task,
+      placeId: null,
+      locationName: name || null,
+      lat: lat ?? task.lat ?? null,
+      lng: lng ?? task.lng ?? null,
+      radiusM: task.radiusM ?? 200,
+      locationTrigger: task.locationTrigger || "arrive",
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleLocationTriggerChange = (trigger: "arrive" | "leave" | null) => {
+    onUpdateTask({
+      ...task,
+      locationTrigger: trigger,
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleClearLocation = () => {
+    onUpdateTask({
+      ...task,
+      placeId: null,
+      locationName: null,
+      lat: null,
+      lng: null,
+      radiusM: null,
+      locationTrigger: null,
+      updatedAt: "Just now",
+    });
+  };
+
+  // Reminders Handlers
+  const handleAddReminder = (reminder: {
+    kind: "absolute" | "relative";
+    relativeTo?: "due" | "start" | "deadline" | null;
+    offsetMin?: number | null;
+    remindAt?: string | null;
+  }) => {
+    const newReminderItem: ReminderItem = {
+      id: `rem-${new Date().getTime()}`,
+      taskId: task.id,
+      kind: reminder.kind,
+      relativeTo: reminder.relativeTo ?? "due",
+      offsetMin: reminder.offsetMin ?? 0,
+      remindAt: reminder.remindAt || (task.dueAt ? new Date(task.dueAt).toISOString() : new Date().toISOString()),
+      firedAt: null,
+    };
+    const currentReminders = task.reminders || [];
+    onUpdateTask({
+      ...task,
+      reminders: [...currentReminders, newReminderItem],
+      updatedAt: "Just now",
+    });
+    setIsAddingReminder(false);
+  };
+
+  const handleDeleteReminder = (reminderId: string) => {
+    const currentReminders = task.reminders || [];
+    onUpdateTask({
+      ...task,
+      reminders: currentReminders.filter((r) => r.id !== reminderId),
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleSnoozeReminder = (reminderId: string, minutes = 15) => {
+    const currentReminders = task.reminders || [];
+    const targetTime = new Date(new Date().getTime() + minutes * 60 * 1000).toISOString();
+    onUpdateTask({
+      ...task,
+      reminders: currentReminders.map((r) =>
+        r.id === reminderId ? { ...r, remindAt: targetTime, firedAt: null } : r
+      ),
+      updatedAt: "Just now",
+    });
+  };
+
+  const handleDismissReminder = (reminderId: string) => {
+    const currentReminders = task.reminders || [];
+    onUpdateTask({
+      ...task,
+      reminders: currentReminders.map((r) =>
+        r.id === reminderId ? { ...r, firedAt: new Date().toISOString() } : r
+      ),
+      updatedAt: "Just now",
+    });
+  };
+
   // Subtask Handlers
   const handleToggleSubtask = (subtaskId: string, currentCompleted: boolean) => {
     if (onToggleSubtask) {
@@ -203,7 +436,7 @@ export function TaskDetailPanel({
     }
     const childDepth = parentId === task.id ? 2 : 3;
     const newSt: HierarchicalSubtask = {
-      id: `st-${Date.now()}`,
+      id: `st-${new Date().getTime()}`,
       parentId: parentId === task.id ? null : parentId,
       title,
       completed: false,
@@ -305,6 +538,8 @@ export function TaskDetailPanel({
             onSaveAsTemplate={() => setIsSaveTemplateOpen(true)}
             onArchive={() => onArchiveTask?.(task.id)}
             onDelete={() => onDeleteTask(task.id)}
+            isRecurring={Boolean(task.recurrenceId || task.recurrenceRule)}
+            onSkip={onSkipTask ? () => onSkipTask(task.id) : undefined}
           />
           <button
             type="button"
@@ -335,69 +570,446 @@ export function TaskDetailPanel({
         {/* Horizontal Attribute Pills Bar */}
         <div className="space-y-2">
           <div ref={pillsBarRef} className="flex flex-wrap items-center gap-2">
-            {/* 1. Due Date Pill */}
+            {/* 1. Dates Pill & Popover (Due Date, Start Date, Deadline Date, All-Day) */}
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setOpenPicker(openPicker === "due" ? null : "due")}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
-                  task.dueDate
+                  task.dueDate || task.startAt || task.deadlineAt
                     ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
                     : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
                 )}
-                title="Change Due Date"
+                title="Change Schedule & Dates"
               >
                 <Calendar className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />
-                <span>Due: <span className="font-semibold">{task.dueDate || "None"}</span></span>
+                <span>
+                  Due: <span className="font-semibold">{task.dueDate || "None"}</span>
+                  {task.allDay && <span className="ml-1 text-[10px] opacity-75">(All day)</span>}
+                </span>
                 <ChevronDown className="h-3 w-3 opacity-60" />
               </button>
               {openPicker === "due" && (
-                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[170px] rounded-xl border border-[#E4E8F2] bg-white p-1.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D]">
-                  {[
-                    { label: "No due date", value: "" },
-                    { label: "Today", value: "Today" },
-                    { label: "Tomorrow", value: "Tomorrow" },
-                    { label: "Next week", value: "Next week" },
-                  ].map((opt) => (
-                    <button
-                      key={opt.label}
-                      type="button"
-                      onClick={() => {
-                        handleDueDateChange(opt.value);
-                        setOpenPicker(null);
-                      }}
-                      className={cn(
-                        "flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors",
-                        (task.dueDate || "") === opt.value
-                          ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
-                          : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
-                      )}
-                    >
-                      <span>{opt.label}</span>
-                      {(task.dueDate || "") === opt.value && <Check className="h-3.5 w-3.5" />}
-                    </button>
-                  ))}
-                  <div className="mt-1 border-t border-[#E4E8F2] pt-1.5 px-2 pb-1 dark:border-[#132E74]">
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[210px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
+                  <div>
                     <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Pick Date
+                      Quick Due Date
                     </label>
-                    <input
-                      type="date"
-                      onChange={(e) => {
-                        if (e.target.value) {
+                    <div className="mt-1 grid grid-cols-2 gap-1">
+                      {[
+                        { label: "None", value: "" },
+                        { label: "Today", value: "Today" },
+                        { label: "Tomorrow", value: "Tomorrow" },
+                        { label: "Next week", value: "Next week" },
+                      ].map((opt) => (
+                        <button
+                          key={opt.label}
+                          type="button"
+                          onClick={() => {
+                            handleDueDateChange(opt.value);
+                          }}
+                          className={cn(
+                            "rounded px-2 py-1 text-xs text-center cursor-pointer transition-colors",
+                            (task.dueDate || "") === opt.value
+                              ? "bg-[#09318D] font-bold text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
+                              : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                          )}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] space-y-2">
+                    <div>
+                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                        Due Date
+                      </label>
+                      <input
+                        type="date"
+                        value={task.dueAt ? new Date(task.dueAt).toISOString().split("T")[0] : ""}
+                        onChange={(e) => {
                           handleDueDateChange(e.target.value);
-                          setOpenPicker(null);
-                        }
-                      }}
-                      className="mt-1 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                    />
+                        }}
+                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                        Start Date
+                      </label>
+                      <input
+                        type="date"
+                        value={task.startAt ? new Date(task.startAt).toISOString().split("T")[0] : ""}
+                        onChange={(e) => handleStartAtChange(e.target.value)}
+                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                        Deadline Date
+                      </label>
+                      <input
+                        type="date"
+                        value={task.deadlineAt ? new Date(task.deadlineAt).toISOString().split("T")[0] : ""}
+                        onChange={(e) => handleDeadlineAtChange(e.target.value)}
+                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                      />
+                    </div>
+
+                    <label className="flex items-center justify-between text-xs font-medium text-[#5B6478] dark:text-[#9BB0D3] cursor-pointer pt-1">
+                      <span>All-day event</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(task.allDay)}
+                        onChange={(e) => handleAllDayToggle(e.target.checked)}
+                        className="h-4 w-4 rounded border-[#CAD5E8] text-[#09318D] focus:ring-[#FD91CC] cursor-pointer"
+                      />
+                    </label>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* 2. Priority Pill */}
+            {/* 2. Recurrence Pill & Popover */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenPicker(openPicker === "recurrence" ? null : "recurrence")}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                  task.recurrenceId || task.recurrenceRule
+                    ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
+                    : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                )}
+                title="Set Recurrence"
+              >
+                <Repeat className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />
+                <span>
+                  Repeat:{" "}
+                  <span className="font-semibold">
+                    {getRecurrenceLabel(task.recurrenceRule?.rrule || (task.recurrenceId ? "Active" : null))}
+                  </span>
+                </span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {openPicker === "recurrence" && (
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[210px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                      Repeat Cadence
+                    </label>
+                    <div className="mt-1 space-y-1">
+                      {[
+                        { id: "none" as const, label: "Does not repeat" },
+                        { id: "daily" as const, label: "Daily" },
+                        { id: "weekdays" as const, label: "Weekdays (Mon-Fri)" },
+                        { id: "weekly" as const, label: "Weekly" },
+                        { id: "monthly" as const, label: "Monthly" },
+                      ].map((preset) => {
+                        const currentLabel = getRecurrenceLabel(task.recurrenceRule?.rrule);
+                        const isMatch =
+                          (preset.id === "none" && !task.recurrenceId && !task.recurrenceRule) ||
+                          (preset.id === "daily" && currentLabel === "Daily") ||
+                          (preset.id === "weekdays" && currentLabel === "Weekdays") ||
+                          (preset.id === "weekly" && currentLabel === "Weekly") ||
+                          (preset.id === "monthly" && currentLabel === "Monthly");
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => {
+                              handleSetRecurrencePreset(preset.id);
+                              setOpenPicker(null);
+                            }}
+                            className={cn(
+                              "flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors",
+                              isMatch
+                                ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                                : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
+                            )}
+                          >
+                            <span>{preset.label}</span>
+                            {isMatch && <Check className="h-3.5 w-3.5" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Mode Selector */}
+                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]">
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                      Series Mode
+                    </label>
+                    <div className="mt-1 flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleSetRecurrenceMode("fixed")}
+                        className={cn(
+                          "flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer",
+                          (task.recurrenceRule?.mode || "fixed") === "fixed"
+                            ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
+                            : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                        )}
+                      >
+                        Fixed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetRecurrenceMode("after_completion")}
+                        className={cn(
+                          "flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer",
+                          task.recurrenceRule?.mode === "after_completion"
+                            ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
+                            : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                        )}
+                      >
+                        After Done
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Custom RRULE input */}
+                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]">
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                      Custom RRULE
+                    </label>
+                    <div className="mt-1 flex gap-1">
+                      <input
+                        type="text"
+                        placeholder="e.g. FREQ=DAILY;INTERVAL=2"
+                        value={customRrule}
+                        onChange={(e) => setCustomRrule(e.target.value)}
+                        className="flex-1 rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (customRrule.trim()) {
+                            handleSetCustomRRule(customRrule.trim());
+                            setCustomRrule("");
+                            setOpenPicker(null);
+                          }
+                        }}
+                        className="rounded bg-[#09318D] px-2 py-1 text-xs font-semibold text-white hover:bg-[#0B3EA8] dark:bg-[#FD91CC] dark:text-[#051A4D] cursor-pointer"
+                      >
+                        Set
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 3. Estimate Pill & Popover */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenPicker(openPicker === "estimate" ? null : "estimate")}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                  task.estimateMin
+                    ? "border-amber-300 bg-amber-50/80 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-400"
+                    : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                )}
+                title="Change Estimate"
+              >
+                <Clock className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                <span>
+                  Est:{" "}
+                  <span className="font-semibold">{formatEstimate(task.estimateMin) || "None"}</span>
+                </span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {openPicker === "estimate" && (
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[190px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                      Quick Estimates
+                    </label>
+                    <div className="mt-1 grid grid-cols-3 gap-1">
+                      {[
+                        { label: "None", value: null },
+                        { label: "15m", value: 15 },
+                        { label: "30m", value: 30 },
+                        { label: "45m", value: 45 },
+                        { label: "1h", value: 60 },
+                        { label: "2h", value: 120 },
+                      ].map((chip) => (
+                        <button
+                          key={chip.label}
+                          type="button"
+                          onClick={() => {
+                            handleEstimateChange(chip.value);
+                            setOpenPicker(null);
+                          }}
+                          className={cn(
+                            "rounded px-1.5 py-1 text-xs text-center cursor-pointer transition-colors",
+                            task.estimateMin === chip.value
+                              ? "bg-amber-500 font-bold text-white dark:bg-amber-400 dark:text-[#051A4D]"
+                              : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                          )}
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]">
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                      Custom Minutes
+                    </label>
+                    <div className="mt-1 flex gap-1">
+                      <input
+                        type="number"
+                        min="1"
+                        placeholder="Minutes"
+                        value={customMinutes}
+                        onChange={(e) => setCustomMinutes(e.target.value)}
+                        className="flex-1 rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = parseInt(customMinutes, 10);
+                          if (!isNaN(val) && val > 0) {
+                            handleEstimateChange(val);
+                            setCustomMinutes("");
+                            setOpenPicker(null);
+                          }
+                        }}
+                        className="rounded bg-[#09318D] px-2 py-1 text-xs font-semibold text-white hover:bg-[#0B3EA8] dark:bg-[#FD91CC] dark:text-[#051A4D] cursor-pointer"
+                      >
+                        Set
+                      </button>
+                    </div>
+                  </div>
+
+                  {Boolean(task.estimateTotal && task.estimateTotal !== task.estimateMin) && (
+                    <div className="border-t border-[#E4E8F2] pt-1.5 text-[11px] font-mono text-[#5B6478] dark:border-[#132E74] dark:text-[#9BB0D3]">
+                      Total: <span className="font-bold text-[#09318D] dark:text-[#FD91CC]">{formatEstimate(task.estimateTotal)}</span> with subtasks
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 4. Location Pill & Popover */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenPicker(openPicker === "location" ? null : "location")}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                  task.locationName
+                    ? "border-emerald-300 bg-emerald-50/80 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-400"
+                    : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                )}
+                title="Geofence & Location"
+              >
+                <MapPin className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>
+                  Loc:{" "}
+                  <span className="font-semibold max-w-[80px] truncate inline-block align-bottom">
+                    {task.locationName || "None"}
+                  </span>
+                </span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {openPicker === "location" && (
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[220px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
+                  {places.length > 0 && (
+                    <div>
+                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                        Saved Places
+                      </label>
+                      <div className="mt-1 space-y-1 max-h-28 overflow-y-auto">
+                        {places.map((place) => (
+                          <button
+                            key={place.id}
+                            type="button"
+                            onClick={() => {
+                              handleSelectPlace(place);
+                              setOpenPicker(null);
+                            }}
+                            className={cn(
+                              "flex w-full items-center justify-between rounded px-2 py-1 text-xs text-left cursor-pointer transition-colors",
+                              task.placeId === place.id
+                                ? "bg-emerald-500 font-bold text-white"
+                                : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
+                            )}
+                          >
+                            <span className="truncate">{place.name}</span>
+                            {task.placeId === place.id && <Check className="h-3.5 w-3.5" />}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] space-y-1.5">
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                      Location Name
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Office, Grocery Store"
+                      value={task.locationName || ""}
+                      onChange={(e) => handleManualLocationChange(e.target.value)}
+                      className="w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                    />
+
+                    <div className="grid grid-cols-2 gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleLocationTriggerChange("arrive")}
+                        className={cn(
+                          "rounded px-2 py-1 text-xs text-center cursor-pointer transition-colors",
+                          task.locationTrigger === "arrive"
+                            ? "bg-emerald-600 font-bold text-white dark:bg-emerald-500"
+                            : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                        )}
+                      >
+                        On Arrival
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleLocationTriggerChange("leave")}
+                        className={cn(
+                          "rounded px-2 py-1 text-xs text-center cursor-pointer transition-colors",
+                          task.locationTrigger === "leave"
+                            ? "bg-emerald-600 font-bold text-white dark:bg-emerald-500"
+                            : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                        )}
+                      >
+                        On Leave
+                      </button>
+                    </div>
+
+                    {Boolean(task.locationName) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleClearLocation();
+                          setOpenPicker(null);
+                        }}
+                        className="w-full mt-1 rounded text-center py-1 text-[11px] font-medium text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer dark:text-rose-400 dark:hover:bg-rose-950/40"
+                      >
+                        Remove Location
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 5. Priority Pill */}
             <div className="relative">
               <button
                 type="button"
@@ -558,6 +1170,164 @@ export function TaskDetailPanel({
           onAddSubtask={handleAddSubtask}
           onDeleteSubtask={handleDeleteSubtask}
         />
+
+        {/* Reminders Section */}
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+              <Bell className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />
+              <span>Reminders {task.reminders && task.reminders.length > 0 && `(${task.reminders.length})`}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsAddingReminder((prev) => !prev)}
+              className="inline-flex items-center gap-1 text-xs font-medium text-[#09318D] hover:underline dark:text-[#FD91CC] cursor-pointer"
+            >
+              <Plus className="h-3 w-3" />
+              <span>Add reminder</span>
+            </button>
+          </div>
+
+          {/* Add Reminder Form */}
+          {isAddingReminder && (
+            <div className="rounded-xl border border-[#E4E8F2] bg-[#F2F5FC]/60 p-2.5 space-y-2 dark:border-[#132E74] dark:bg-[#082363]/50">
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                Preset Reminder
+              </label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {[
+                  { label: "At due time", offset: 0 },
+                  { label: "10m before", offset: -10 },
+                  { label: "1h before", offset: -60 },
+                  { label: "1d before", offset: -1440 },
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => {
+                      handleAddReminder({
+                        kind: "relative",
+                        relativeTo: "due",
+                        offsetMin: preset.offset,
+                      });
+                    }}
+                    className="rounded bg-white border border-[#E4E8F2] px-2 py-1 text-xs text-center text-[#5B6478] hover:border-[#09318D] hover:text-[#09318D] transition-colors cursor-pointer dark:bg-[#051A4D] dark:border-[#132E74] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC]"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] flex items-center gap-2">
+                <input
+                  type="datetime-local"
+                  value={newReminderCustomTime}
+                  onChange={(e) => setNewReminderCustomTime(e.target.value)}
+                  className="flex-1 rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (newReminderCustomTime) {
+                      handleAddReminder({
+                        kind: "absolute",
+                        remindAt: new Date(newReminderCustomTime).toISOString(),
+                      });
+                      setNewReminderCustomTime("");
+                    }
+                  }}
+                  className="rounded bg-[#09318D] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#0B3EA8] dark:bg-[#FD91CC] dark:text-[#051A4D] cursor-pointer"
+                >
+                  Set
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Active Reminders List */}
+          {task.reminders && task.reminders.length > 0 ? (
+            <div className="space-y-1.5">
+              {task.reminders.map((reminder) => {
+                const isFired = Boolean(reminder.firedAt);
+                const displayTime = reminder.remindAt
+                  ? formatDateWithTime(reminder.remindAt)
+                  : reminder.offsetMin !== undefined
+                  ? `${Math.abs(reminder.offsetMin || 0)}m ${
+                      (reminder.offsetMin || 0) < 0 ? "before" : "after"
+                    } ${reminder.relativeTo || "due"}`
+                  : "Reminder";
+
+                return (
+                  <div
+                    key={reminder.id}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-[#E4E8F2] bg-white px-3 py-2 text-xs transition-colors dark:border-[#132E74] dark:bg-[#082363]"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <Bell
+                        className={cn(
+                          "h-3.5 w-3.5 shrink-0",
+                          isFired
+                            ? "text-[#5B6478]/50 dark:text-[#9BB0D3]/40"
+                            : "text-[#09318D] dark:text-[#FD91CC]"
+                        )}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className={cn(
+                            "truncate font-medium",
+                            isFired && "line-through text-[#5B6478]/70 dark:text-[#9BB0D3]/60"
+                          )}
+                        >
+                          {displayTime}
+                        </p>
+                        {isFired && (
+                          <span className="text-[10px] text-amber-600 dark:text-amber-400 font-mono">
+                            Fired / Dismissed
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {!isFired && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleSnoozeReminder(reminder.id, 15)}
+                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#051A4D] cursor-pointer"
+                            title="Snooze 15 minutes"
+                          >
+                            +15m
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDismissReminder(reminder.id)}
+                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/40 cursor-pointer"
+                            title="Dismiss reminder"
+                          >
+                            Dismiss
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteReminder(reminder.id)}
+                        className="flex h-6 w-6 items-center justify-center rounded text-[#5B6478] hover:text-rose-600 hover:bg-rose-50 transition-colors dark:text-[#9BB0D3] dark:hover:text-rose-400 dark:hover:bg-rose-950/40 cursor-pointer"
+                        title="Delete reminder"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-xs text-[#5B6478]/70 dark:text-[#9BB0D3]/60 italic">
+              No reminders set for this task.
+            </p>
+          )}
+        </div>
 
         {/* 4. Markdown Notes Editor */}
         <MarkdownNotesEditor
