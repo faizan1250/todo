@@ -15,6 +15,9 @@ import {
   FolderPlus,
   Loader2,
   Layers,
+  Calendar,
+  Flag,
+  Folder,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -24,6 +27,7 @@ import {
   updateSection,
   deleteSection,
   type BackendSection,
+  type BackendFolder,
 } from "@/lib/api";
 import { TaskRow } from "./task-row";
 import { TaskRowSkeletonList } from "./task-skeleton";
@@ -36,6 +40,7 @@ interface TaskPaneProps {
   activeListId?: string | null;
   activeListName?: string;
   activeFolder: FolderId | null;
+  folders?: BackendFolder[];
   selectedTaskId: string | null;
   onSelectTask: (task: TaskItem) => void;
   onToggleComplete: (id: string) => void;
@@ -46,6 +51,7 @@ interface TaskPaneProps {
     folder: FolderId;
     list: ListId;
     sectionId?: string | null;
+    dueDate?: string | null;
   }) => void;
   isLoading?: boolean;
   selectedTaskIds?: Set<string>;
@@ -58,6 +64,7 @@ export function TaskPane({
   activeListId = null,
   activeListName,
   activeFolder,
+  folders = [],
   selectedTaskId,
   onSelectTask,
   onToggleComplete,
@@ -88,8 +95,13 @@ export function TaskPane({
   // Main New Task form state
   const [newTitle, setNewTitle] = useState("");
   const [newPriority, setNewPriority] = useState<Priority>("med");
-  const [newFolder, setNewFolder] = useState<FolderId>(activeFolder || "engineering");
+  const [selectedFolderOverride, setSelectedFolderOverride] = useState<FolderId | null>(null);
+  const [selectedDueDateOverride, setSelectedDueDateOverride] = useState<string | null>(null);
+  const [isQuickAddFocused, setIsQuickAddFocused] = useState(false);
+  const [openPicker, setOpenPicker] = useState<"due" | "priority" | "folder" | null>(null);
 
+  const quickAddContainerRef = useRef<HTMLDivElement>(null);
+  const quickAddInputRef = useRef<HTMLInputElement>(null);
   const newSectionInputRef = useRef<HTMLInputElement>(null);
   const editSectionInputRef = useRef<HTMLInputElement>(null);
   const sectionTaskInputRef = useRef<HTMLInputElement>(null);
@@ -111,6 +123,36 @@ export function TaskPane({
       : activeList === "completed"
       ? "Completed"
       : "Tasks");
+
+  const effectiveFolder: FolderId =
+    selectedFolderOverride ??
+    activeFolder ??
+    (folders.length > 0 ? folders[0].id : "none");
+
+  const effectiveDueDate: string =
+    selectedDueDateOverride ??
+    (activeList === "today" ? "Today" : activeList === "upcoming" ? "Tomorrow" : "");
+
+  // Click outside listener to collapse quick-add and close open pickers
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (quickAddContainerRef.current && !quickAddContainerRef.current.contains(e.target as Node)) {
+        setOpenPicker(null);
+        if (!newTitle.trim()) {
+          setIsQuickAddFocused(false);
+        }
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [newTitle]);
+
+  const selectedFolderObj =
+    !effectiveFolder || effectiveFolder === "none"
+      ? null
+      : folders.find(
+          (f) => f.id === effectiveFolder || f.name.toLowerCase() === effectiveFolder.toLowerCase()
+        ) || null;
 
   // Fetch sections whenever activeListId changes
   useEffect(() => {
@@ -226,20 +268,37 @@ export function TaskPane({
     return { unsectionedTasks: unsectioned, sectionTasksMap: map };
   }, [filteredTasks, effectiveSections]);
 
-  // Main task creation handler
-  const handleCreateTask = (e: React.FormEvent) => {
-    e.preventDefault();
+  // Main task creation handler (rapid keyboard entry supported)
+  const handleCreateTask = (e?: React.FormEvent) => {
+    e?.preventDefault();
     const trimmed = newTitle.trim();
     if (!trimmed) return;
 
     onAddTask({
       title: trimmed,
       priority: newPriority,
-      folder: newFolder,
+      folder: effectiveFolder,
       list: activeList === "completed" ? "today" : activeList,
+      dueDate: effectiveDueDate || (activeList === "today" ? "Today" : null),
     });
 
     setNewTitle("");
+    setSelectedDueDateOverride(null);
+    setSelectedFolderOverride(null);
+    setOpenPicker(null);
+    // Keep focus so users can rapidly type 5 tasks in 10 seconds!
+    quickAddInputRef.current?.focus();
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleCreateTask();
+    } else if (e.key === "Escape") {
+      setOpenPicker(null);
+      setIsQuickAddFocused(false);
+      quickAddInputRef.current?.blur();
+    }
   };
 
   // Section-targeted task creation handler
@@ -251,7 +310,7 @@ export function TaskPane({
     onAddTask({
       title: trimmed,
       priority: sectionTaskPriority,
-      folder: activeFolder || "engineering",
+      folder: activeFolder || (folders.length > 0 ? folders[0].id : "none"),
       list: activeList === "completed" ? "today" : activeList,
       sectionId,
     });
@@ -360,10 +419,12 @@ export function TaskPane({
               <button
                 type="button"
                 onClick={() => setIsAddingSection(true)}
-                className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-[#E4E8F2] bg-white px-3 py-1.5 text-xs font-semibold text-[#5B6478] hover:border-[#09318D] hover:text-[#09318D] transition-colors focus-ring-pink dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC] dark:hover:text-[#FFA8D7] cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#E4E8F2] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#5B6478] hover:border-[#09318D] hover:text-[#09318D] transition-colors focus-ring-pink dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC] dark:hover:text-[#FFA8D7] cursor-pointer shrink-0"
+                title="Add Section"
               >
                 <Layers className="h-3.5 w-3.5" />
-                <span>Add Section</span>
+                <span className="hidden sm:inline">Add Section</span>
+                <span className="sm:hidden">Section</span>
               </button>
             )}
 
@@ -402,28 +463,16 @@ export function TaskPane({
             ))}
           </div>
 
-          {/* Priority Quick Filter & Mobile Add Section */}
-          <div className="flex items-center gap-3">
-            {activeListId && !isAddingSection && (
-              <button
-                type="button"
-                onClick={() => setIsAddingSection(true)}
-                className="sm:hidden inline-flex items-center gap-1 text-xs font-semibold text-[#09318D] dark:text-[#FFA8D7] cursor-pointer"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>Section</span>
-              </button>
-            )}
-
-            <div className="flex items-center gap-1.5 text-xs text-[#5B6478] dark:text-[#9BB0D3]">
-              <Filter className="h-3 w-3" />
-              <span>Priority:</span>
-              {[
-                { id: "all" as const, label: "All" },
-                { id: "high" as const, label: "High" },
-                { id: "med" as const, label: "Medium" },
-                { id: "low" as const, label: "Low" },
-              ].map((p) => (
+          {/* Priority Quick Filter */}
+          <div className="flex items-center gap-1.5 text-xs text-[#5B6478] dark:text-[#9BB0D3]">
+            <Filter className="h-3 w-3" />
+            <span>Priority:</span>
+            {[
+              { id: "all" as const, label: "All" },
+              { id: "high" as const, label: "High" },
+              { id: "med" as const, label: "Medium" },
+              { id: "low" as const, label: "Low" },
+            ].map((p) => (
                 <button
                   key={p.id}
                   type="button"
@@ -441,71 +490,229 @@ export function TaskPane({
             </div>
           </div>
         </div>
-      </div>
 
       {/* Main Workspace Body */}
       <div className="p-4 sm:p-6 space-y-5 max-w-5xl mx-auto w-full">
-        {/* Quick Add Task Input Card */}
-        <form
-          onSubmit={handleCreateTask}
-          className="rounded-xl border border-[#E4E8F2] bg-white p-3 shadow-soft-blue transition-all focus-within:border-[#09318D] focus-within:ring-2 focus-within:ring-[#FD91CC]/50 dark:border-[#132E74] dark:bg-[#082363]"
+        {/* Sleek Single-Line Quick Add (Things 3 / Todoist style) */}
+        <div
+          ref={quickAddContainerRef}
+          className={cn(
+            "rounded-xl border bg-white transition-all duration-200 dark:bg-[#082363]",
+            isQuickAddFocused || newTitle.trim().length > 0
+              ? "border-[#09318D] p-3 shadow-soft-blue ring-2 ring-[#FD91CC]/40 dark:border-[#FD91CC]/60"
+              : "border-[#E4E8F2] px-3.5 py-2 hover:border-[#CAD5E8] shadow-xs dark:border-[#132E74] dark:hover:border-[#1F459E]"
+          )}
         >
-          <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+          {/* Top Line: Input prompt with Plus icon and Enter badge */}
+          <div className="flex items-center gap-2">
+            <Plus
+              className={cn(
+                "h-4 w-4 shrink-0 transition-colors",
+                isQuickAddFocused || newTitle.trim().length > 0
+                  ? "text-[#09318D] dark:text-[#FD91CC]"
+                  : "text-[#5B6478] dark:text-[#9BB0D3]"
+              )}
+            />
             <input
+              ref={quickAddInputRef}
               type="text"
               value={newTitle}
+              onFocus={() => setIsQuickAddFocused(true)}
               onChange={(e) => setNewTitle(e.target.value)}
-              placeholder={`Add task to ${resolvedTitle}... (Press Enter)`}
-              className="flex-1 bg-transparent px-2 py-1 text-sm font-medium text-[#0B1220] placeholder:text-[#5B6478]/60 focus:outline-none dark:text-white dark:placeholder:text-[#9BB0D3]/60"
+              onKeyDown={handleInputKeyDown}
+              placeholder={`+ Add task to ${resolvedTitle}... (Press Enter)`}
+              className="flex-1 bg-transparent py-0.5 text-xs sm:text-sm font-medium text-[#0B1220] placeholder:text-[#5B6478]/60 focus:outline-none dark:text-white dark:placeholder:text-[#9BB0D3]/60"
             />
+            {!isQuickAddFocused && newTitle.trim().length === 0 && (
+              <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-[#E4E8F2] bg-[#F2F5FC] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#5B6478] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3]">
+                ↵ Enter
+              </kbd>
+            )}
+          </div>
 
-            <div className="flex items-center justify-between sm:justify-end gap-2 border-t border-[#E4E8F2] pt-2 sm:border-t-0 sm:pt-0 dark:border-[#132E74]">
-              {/* Priority Choice */}
-              <div className="flex items-center gap-1">
-                {[
-                  { id: "high" as const, label: "High" },
-                  { id: "med" as const, label: "Medium" },
-                  { id: "low" as const, label: "Low" },
-                ].map((p) => (
+          {/* Focused State: Gently reveals subtle inline chips below the input */}
+          {(isQuickAddFocused || newTitle.trim().length > 0) && (
+            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-[#E4E8F2]/70 pt-2 dark:border-[#132E74]/70">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {/* 1. Due Date Chip */}
+                <div className="relative">
                   <button
-                    key={p.id}
                     type="button"
-                    onClick={() => setNewPriority(p.id)}
+                    onClick={() => setOpenPicker(openPicker === "due" ? null : "due")}
                     className={cn(
-                      "rounded px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer",
-                      newPriority === p.id
-                        ? "bg-[#09318D] text-white font-semibold dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                        : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#051A4D]"
+                      "inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                      effectiveDueDate
+                        ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
+                        : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3]"
                     )}
                   >
-                    {p.label}
+                    <Calendar className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />
+                    <span>{effectiveDueDate || "Due date"}</span>
+                    <ChevronDown className="h-3 w-3 opacity-60" />
                   </button>
-                ))}
+                  {openPicker === "due" && (
+                    <div className="absolute left-0 top-full mt-1 z-30 min-w-[150px] rounded-lg border border-[#E4E8F2] bg-white p-1 shadow-md dark:border-[#132E74] dark:bg-[#051A4D]">
+                      {[
+                        { label: "No due date", value: "" },
+                        { label: "Today", value: "Today" },
+                        { label: "Tomorrow", value: "Tomorrow" },
+                        { label: "Next week", value: "Next week" },
+                      ].map((opt) => (
+                        <button
+                          key={opt.label}
+                          type="button"
+                          onClick={() => {
+                            setSelectedDueDateOverride(opt.value);
+                            setOpenPicker(null);
+                          }}
+                          className={cn(
+                            "flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs text-left cursor-pointer",
+                            effectiveDueDate === opt.value
+                              ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                              : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
+                          )}
+                        >
+                          <span>{opt.label}</span>
+                          {effectiveDueDate === opt.value && <Check className="h-3.5 w-3.5" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. Priority Chip */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPicker(openPicker === "priority" ? null : "priority")}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                      newPriority === "high"
+                        ? "border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-400"
+                        : newPriority === "med"
+                        ? "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-400"
+                        : "border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-400"
+                    )}
+                  >
+                    <Flag className="h-3.5 w-3.5" />
+                    <span className="capitalize">{newPriority} priority</span>
+                    <ChevronDown className="h-3 w-3 opacity-60" />
+                  </button>
+                  {openPicker === "priority" && (
+                    <div className="absolute left-0 top-full mt-1 z-30 min-w-[130px] rounded-lg border border-[#E4E8F2] bg-white p-1 shadow-md dark:border-[#132E74] dark:bg-[#051A4D]">
+                      {[
+                        { id: "low" as const, label: "Low", dot: "bg-blue-500" },
+                        { id: "med" as const, label: "Medium", dot: "bg-amber-500" },
+                        { id: "high" as const, label: "High", dot: "bg-rose-500" },
+                      ].map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setNewPriority(p.id);
+                            setOpenPicker(null);
+                          }}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs text-left cursor-pointer",
+                            newPriority === p.id
+                              ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                              : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
+                          )}
+                        >
+                          <span className={cn("h-2 w-2 rounded-full shrink-0", p.dot)} />
+                          <span className="flex-1">{p.label}</span>
+                          {newPriority === p.id && <Check className="h-3.5 w-3.5" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Folder Chip (Dynamic User Folders) */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPicker(openPicker === "folder" ? null : "folder")}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[#E4E8F2] bg-white px-2 py-1 text-xs font-medium text-[#5B6478] hover:bg-[#F2F5FC] transition-all cursor-pointer focus-ring-pink dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3]"
+                  >
+                    <Folder className="h-3.5 w-3.5 text-[#5B6478] dark:text-[#9BB0D3]" />
+                    <span
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{ backgroundColor: selectedFolderObj?.color || "#94A3B8" }}
+                    />
+                    <span className="truncate max-w-[120px]">
+                      {selectedFolderObj ? selectedFolderObj.name : effectiveFolder && effectiveFolder !== "none" ? effectiveFolder : "No folder"}
+                    </span>
+                    <ChevronDown className="h-3 w-3 opacity-60" />
+                  </button>
+                  {openPicker === "folder" && (
+                    <div className="absolute left-0 top-full mt-1 z-30 min-w-[170px] max-h-52 overflow-y-auto rounded-lg border border-[#E4E8F2] bg-white p-1 shadow-md dark:border-[#132E74] dark:bg-[#051A4D]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedFolderOverride("none");
+                          setOpenPicker(null);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs text-left cursor-pointer",
+                          !effectiveFolder || effectiveFolder === "none"
+                            ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                            : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
+                        )}
+                      >
+                        <span className="h-2 w-2 rounded-full bg-slate-400 shrink-0" />
+                        <span className="flex-1">No folder</span>
+                        {(!effectiveFolder || effectiveFolder === "none") && <Check className="h-3.5 w-3.5" />}
+                      </button>
+                      {folders.map((f) => {
+                        const isSelected = effectiveFolder === f.id || effectiveFolder.toLowerCase() === f.name.toLowerCase();
+                        return (
+                          <button
+                            key={f.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedFolderOverride(f.id);
+                              setOpenPicker(null);
+                            }}
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs text-left cursor-pointer",
+                              isSelected
+                                ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                                : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                            )}
+                          >
+                            <span
+                              className="h-2 w-2 rounded-full shrink-0"
+                              style={{ backgroundColor: f.color || "#09318D" }}
+                            />
+                            <span className="flex-1 truncate">{f.name}</span>
+                            {isSelected && <Check className="h-3.5 w-3.5" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Folder Choice */}
-              <select
-                value={newFolder}
-                onChange={(e) => setNewFolder(e.target.value as FolderId)}
-                className="rounded border border-[#E4E8F2] bg-white px-2 py-1 text-[11px] font-medium text-[#5B6478] focus:outline-none dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3]"
-              >
-                <option value="engineering">Engineering</option>
-                <option value="design">Design</option>
-                <option value="personal">Personal</option>
-              </select>
-
-              {/* Add Button */}
-              <button
-                type="submit"
-                disabled={!newTitle.trim()}
-                className="btn-primary-depth inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-semibold text-white shadow-xs disabled:opacity-40 cursor-pointer focus-ring-pink"
-              >
-                <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
-                <span className="hidden sm:inline">Add</span>
-              </button>
+              {/* Right Side: Esc hint + Add Button */}
+              <div className="flex items-center gap-2">
+                <span className="hidden sm:inline text-[11px] text-[#5B6478]/70 dark:text-[#9BB0D3]/60 font-mono">
+                  Esc to cancel
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleCreateTask()}
+                  disabled={!newTitle.trim()}
+                  className="btn-primary-depth inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-white shadow-xs disabled:opacity-40 cursor-pointer focus-ring-pink"
+                >
+                  <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
+                  <span>Add Task</span>
+                </button>
+              </div>
             </div>
-          </div>
-        </form>
+          )}
+        </div>
 
         {/* Inline Add Section Form (Top) */}
         {isAddingSection && (

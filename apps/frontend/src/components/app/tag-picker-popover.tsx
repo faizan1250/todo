@@ -21,6 +21,8 @@ interface TagPickerPopoverProps {
   activeTagIds?: string[]; // tag IDs
   onTagsUpdated: (updatedTagNames: string[], updatedTagIds: string[]) => void;
   disabled?: boolean;
+  triggerClassName?: string;
+  label?: string;
 }
 
 export function TagPickerPopover({
@@ -29,6 +31,8 @@ export function TagPickerPopover({
   activeTagIds = [],
   onTagsUpdated,
   disabled = false,
+  triggerClassName,
+  label,
 }: TagPickerPopoverProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -203,13 +207,13 @@ export function TagPickerPopover({
         aria-label="Add or manage tags"
         aria-expanded={isOpen}
         className={cn(
-          "inline-flex items-center gap-1 rounded-md border border-dashed border-[#CAD5E8] bg-white px-2 py-0.5 text-xs font-semibold text-[#09318D] hover:border-[#09318D] hover:bg-[#F2F5FC] transition-colors cursor-pointer focus-ring-pink dark:border-[#1F459E] dark:bg-[#082363] dark:text-[#FFA8D7] dark:hover:border-[#FD91CC]",
-          isOpen && "border-solid border-[#09318D] bg-[#F2F5FC] dark:border-[#FD91CC]"
+          triggerClassName ||
+            "inline-flex items-center gap-1 rounded-md border border-dashed border-[#CAD5E8] bg-white px-2 py-0.5 text-xs font-semibold text-[#09318D] hover:border-[#09318D] hover:bg-[#F2F5FC] transition-colors cursor-pointer focus-ring-pink dark:border-[#1F459E] dark:bg-[#082363] dark:text-[#FFA8D7] dark:hover:border-[#FD91CC]",
+          isOpen && !triggerClassName && "border-solid border-[#09318D] bg-[#F2F5FC] dark:border-[#FD91CC]"
         )}
       >
-        <Plus className="h-3 w-3" />
-        <TagIcon className="h-3 w-3" />
-        <span>Tag</span>
+        <TagIcon className="h-3.5 w-3.5" />
+        <span>{label || "Tag"}</span>
       </button>
 
       {/* Popover Card */}

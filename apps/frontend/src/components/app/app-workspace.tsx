@@ -1192,6 +1192,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       folder: FolderId;
       list: ListId;
       sectionId?: string | null;
+      dueDate?: string | null;
     }) => {
       const tempId = `temp-${Date.now()}`;
       const targetBackendListId =
@@ -1204,7 +1205,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         priority: data.priority,
         folder: data.folder,
         list: data.list,
-        tags: [data.folder],
+        tags: data.folder && data.folder !== "none" ? [data.folder] : [],
+        dueDate: data.dueDate || (data.list === "today" ? "Today" : undefined),
         subtasks: [],
         checklist: [],
         createdAt: "Just now",
@@ -1217,7 +1219,19 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       setSelectedTaskId(newTask.id);
 
       if (isAuthenticated && targetBackendListId) {
-        const dueAt = data.list === "today" ? new Date().toISOString() : undefined;
+        let dueAt: string | undefined = undefined;
+        if (data.dueDate === "Today" || data.list === "today") {
+          dueAt = new Date().toISOString();
+        } else if (data.dueDate === "Tomorrow") {
+          const tmr = new Date();
+          tmr.setDate(tmr.getDate() + 1);
+          dueAt = tmr.toISOString();
+        } else if (data.dueDate) {
+          const parsed = new Date(data.dueDate);
+          if (!isNaN(parsed.getTime())) {
+            dueAt = parsed.toISOString();
+          }
+        }
 
         createTask({
           title: data.title,
@@ -1562,6 +1576,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         activeListId={activeListId}
         activeListName={activeListName}
         activeFolder={activeFolder}
+        folders={userFolders}
         selectedTaskId={selectedTaskId}
         selectedTaskIds={selectedTaskIds}
         onToggleSelectTask={handleToggleSelectTask}
@@ -1577,6 +1592,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         <TaskDetailPanel
           task={selectedTask}
           isOpen={!!selectedTask}
+          folders={userFolders}
           onClose={() => setSelectedTaskId(null)}
           onUpdateTask={handleUpdateTask}
           onDeleteTask={handleDeleteTask}
