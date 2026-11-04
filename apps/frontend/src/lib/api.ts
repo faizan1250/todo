@@ -786,3 +786,11 @@ export async function instantiateTemplate(
     body: JSON.stringify(data),
   });
 }
+
+export async function deleteTemplate(
+  templateId: string
+): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(`/api/v1/templates/${encodeURIComponent(templateId)}`, {
+    method: "DELETE",
+  });
+}
