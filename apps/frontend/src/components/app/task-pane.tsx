@@ -601,7 +601,7 @@ export function TaskPane({
           )
         ) : effectiveSections.length === 0 ? (
           /* Render Flat Task List when no sections exist */
-          <div className="space-y-2">
+          <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
             {filteredTasks.map((task) => (
               <TaskRow
                 key={task.id}
@@ -637,7 +637,7 @@ export function TaskPane({
                     {unsectionedTasks.length}
                   </span>
                 </div>
-                <div className="space-y-2">
+                <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
                   {unsectionedTasks.map((task) => (
                     <TaskRow
                       key={task.id}
@@ -857,7 +857,7 @@ export function TaskPane({
                           No tasks in this section yet. Click &quot;Add task&quot; to create one.
                         </div>
                       ) : (
-                        <div className="space-y-2">
+                        <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
                           {sectionTasks.map((task) => (
                             <TaskRow
                               key={task.id}
