@@ -48,6 +48,8 @@ interface TaskPaneProps {
     sectionId?: string | null;
   }) => void;
   isLoading?: boolean;
+  selectedTaskIds?: Set<string>;
+  onToggleSelectTask?: (id: string, shiftKey?: boolean, visibleTaskIds?: string[]) => void;
 }
 
 export function TaskPane({
@@ -62,6 +64,8 @@ export function TaskPane({
   onDeleteTask,
   onAddTask,
   isLoading = false,
+  selectedTaskIds,
+  onToggleSelectTask,
 }: TaskPaneProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "completed">("all");
@@ -594,9 +598,21 @@ export function TaskPane({
                 key={task.id}
                 task={task}
                 isSelected={selectedTaskId === task.id}
+                isBulkSelected={selectedTaskIds?.has(task.id)}
+                hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
                 onSelect={onSelectTask}
                 onToggleComplete={onToggleComplete}
                 onDelete={onDeleteTask}
+                onToggleBulkSelect={
+                  onToggleSelectTask
+                    ? (id, shiftKey) =>
+                        onToggleSelectTask(
+                          id,
+                          shiftKey,
+                          filteredTasks.map((t) => t.id)
+                        )
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -618,9 +634,21 @@ export function TaskPane({
                       key={task.id}
                       task={task}
                       isSelected={selectedTaskId === task.id}
+                      isBulkSelected={selectedTaskIds?.has(task.id)}
+                      hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
                       onSelect={onSelectTask}
                       onToggleComplete={onToggleComplete}
                       onDelete={onDeleteTask}
+                      onToggleBulkSelect={
+                        onToggleSelectTask
+                          ? (id, shiftKey) =>
+                              onToggleSelectTask(
+                                id,
+                                shiftKey,
+                                filteredTasks.map((t) => t.id)
+                              )
+                          : undefined
+                      }
                     />
                   ))}
                 </div>
@@ -822,9 +850,21 @@ export function TaskPane({
                               key={task.id}
                               task={task}
                               isSelected={selectedTaskId === task.id}
+                              isBulkSelected={selectedTaskIds?.has(task.id)}
+                              hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
                               onSelect={onSelectTask}
                               onToggleComplete={onToggleComplete}
                               onDelete={onDeleteTask}
+                              onToggleBulkSelect={
+                                onToggleSelectTask
+                                  ? (id, shiftKey) =>
+                                      onToggleSelectTask(
+                                        id,
+                                        shiftKey,
+                                        filteredTasks.map((t) => t.id)
+                                      )
+                                  : undefined
+                              }
                             />
                           ))}
                         </div>

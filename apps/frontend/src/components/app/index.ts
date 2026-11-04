@@ -15,4 +15,7 @@ export * from "./network-banner";
 export * from "./error-boundary";
 export * from "./list-dialog";
 export * from "./folder-dialog";
+export * from "./bulk-action-toolbar";
+export * from "./trash-modal";
+export * from "./templates-modal";
 export * from "./app-workspace";

@@ -15,6 +15,8 @@ import {
   ArrowRight,
   Command,
   Keyboard,
+  Bookmark,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ListId, FolderId } from "./types";
@@ -39,6 +41,8 @@ interface CommandPaletteProps {
   onToggleSidebar: () => void;
   onOpenAuth?: () => void;
   onOpenShortcuts?: () => void;
+  onOpenTrash?: () => void;
+  onOpenTemplates?: () => void;
 }
 
 export function CommandPalette({
@@ -51,6 +55,8 @@ export function CommandPalette({
   onToggleSidebar,
   onOpenAuth,
   onOpenShortcuts,
+  onOpenTrash,
+  onOpenTemplates,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -141,6 +147,30 @@ export function CommandPalette({
           onSelectList("completed");
           onSelectFolder(null);
           onClose();
+        },
+      },
+      {
+        id: "nav-templates",
+        title: "Go to Templates",
+        subtitle: "Manage and instantiate reusable task templates",
+        category: "Navigation",
+        icon: Bookmark,
+        shortcut: "G M",
+        perform: () => {
+          onClose();
+          onOpenTemplates?.();
+        },
+      },
+      {
+        id: "nav-trash",
+        title: "Go to Trash",
+        subtitle: "View, restore, or permanently delete items",
+        category: "Navigation",
+        icon: Trash2,
+        shortcut: "G X",
+        perform: () => {
+          onClose();
+          onOpenTrash?.();
         },
       },
       // Folders
@@ -253,6 +283,8 @@ export function CommandPalette({
       onToggleSidebar,
       onOpenShortcuts,
       onOpenAuth,
+      onOpenTemplates,
+      onOpenTrash,
       onClose,
     ]
   );

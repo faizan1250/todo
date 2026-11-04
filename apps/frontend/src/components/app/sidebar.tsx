@@ -20,6 +20,7 @@ import {
   Trash2,
   Archive,
   FolderPlus,
+  Bookmark,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BackendList, BackendFolder } from "@/lib/api";
@@ -58,6 +59,12 @@ interface SidebarProps {
   onEditFolder?: (folder: BackendFolder) => void;
   onDeleteFolder?: (folder: BackendFolder) => void;
 
+  // Library Modals
+  onOpenTrash?: () => void;
+  onOpenTemplates?: () => void;
+  trashCount?: number;
+  templateCount?: number;
+
   className?: string;
 }
 
@@ -91,6 +98,10 @@ export function Sidebar({
   onCreateFolder,
   onEditFolder,
   onDeleteFolder,
+  onOpenTrash,
+  onOpenTemplates,
+  trashCount,
+  templateCount,
   className,
 }: SidebarProps) {
   // Folder expanded state
@@ -752,6 +763,63 @@ export function Sidebar({
                 No root lists
               </div>
             )}
+          </nav>
+        </div>
+
+        {/* Library Section: Templates and Trash */}
+        <div>
+          {!isCollapsed && (
+            <div className="flex items-center justify-between px-2 pb-2 text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]/80">
+              <span>Library</span>
+            </div>
+          )}
+
+          <nav className="space-y-1" aria-label="Library Navigation">
+            {/* Templates */}
+            <button
+              type="button"
+              onClick={onOpenTemplates}
+              title={isCollapsed ? "Templates" : undefined}
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-white transition-all duration-150 cursor-pointer focus-ring-pink",
+                isCollapsed && "justify-center px-0"
+              )}
+            >
+              <Bookmark className="h-4 w-4 shrink-0 text-[#09318D] dark:text-[#FD91CC]" />
+              {!isCollapsed && (
+                <>
+                  <span className="flex-1 text-left truncate">Templates</span>
+                  {templateCount !== undefined && templateCount > 0 && (
+                    <span className="rounded-full bg-[#F2F5FC] dark:bg-[#082363] px-2 py-0.5 text-[10px] font-mono font-semibold text-[#5B6478] dark:text-[#9BB0D3]">
+                      {templateCount}
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+
+            {/* Trash */}
+            <button
+              type="button"
+              onClick={onOpenTrash}
+              title={isCollapsed ? "Trash" : undefined}
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-white transition-all duration-150 cursor-pointer focus-ring-pink",
+                isCollapsed && "justify-center px-0"
+              )}
+            >
+              <Trash2 className="h-4 w-4 shrink-0 text-rose-500 dark:text-rose-400" />
+              {!isCollapsed && (
+                <>
+                  <span className="flex-1 text-left truncate">Trash</span>
+                  {trashCount !== undefined && trashCount > 0 && (
+                    <span className="rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 px-2 py-0.5 text-[10px] font-mono font-semibold">
+                      {trashCount}
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
           </nav>
         </div>
       </div>
