@@ -259,6 +259,55 @@ describe("Phase 1 Backend: Auth, Invites & Profile", () => {
       expect(bearerHeader).not.toBeNull();
       expect(typeof bearerHeader).toBe("string");
     });
+
+    it("accepts cross-origin auth requests with trusted Origin header http://localhost:3000", async () => {
+      const email = `origin-trusted-${Date.now()}@example.com`;
+      const res = await app.handle(
+        new Request("http://localhost:3001/api/auth/sign-up/email", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Origin: "http://localhost:3000",
+          },
+          body: JSON.stringify({
+            email,
+            password: "password123",
+            name: "Trusted Origin User",
+          }),
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as {
+        token: string;
+        user: { id: string; email: string; name: string };
+      };
+      expect(data.user.email).toBe(email);
+      expect(data.user.name).toBe("Trusted Origin User");
+      expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
+    });
+
+    it("rejects cross-origin auth requests from untrusted origins with 403 INVALID_ORIGIN", async () => {
+      const email = `origin-untrusted-${Date.now()}@example.com`;
+      const res = await app.handle(
+        new Request("http://localhost:3001/api/auth/sign-up/email", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Origin: "http://untrusted-attacker.com",
+          },
+          body: JSON.stringify({
+            email,
+            password: "password123",
+            name: "Untrusted User",
+          }),
+        })
+      );
+
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { message?: string; code?: string };
+      expect(data.code).toBe("INVALID_ORIGIN");
+    });
   });
 
   describe("Protected /me routes (GET and PATCH)", () => {

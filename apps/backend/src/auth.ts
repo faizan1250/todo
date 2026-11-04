@@ -6,10 +6,17 @@ import { eq } from "drizzle-orm";
 import { db } from "./db";
 import * as schema from "./db/schema";
 
+export const trustedOrigins = [
+  "http://localhost:3000",
+  process.env.FRONTEND_URL,
+].filter(Boolean) as string[];
+
 export const auth = betterAuth({
-  baseURL: process.env.BETTER_AUTH_URL ?? "http://localhost:3001",
+  baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3001",
+  trustedOrigins,
   secret: process.env.BETTER_AUTH_SECRET ?? "dev-secret-key-change-in-production-todo-app",
   advanced: {
+    disableOriginCheck: false,
     database: {
       validateSchema: false,
     },
