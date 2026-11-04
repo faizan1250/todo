@@ -110,12 +110,7 @@ export function TaskPane({
 
   // Fetch sections whenever activeListId changes
   useEffect(() => {
-    if (!activeListId) {
-      setSections([]);
-      setIsAddingSection(false);
-      setActiveSectionForNewTask(null);
-      return;
-    }
+    if (!activeListId) return;
 
     let isMounted = true;
 
@@ -136,6 +131,10 @@ export function TaskPane({
       isMounted = false;
     };
   }, [activeListId]);
+
+  const effectiveSections = useMemo(() => {
+    return activeListId ? sections : [];
+  }, [activeListId, sections]);
 
   // Focus input when adding section
   useEffect(() => {
@@ -201,12 +200,12 @@ export function TaskPane({
 
   // Group tasks into unsectioned vs sectioned
   const { unsectionedTasks, sectionTasksMap } = useMemo(() => {
-    if (sections.length === 0) {
+    if (effectiveSections.length === 0) {
       return { unsectionedTasks: filteredTasks, sectionTasksMap: new Map<string, TaskItem[]>() };
     }
 
     const map = new Map<string, TaskItem[]>();
-    for (const s of sections) {
+    for (const s of effectiveSections) {
       map.set(s.id, []);
     }
 
@@ -221,7 +220,7 @@ export function TaskPane({
     }
 
     return { unsectionedTasks: unsectioned, sectionTasksMap: map };
-  }, [filteredTasks, sections]);
+  }, [filteredTasks, effectiveSections]);
 
   // Main task creation handler
   const handleCreateTask = (e: React.FormEvent) => {
@@ -347,7 +346,7 @@ export function TaskPane({
             </div>
             <p className="mt-0.5 text-xs text-[#5B6478] dark:text-[#9BB0D3]">
               {filteredTasks.length} {filteredTasks.length === 1 ? "task" : "tasks"} showing
-              {sections.length > 0 && ` • ${sections.length} ${sections.length === 1 ? "section" : "sections"}`}
+              {effectiveSections.length > 0 && ` • ${effectiveSections.length} ${effectiveSections.length === 1 ? "section" : "sections"}`}
             </p>
           </div>
 
@@ -587,7 +586,7 @@ export function TaskPane({
               }
             />
           )
-        ) : sections.length === 0 ? (
+        ) : effectiveSections.length === 0 ? (
           /* Render Flat Task List when no sections exist */
           <div className="space-y-2">
             {filteredTasks.map((task) => (
@@ -629,7 +628,7 @@ export function TaskPane({
             )}
 
             {/* 2. Sectioned Tasks */}
-            {sections.map((section) => {
+            {effectiveSections.map((section) => {
               const sectionTasks = sectionTasksMap.get(section.id) || [];
               const isCollapsed = collapsedSectionIds.has(section.id);
               const isEditing = editingSectionId === section.id;

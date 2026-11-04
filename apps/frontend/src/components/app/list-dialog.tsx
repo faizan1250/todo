@@ -53,44 +53,35 @@ const ICON_COMPONENTS: Record<string, React.ElementType> = {
   zap: Zap,
 };
 
-export function ListDialog({
-  isOpen,
+function ListDialogModalInner({
   onClose,
   mode,
   listToEdit,
   defaultFolderId = null,
   folders,
   onSuccess,
-}: ListDialogProps) {
-  const [name, setName] = useState("");
-  const [folderId, setFolderId] = useState<string | null>(null);
-  const [color, setColor] = useState<string>(TACTILE_COLOR_SWATCHES[0].hex);
-  const [icon, setIcon] = useState<string>("list");
-  const [viewType, setViewType] = useState<"list" | "board" | "calendar">("list");
+}: Omit<ListDialogProps, "isOpen">) {
+  const [name, setName] = useState(mode === "edit" && listToEdit ? listToEdit.name : "");
+  const [folderId, setFolderId] = useState<string | null>(
+    mode === "edit" && listToEdit ? (listToEdit.folderId ?? null) : defaultFolderId
+  );
+  const [color, setColor] = useState<string>(
+    mode === "edit" && listToEdit && listToEdit.color
+      ? listToEdit.color
+      : TACTILE_COLOR_SWATCHES[0].hex
+  );
+  const [icon, setIcon] = useState<string>(
+    mode === "edit" && listToEdit && listToEdit.icon ? listToEdit.icon : "list"
+  );
+  const [viewType, setViewType] = useState<"list" | "board" | "calendar">(
+    mode === "edit" && listToEdit && listToEdit.viewType ? listToEdit.viewType : "list"
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize form when opened or when listToEdit changes
   useEffect(() => {
-    if (!isOpen) return;
-
-    if (mode === "edit" && listToEdit) {
-      setName(listToEdit.name || "");
-      setFolderId(listToEdit.folderId ?? null);
-      setColor(listToEdit.color || TACTILE_COLOR_SWATCHES[0].hex);
-      setIcon(listToEdit.icon || "list");
-      setViewType(listToEdit.viewType || "list");
-    } else {
-      setName("");
-      setFolderId(defaultFolderId);
-      setColor(TACTILE_COLOR_SWATCHES[0].hex);
-      setIcon("list");
-      setViewType("list");
-    }
-    setErrorMessage(null);
-
     const timer = setTimeout(() => {
       inputRef.current?.focus();
     }, 50);
@@ -102,12 +93,10 @@ export function ListDialog({
       clearTimeout(timer);
       document.body.style.overflow = originalOverflow;
     };
-  }, [isOpen, mode, listToEdit, defaultFolderId]);
+  }, []);
 
   // Handle escape key
   useEffect(() => {
-    if (!isOpen) return;
-
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
@@ -117,9 +106,7 @@ export function ListDialog({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
+  }, [onClose]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -413,5 +400,15 @@ export function ListDialog({
         </form>
       </div>
     </div>
+  );
+}
+
+export function ListDialog(props: ListDialogProps) {
+  if (!props.isOpen) return null;
+  return (
+    <ListDialogModalInner
+      key={props.mode === "edit" && props.listToEdit ? props.listToEdit.id : "create-list"}
+      {...props}
+    />
   );
 }

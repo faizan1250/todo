@@ -19,9 +19,7 @@ import {
   Pencil,
   Trash2,
   Archive,
-  Folder as FolderIcon,
   FolderPlus,
-  List as ListIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BackendList, BackendFolder } from "@/lib/api";

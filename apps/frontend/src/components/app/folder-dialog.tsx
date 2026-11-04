@@ -42,36 +42,27 @@ const ICON_COMPONENTS: Record<string, React.ElementType> = {
   archive: Archive,
 };
 
-export function FolderDialog({
-  isOpen,
+function FolderDialogModalInner({
   onClose,
   mode,
   folderToEdit,
   onSuccess,
-}: FolderDialogProps) {
-  const [name, setName] = useState("");
-  const [color, setColor] = useState<string>(TACTILE_COLOR_SWATCHES[1].hex); // Bubblegum Pink default for folder or Deep Blue
-  const [icon, setIcon] = useState<string>("folder");
+}: Omit<FolderDialogProps, "isOpen">) {
+  const [name, setName] = useState(mode === "edit" && folderToEdit ? folderToEdit.name : "");
+  const [color, setColor] = useState<string>(
+    mode === "edit" && folderToEdit && folderToEdit.color
+      ? folderToEdit.color
+      : TACTILE_COLOR_SWATCHES[1].hex
+  );
+  const [icon, setIcon] = useState<string>(
+    mode === "edit" && folderToEdit && folderToEdit.icon ? folderToEdit.icon : "folder"
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize form when opened
   useEffect(() => {
-    if (!isOpen) return;
-
-    if (mode === "edit" && folderToEdit) {
-      setName(folderToEdit.name || "");
-      setColor(folderToEdit.color || TACTILE_COLOR_SWATCHES[0].hex);
-      setIcon(folderToEdit.icon || "folder");
-    } else {
-      setName("");
-      setColor(TACTILE_COLOR_SWATCHES[0].hex);
-      setIcon("folder");
-    }
-    setErrorMessage(null);
-
     const timer = setTimeout(() => {
       inputRef.current?.focus();
     }, 50);
@@ -83,12 +74,10 @@ export function FolderDialog({
       clearTimeout(timer);
       document.body.style.overflow = originalOverflow;
     };
-  }, [isOpen, mode, folderToEdit]);
+  }, []);
 
   // Handle escape key
   useEffect(() => {
-    if (!isOpen) return;
-
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
@@ -98,9 +87,7 @@ export function FolderDialog({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
+  }, [onClose]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -329,5 +316,15 @@ export function FolderDialog({
         </form>
       </div>
     </div>
+  );
+}
+
+export function FolderDialog(props: FolderDialogProps) {
+  if (!props.isOpen) return null;
+  return (
+    <FolderDialogModalInner
+      key={props.mode === "edit" && props.folderToEdit ? props.folderToEdit.id : "create-folder"}
+      {...props}
+    />
   );
 }
