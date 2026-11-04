@@ -157,3 +157,43 @@ Todo Studio maintains 100% green automated test coverage with **125+ passing tes
   - `test/auth-integration.test.ts`: API client authentication flows, token handling, and profile persistence.
   - `test/polish-and-sync.test.ts`: Accessible skeleton loaders, optimistic UI updates, and profile syncing.
   - `test/components.test.ts`: Task row interaction, status toggling, and dialog operations.
+
+---
+
+## ✨ Key Features & Architectural Capabilities
+
+Todo Studio combines consumer-grade responsiveness with enterprise-grade data guarantees. Every layer of the stack is optimized for predictability, latency, and correctness.
+
+### 1. Hierarchical Domain & Structural Organization
+- **Multi-Level Containers**: Organize projects hierarchically into **Folders** $\rightarrow$ **Lists** $\rightarrow$ **Sections** $\rightarrow$ **Tasks**.
+- **Deep Subtask Trees**: Tasks support recursive subtasks up to a maximum depth of 3 (`Parent -> Subtask -> Sub-subtask`) with automated cycle detection preventing circular task relationships.
+- **Micro-Steps via Checklists**: Every task and subtask supports an ordered, toggleable checklist for atomic verification without task bloat.
+- **Orthogonal Tag Taxonomy**: Global and list-scoped tags allow multi-dimensional filtering, searching, and batch categorization across disparate projects.
+- **Automated Default Inbox**: User registration automatically provisions a reserved `Inbox` container that serves as the root destination for rapid capture and trash-restored orphan items.
+
+### 2. Byte-Order Fractional Indexing ($O(1)$ Reorders)
+- Implements byte-order lexicographical fractional indexing via `fractional-indexing`.
+- Moving any item between two arbitrary siblings computes a mid-key string in constant $O(1)$ time without updating adjacent records or requiring sequential index re-writes.
+- Eliminates locking contention and cascade updates across large lists, guaranteeing zero-downtime, conflict-free drag-and-drop reordering.
+
+### 3. Keyset Cursor Pagination & Zero $N+1$ Batch Loader
+- **Stable Keyset Pagination**: Queries paginate deterministically using composite cursor tuples `(position, id)`. Eliminates offset drift, phantom rows, and $O(N)$ scanning performance penalties on large datasets.
+- **Parallel 3-Query Batch Loader**: When passing `include=subtasks,checklist,tags`, the backend dispatches 3 indexed queries executed in parallel via SQLite WAL connections, mapping results in-memory with $O(1)$ hash maps. Eliminates the $N+1$ query problem entirely.
+
+### 4. Transactional Bulk Operations with Strict Rollback
+- Perform batch operations (`move`, `tag`, `untag`, `complete`, `reopen`, `archive`, `delete`, `set_priority`, `set_due_date`) over dozens of tasks in a single atomic database transaction.
+- **Strict 404 Rollback Guarantee**: If any target task ID does not exist, belongs to another user, or fails validation, the entire transaction rolls back immediately with zero partial state mutation.
+
+### 5. Resilient Soft-Delete Cascade, 1-Click Restore & Daily Purge
+- **Recursive Soft-Delete**: Deleting a folder, list, section, or task cascades `deletedAt` timestamps across all dependent child items, checklists, and tag relations.
+- **Smart 1-Click Restore**: Restoring an item intelligently checks for ancestor viability. If the original container was permanently removed, the restored task automatically falls back safely to the user's default `Inbox`.
+- **Automated Purge Cron**: Powered by `@elysiajs/cron`, an internal daemon runs daily at `03:00 UTC` to clean up and permanently purge soft-deleted records older than 30 days.
+
+### 6. Deep Tree Duplication & Reusable Template Engine
+- **Task Tree Snapshots**: Snapshot any complex task and its nested hierarchy (subtasks, checklist items, tags) into a reusable template definition (capped at 100 nodes, depth $\le 3$).
+- **One-Click Instantiation**: Instantiate templates into any list or section with newly minted UUIDv7 identifiers and preserved relative tree topologies.
+- **Deep Duplication**: Clone existing task trees instantaneously with automated ID re-mapping and position-right-after insertion.
+
+### 7. Dual-Mode Authentication & Multi-Tenant Security
+- **Instant Demo Experience**: Explore the full platform without barriers via an ephemeral guest demo session.
+- **Production Better Auth**: Multi-tenant authentication with Argon2/scrypt password hashing, session tokens, TOTP two-factor authentication (2FA) with recovery backup codes, and strict user-scoped tenancy isolation on every database query.
