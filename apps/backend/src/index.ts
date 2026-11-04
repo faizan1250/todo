@@ -7,6 +7,7 @@ import { folderRoutes } from "./routes/folders";
 import { listRoutes } from "./routes/lists";
 import { sectionRoutes } from "./routes/sections";
 import { tagRoutes } from "./routes/tags";
+import { checklistRoutes } from "./routes/checklist";
 
 export const app = new Elysia()
   .use(
@@ -25,6 +26,7 @@ export const app = new Elysia()
   .use(listRoutes)
   .use(sectionRoutes)
   .use(tagRoutes)
+  .use(checklistRoutes)
   .get(
     "/health",
     () => ({
