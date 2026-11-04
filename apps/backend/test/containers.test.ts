@@ -2,38 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { app } from "../src/index";
 import { db, tasks, lists, folders, sections } from "../src/db";
 import { eq } from "drizzle-orm";
+import { createAuthUser } from "./helpers";
 
 describe("Phase 2 Part 1 Backend: Containers (Folders, Lists, Sections)", () => {
-  // Helper to create an authenticated user and return token and user info
-  async function createAuthUser(namePrefix = "User") {
-    const email = `${namePrefix.toLowerCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
-    const password = "Password123!";
-    const name = `${namePrefix} ${Date.now()}`;
-
-    const signupRes = await app.handle(
-      new Request("http://localhost:3001/api/auth/sign-up/email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, name }),
-      })
-    );
-
-    expect(signupRes.status).toBe(200);
-    const data = (await signupRes.json()) as {
-      token: string;
-      user: { id: string; email: string; name: string };
-    };
-    const token = signupRes.headers.get("set-auth-token") || data.token;
-
-    return {
-      token,
-      user: data.user,
-      authHeaders: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-    };
-  }
 
   describe("1. Better Auth Inbox List Auto-Creation & Protection", () => {
     it("automatically creates an 'Inbox' list (isInbox: true, position: 'a0') upon user signup", async () => {
