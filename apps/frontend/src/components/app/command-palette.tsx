@@ -283,6 +283,8 @@ export function CommandPalette({
       onToggleSidebar,
       onOpenShortcuts,
       onOpenAuth,
+      onOpenTemplates,
+      onOpenTrash,
       onClose,
     ]
   );

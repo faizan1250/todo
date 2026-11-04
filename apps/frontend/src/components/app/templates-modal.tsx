@@ -1,18 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Bookmark,
   Trash2,
-  Plus,
-  Play,
   Check,
-  CheckSquare,
-  List,
   FolderInput,
   Tag,
-  FileText,
   AlertTriangle,
   Loader2,
   X,
@@ -174,7 +169,11 @@ export function TemplatesModal({
 }: TemplatesModalProps) {
   const [templates, setTemplates] = useState<BackendTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
-  const [targetListId, setTargetListId] = useState<string>("");
+  const [targetListId, setTargetListId] = useState<string>(() => {
+    if (defaultListId) return defaultListId;
+    const inbox = lists.find((l) => l.isInbox) || lists[0];
+    return inbox ? inbox.id : "";
+  });
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isInstantiating, setIsInstantiating] = useState(false);
@@ -182,42 +181,35 @@ export function TemplatesModal({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Initialize target list
   useEffect(() => {
-    if (defaultListId) {
-      setTargetListId(defaultListId);
-    } else if (lists.length > 0) {
-      const inbox = lists.find((l) => l.isInbox) || lists[0];
-      setTargetListId(inbox.id);
-    }
-  }, [defaultListId, lists]);
+    if (!isOpen) return;
+    let isMounted = true;
 
-  const loadTemplates = useCallback(async () => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const res = await getTemplates();
-      setTemplates(res);
-      if (res.length > 0 && !selectedTemplateId) {
-        setSelectedTemplateId(res[0].id);
-      }
-    } catch (err) {
-      console.error("Failed to load templates:", err);
-      setErrorMessage(err instanceof Error ? err.message : "Failed to load templates");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [selectedTemplateId]);
+    getTemplates()
+      .then((res) => {
+        if (!isMounted) return;
+        setTemplates(res);
+        if (res.length > 0) {
+          setSelectedTemplateId((prev) => (prev ? prev : res[0].id));
+        }
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error("Failed to load templates:", err);
+        setErrorMessage(
+          err instanceof Error ? err.message : "Failed to load templates"
+        );
+        setIsLoading(false);
+      });
 
-  useEffect(() => {
-    if (isOpen) {
-      void loadTemplates();
-    } else {
-      setSearchQuery("");
-      setErrorMessage(null);
-      setSuccessMessage(null);
-    }
-  }, [isOpen, loadTemplates]);
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
+
+  // Keep target list in sync if defaultListId changes and target not set
+  const effectiveTargetListId = targetListId || defaultListId || lists[0]?.id || "";
 
   // Escape key listener
   useEffect(() => {
@@ -248,7 +240,8 @@ export function TemplatesModal({
   // Instantiate action
   const handleInstantiate = async () => {
     if (!selectedTemplate) return;
-    if (!targetListId) {
+    const listIdToUse = targetListId || effectiveTargetListId;
+    if (!listIdToUse) {
       setErrorMessage("Please select a target list.");
       return;
     }
@@ -259,7 +252,7 @@ export function TemplatesModal({
 
     try {
       const task = await instantiateTemplate(selectedTemplate.id, {
-        listId: targetListId,
+        listId: listIdToUse,
       });
 
       setSuccessMessage(`Successfully created task tree from "${selectedTemplate.name}"!`);
@@ -472,7 +465,7 @@ export function TemplatesModal({
                     </label>
                     <select
                       id="target-list-select"
-                      value={targetListId}
+                      value={effectiveTargetListId}
                       onChange={(e) => setTargetListId(e.target.value)}
                       className="rounded-lg border border-[#CAD5E8] bg-white px-2.5 py-1 text-xs font-medium text-[#0B1220] focus:border-[#09318D] focus:outline-none dark:border-[#16367F] dark:bg-[#051A4D] dark:text-white cursor-pointer"
                     >
@@ -487,7 +480,7 @@ export function TemplatesModal({
                   <button
                     type="button"
                     onClick={handleInstantiate}
-                    disabled={isInstantiating || !targetListId}
+                    disabled={isInstantiating || !effectiveTargetListId}
                     className="btn-primary-depth inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-xs font-bold text-white shadow-lift-blue transition-all cursor-pointer disabled:opacity-50"
                   >
                     {isInstantiating ? (

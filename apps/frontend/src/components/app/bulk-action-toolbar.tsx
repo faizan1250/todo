@@ -10,7 +10,6 @@ import {
   Archive,
   Trash2,
   X,
-  Check,
   ChevronUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";

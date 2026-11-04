@@ -469,13 +469,32 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   }, [isAuthenticated]);
 
   useEffect(() => {
-    void loadContainers();
-  }, [loadContainers]);
+    if (!isAuthenticated) return;
+    let isMounted = true;
+
+    Promise.all([getLists(), getFolders()])
+      .then(([lists, folders]) => {
+        if (!isMounted) return;
+        setUserLists(lists);
+        setUserFolders(folders);
+        const inbox = lists.find((l) => l.isInbox) || lists[0];
+        if (inbox) {
+          setActiveListId((prev) => prev || inbox.id);
+        }
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error("Failed to load containers:", err);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated]);
 
   // Fetch tasks for active list or active smart view
   const loadTasks = useCallback(async () => {
     if (!isAuthenticated) return;
-    setIsLoadingTasks(true);
     try {
       const queryParams: { listId?: string; include: string } = {
         include: "subtasks,checklist,tags",
@@ -500,14 +519,49 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         message: err instanceof Error ? err.message : "Network error",
         type: "error",
       });
-    } finally {
-      setIsLoadingTasks(false);
     }
   }, [isAuthenticated, activeListId, toast]);
 
   useEffect(() => {
-    void loadTasks();
-  }, [loadTasks]);
+    if (!isAuthenticated) return;
+    let isMounted = true;
+
+    const queryParams: { listId?: string; include: string } = {
+      include: "subtasks,checklist,tags",
+    };
+    if (activeListId) {
+      queryParams.listId = activeListId;
+    }
+
+    getTasks(queryParams)
+      .then((res) => {
+        if (!isMounted) return;
+        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+        setTasks(mapped);
+        if (mapped.length > 0) {
+          setSelectedTaskId((prev) =>
+            prev && mapped.some((t) => t.id === prev) ? prev : mapped[0].id
+          );
+        } else {
+          setSelectedTaskId(null);
+        }
+        setIsLoadingTasks(false);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error("Failed to load tasks:", err);
+        toast({
+          title: "Failed to load tasks",
+          message: err instanceof Error ? err.message : "Network error",
+          type: "error",
+        });
+        setIsLoadingTasks(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, activeListId, toast]);
 
   // Bulk Selection Handlers
   const handleToggleSelectTask = useCallback(

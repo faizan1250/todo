@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Trash2,
   RotateCcw,
@@ -13,7 +13,6 @@ import {
   Layers,
   AlertTriangle,
   Loader2,
-  Calendar,
   Clock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -87,43 +86,48 @@ export function TrashModal({ isOpen, onClose, onItemRestored }: TrashModalProps)
     sections: [],
   });
 
-  const loadTrash = useCallback(async () => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const response = await getTrash();
-      // getTrash with no params returns grouped response
-      if (
-        response &&
-        typeof response === "object" &&
-        ("tasks" in response || "lists" in response || "folders" in response || "sections" in response)
-      ) {
-        const grouped = response as TrashGroupedResponse;
-        setTrashData({
-          tasks: grouped.tasks || [],
-          lists: grouped.lists || [],
-          folders: grouped.folders || [],
-          sections: grouped.sections || [],
-        });
-      } else {
-        setTrashData({ tasks: [], lists: [], folders: [], sections: [] });
-      }
-    } catch (err) {
-      console.error("Failed to load trash:", err);
-      setErrorMessage(err instanceof Error ? err.message : "Failed to load trash items");
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    if (isOpen) {
-      void loadTrash();
-    } else {
-      setSearchQuery("");
-      setErrorMessage(null);
-    }
-  }, [isOpen, loadTrash]);
+    if (!isOpen) return;
+    let isMounted = true;
+
+    getTrash()
+      .then((response) => {
+        if (!isMounted) return;
+        if (
+          response &&
+          typeof response === "object" &&
+          (
+            "tasks" in response ||
+            "lists" in response ||
+            "folders" in response ||
+            "sections" in response
+          )
+        ) {
+          const grouped = response as TrashGroupedResponse;
+          setTrashData({
+            tasks: grouped.tasks || [],
+            lists: grouped.lists || [],
+            folders: grouped.folders || [],
+            sections: grouped.sections || [],
+          });
+        } else {
+          setTrashData({ tasks: [], lists: [], folders: [], sections: [] });
+        }
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error("Failed to load trash:", err);
+        setErrorMessage(
+          err instanceof Error ? err.message : "Failed to load trash items"
+        );
+        setIsLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
 
   // Escape key listener
   useEffect(() => {
