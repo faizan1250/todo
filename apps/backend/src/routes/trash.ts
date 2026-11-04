@@ -270,6 +270,22 @@ export const trashRoutes = new Elysia({ prefix: "/api/v1/trash" })
               )
             );
 
+          if (restored?.recurrenceId) {
+            await db
+              .update(schema.recurrences)
+              .set({
+                active: true,
+                version: sql`${schema.recurrences.version} + 1`,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(schema.recurrences.id, restored.recurrenceId),
+                  eq(schema.recurrences.userId, user.id)
+                )
+              );
+          }
+
           return { success: true, ...restored };
         }
 

@@ -55,7 +55,7 @@ export function validateRecurrenceRule(
 
   // Validate syntax with rrulestr
   try {
-    rrulestr(rruleStr, { compatible: true });
+    rrulestr(rruleStr);
   } catch (err: any) {
     return { valid: false, error: `Invalid RRULE syntax: ${err.message}` };
   }
@@ -111,7 +111,7 @@ export function calculateNextOccurrence(params: {
 
   if (allDay) {
     // All-day tasks operate on UTC calendar dates directly
-    const rule = rrulestr(rruleStr, { dtstart, compatible: true });
+    const rule = rrulestr(rruleStr, { dtstart });
 
     if (mode === "after_completion") {
       // Calculate interval from rule
@@ -143,7 +143,7 @@ export function calculateNextOccurrence(params: {
 
   // Timed tasks: DST-safe wall-clock arithmetic
   const dtstartWallClock = toWallClockUtc(dtstart, timezone);
-  const rule = rrulestr(rruleStr, { dtstart: dtstartWallClock, compatible: true });
+  const rule = rrulestr(rruleStr, { dtstart: dtstartWallClock });
 
   if (mode === "after_completion") {
     const parsedOptions = RRule.parseString(rruleStr);

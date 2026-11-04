@@ -8,6 +8,7 @@ import { decodeCursor, paginateResults } from "../utils/cursor";
 import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks, getTasksWithIncludes } from "../utils/tasks";
 import { toUtcMidnight, validateStartDue, validateEstimateMin, validateLocationCoords } from "../utils/dates";
 import { recomputeTaskReminders, firePendingTaskReminders } from "../services/reminders";
+import { spawnNextRecurrenceInstance } from "../services/recurrence";
 
 /**
  * Normalizes notes string:
@@ -1224,6 +1225,23 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         [id, user.id, nowMs]
       );
 
+      // Deleting open recurring task deactivates series
+      if (existing.recurrenceId) {
+        await db
+          .update(schema.recurrences)
+          .set({
+            active: false,
+            version: sql`${schema.recurrences.version} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(schema.recurrences.id, existing.recurrenceId),
+              eq(schema.recurrences.userId, user.id)
+            )
+          );
+      }
+
       return { success: true };
     },
     {
@@ -1549,19 +1567,48 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           .where(
             and(
               eq(schema.tasks.id, id),
-              eq(schema.tasks.userId, user.id)
+              eq(schema.tasks.userId, user.id),
+              ne(schema.tasks.status, "done")
             )
           )
           .returning();
 
+        if (!updated) {
+          // Double-tap safe: already completed, return current state without spawning
+          const [alreadyDone] = await tx
+            .select()
+            .from(schema.tasks)
+            .where(
+              and(
+                eq(schema.tasks.id, id),
+                eq(schema.tasks.userId, user.id)
+              )
+            );
+          return { task: alreadyDone, nextTask: null, alreadyDone: true };
+        }
+
         await firePendingTaskReminders(id, user.id, tx);
 
-        return updated;
+        // Spawn next recurrence instance if recurring
+        const nextTask = await spawnNextRecurrenceInstance({
+          taskId: id,
+          userId: user.id,
+          isSkip: false,
+          tx,
+          now: completedAt,
+        });
+
+        return { task: updated, nextTask, alreadyDone: false };
       });
 
-      await runCompleteHooks(updatedTask);
+      if (!updatedTask.alreadyDone) {
+        await runCompleteHooks(updatedTask.task);
+      }
 
-      return updatedTask;
+      return {
+        ...updatedTask.task,
+        nextTask: updatedTask.nextTask,
+      };
     },
     {
       auth: true,
@@ -1573,6 +1620,83 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           completeSubtasks: t.Optional(t.Boolean()),
         })
       ),
+    }
+  )
+  // POST /api/v1/tasks/:id/skip - cancel current task instance and spawn next recurrence instance without incrementing completedCount
+  .post(
+    "/:id/skip",
+    async ({ user, params: { id }, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      if (existing.status === "cancelled" || existing.status === "done") {
+        return status(400, { error: "Task is already completed or cancelled" });
+      }
+
+      const now = new Date();
+
+      const result = await db.transaction(async (tx) => {
+        const [cancelled] = await tx
+          .update(schema.tasks)
+          .set({
+            status: "cancelled",
+            version: sql`${schema.tasks.version} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(schema.tasks.id, id),
+              eq(schema.tasks.userId, user.id),
+              ne(schema.tasks.status, "cancelled"),
+              ne(schema.tasks.status, "done")
+            )
+          )
+          .returning();
+
+        if (!cancelled) {
+          return null;
+        }
+
+        await firePendingTaskReminders(id, user.id, tx);
+
+        // Spawn next instance without incrementing completedCount
+        const nextTask = await spawnNextRecurrenceInstance({
+          taskId: id,
+          userId: user.id,
+          isSkip: true,
+          tx,
+          now,
+        });
+
+        return { task: cancelled, nextTask };
+      });
+
+      if (!result) {
+        return status(400, { error: "Task could not be skipped" });
+      }
+
+      return {
+        ...result.task,
+        nextTask: result.nextTask,
+      };
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
     }
   )
   // POST /api/v1/tasks/:id/reopen - reopen completed task (descendants/ancestors unaffected)
