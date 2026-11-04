@@ -7,8 +7,9 @@ import { positionBetween, generateNKeysBetween } from "../utils/position";
 import { decodeCursor, paginateResults } from "../utils/cursor";
 import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks, getTasksWithIncludes } from "../utils/tasks";
 import { toUtcMidnight, validateStartDue, validateEstimateMin, validateLocationCoords } from "../utils/dates";
-import { recomputeTaskReminders, firePendingTaskReminders } from "../services/reminders";
+import { recomputeTaskReminders, firePendingTaskReminders, calculateRelativeRemindAt } from "../services/reminders";
 import { spawnNextRecurrenceInstance } from "../services/recurrence";
+import { parseNaturalLanguage, type ParsedTaskResult } from "../utils/parser";
 
 /**
  * Normalizes notes string:
@@ -850,6 +851,250 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           t.Literal("set_priority"),
         ]),
         payload: t.Optional(t.Any()),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/parse - parse task text into structured components
+  .post(
+    "/parse",
+    async ({ user, body, status }) => {
+      const userLists = await db
+        .select({ id: schema.lists.id, name: schema.lists.name, isInbox: schema.lists.isInbox })
+        .from(schema.lists)
+        .where(
+          and(
+            eq(schema.lists.userId, user.id),
+            isNull(schema.lists.deletedAt)
+          )
+        );
+
+      const [userInfo] = await db
+        .select({ timezone: schema.users.timezone })
+        .from(schema.users)
+        .where(eq(schema.users.id, user.id));
+
+      const timezone = body.timezone || userInfo?.timezone || "UTC";
+
+      try {
+        const parsed = parseNaturalLanguage(body.text, userLists, timezone);
+        return parsed;
+      } catch (err: any) {
+        if (err.message === "EMPTY_TITLE") {
+          return status(422, {
+            error: "EMPTY_TITLE",
+            message: "Title cannot be empty after parsing",
+          });
+        }
+        return status(400, { error: err.message });
+      }
+    },
+    {
+      auth: true,
+      body: t.Object({
+        text: t.String(),
+        timezone: t.Optional(t.String()),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/quick - parse and create task with tags, reminders, recurrence in ONE atomic transaction
+  .post(
+    "/quick",
+    async ({ user, body, status }) => {
+      const userLists = await db
+        .select({ id: schema.lists.id, name: schema.lists.name, isInbox: schema.lists.isInbox })
+        .from(schema.lists)
+        .where(
+          and(
+            eq(schema.lists.userId, user.id),
+            isNull(schema.lists.deletedAt)
+          )
+        );
+
+      const [userInfo] = await db
+        .select({ timezone: schema.users.timezone, preferences: schema.users.preferences })
+        .from(schema.users)
+        .where(eq(schema.users.id, user.id));
+
+      const timezone = body.timezone || userInfo?.timezone || "UTC";
+      const defaultReminderTime = userInfo?.preferences?.defaultReminderTime || "09:00";
+
+      let parsed: ParsedTaskResult;
+      try {
+        parsed = parseNaturalLanguage(body.text, userLists, timezone);
+      } catch (err: any) {
+        if (err.message === "EMPTY_TITLE") {
+          return status(422, {
+            error: "EMPTY_TITLE",
+            message: "Title cannot be empty after parsing",
+          });
+        }
+        return status(400, { error: err.message });
+      }
+
+      // Determine listId
+      let finalListId = parsed.list?.id;
+      if (!finalListId && body.listId) {
+        finalListId = body.listId;
+      }
+      if (!finalListId) {
+        const inbox = userLists.find((l) => l.isInbox) || userLists[0];
+        if (!inbox) {
+          return status(400, { error: "No available list found for task" });
+        }
+        finalListId = inbox.id;
+      }
+
+      // Execute in ONE atomic transaction
+      const now = new Date();
+      const createdTask = await db.transaction(async (tx) => {
+        // Calculate position in list
+        const position = await positionBetween(
+          {
+            table: schema.tasks,
+            where: and(
+              eq(schema.tasks.userId, user.id),
+              eq(schema.tasks.listId, finalListId),
+              isNull(schema.tasks.parentId),
+              isNull(schema.tasks.deletedAt)
+            ),
+          },
+          null,
+          null
+        );
+
+        const newTaskId = Bun.randomUUIDv7();
+
+        // Recurrence
+        let recId: string | null = null;
+        if (parsed.recurrence) {
+          recId = Bun.randomUUIDv7();
+          await tx.insert(schema.recurrences).values({
+            id: recId,
+            userId: user.id,
+            rrule: parsed.recurrence.rrule,
+            mode: parsed.recurrence.mode,
+            timezone,
+            dtstart: parsed.dueAt || now,
+            completedCount: 0,
+            active: true,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
+        // Insert task
+        const [newTask] = await tx
+          .insert(schema.tasks)
+          .values({
+            id: newTaskId,
+            userId: user.id,
+            listId: finalListId,
+            sectionId: null,
+            parentId: null,
+            title: parsed.title,
+            priority: parsed.priority,
+            status: "todo",
+            position,
+            startAt: null,
+            dueAt: parsed.dueAt,
+            deadlineAt: null,
+            allDay: parsed.allDay,
+            estimateMin: parsed.estimateMin,
+            recurrenceId: recId,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+
+        // Tags: automatically find or create
+        if (parsed.tags.length > 0) {
+          for (const tagName of parsed.tags) {
+            const [existingTag] = await tx
+              .select({ id: schema.tags.id })
+              .from(schema.tags)
+              .where(
+                and(
+                  eq(schema.tags.userId, user.id),
+                  sql`lower(${schema.tags.name}) = lower(${tagName})`,
+                  isNull(schema.tags.deletedAt)
+                )
+              );
+
+            let tagId = existingTag?.id;
+            if (!tagId) {
+              const [createdTag] = await tx
+                .insert(schema.tags)
+                .values({
+                  userId: user.id,
+                  name: tagName,
+                  version: 1,
+                  createdAt: now,
+                  updatedAt: now,
+                })
+                .returning();
+              tagId = createdTag.id;
+            }
+
+            await tx
+              .insert(schema.taskTags)
+              .values({
+                taskId: newTaskId,
+                tagId,
+              })
+              .onConflictDoNothing();
+          }
+        }
+
+        // Reminders
+        if (parsed.reminders.length > 0) {
+          for (const rem of parsed.reminders) {
+            let remindAt: Date;
+            let firedAt: Date | null = null;
+
+            if (rem.kind === "absolute") {
+              remindAt = rem.remindAt || new Date(now.getTime() + 60 * 60 * 1000);
+            } else {
+              const relRes = calculateRelativeRemindAt({
+                anchorDate: parsed.dueAt,
+                offsetMin: rem.offsetMin ?? 0,
+                allDay: parsed.allDay,
+                userTimezone: timezone,
+                defaultReminderTime,
+                now,
+              });
+              remindAt = relRes.remindAt;
+              firedAt = relRes.firedAt;
+            }
+
+            await tx.insert(schema.reminders).values({
+              userId: user.id,
+              taskId: newTaskId,
+              kind: rem.kind,
+              relativeTo: rem.relativeTo ?? "due",
+              offsetMin: rem.offsetMin ?? 0,
+              remindAt,
+              firedAt,
+              version: 1,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+
+        return newTask;
+      });
+
+      const [withIncludes] = await attachTaskIncludes([createdTask], ["tags", "subtasks", "checklist"], user.id);
+      return status(201, withIncludes);
+    },
+    {
+      auth: true,
+      body: t.Object({
+        text: t.String(),
+        listId: t.Optional(t.String()),
+        timezone: t.Optional(t.String()),
       }),
     }
   )
