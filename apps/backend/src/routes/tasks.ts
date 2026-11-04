@@ -1,11 +1,11 @@
 import { Elysia, t } from "elysia";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
-import { positionBetween } from "../utils/position";
+import { positionBetween, generateNKeysBetween } from "../utils/position";
 import { decodeCursor, paginateResults } from "../utils/cursor";
-import { validateSubtaskHierarchy, getTaskDescendants } from "../utils/tasks";
+import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks } from "../utils/tasks";
 
 /**
  * Normalizes notes string:
@@ -455,6 +455,454 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
       }),
     }
   )
+  // POST /api/v1/tasks/bulk - execute batch transactional operations across tasks
+  .post(
+    "/bulk",
+    async ({ user, body, status }) => {
+      const { ids, action, payload } = body;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 200) {
+        return status(400, { error: "ids must be a non-empty array with at most 200 IDs" });
+      }
+
+      const uniqueIds = Array.from(new Set(ids));
+      if (uniqueIds.length !== ids.length) {
+        return status(400, { error: "ids array contains duplicate IDs" });
+      }
+
+      return await db.transaction(async (tx) => {
+        // Query all matching tasks
+        const existingTasks = await tx
+          .select()
+          .from(schema.tasks)
+          .where(
+            and(
+              inArray(schema.tasks.id, ids),
+              eq(schema.tasks.userId, user.id),
+              isNull(schema.tasks.deletedAt)
+            )
+          );
+
+        const foundMap = new Set(existingTasks.map((t) => t.id));
+        const missingIds = ids.filter((id) => !foundMap.has(id));
+
+        if (missingIds.length > 0) {
+          return status(404, {
+            error: "One or more tasks not found",
+            missingIds,
+          });
+        }
+
+        const taskMap = new Map(existingTasks.map((t) => [t.id, t]));
+
+        switch (action) {
+          case "move": {
+            let targetParentId: string | null = null;
+            let targetListId: string = existingTasks[0].listId;
+            let targetSectionId: string | null = null;
+
+            // Handle parentId
+            if (payload?.parentId !== undefined && payload.parentId !== null) {
+              if (ids.includes(payload.parentId)) {
+                return status(400, { error: "A task cannot be moved under one of the moving tasks" });
+              }
+
+              const [parentTask] = await tx
+                .select()
+                .from(schema.tasks)
+                .where(
+                  and(
+                    eq(schema.tasks.id, payload.parentId),
+                    eq(schema.tasks.userId, user.id),
+                    isNull(schema.tasks.deletedAt)
+                  )
+                );
+
+              if (!parentTask) {
+                return status(404, { error: "Target parent task not found" });
+              }
+
+              // Validate hierarchy for each moving task
+              for (const taskId of ids) {
+                const validation = validateSubtaskHierarchy(user.id, taskId, payload.parentId);
+                if (!validation.valid) {
+                  return status(validation.statusCode ?? 400, { error: validation.error });
+                }
+              }
+
+              targetParentId = payload.parentId;
+              targetListId = parentTask.listId;
+            } else {
+              targetParentId = null;
+              if (payload?.listId) {
+                const [targetList] = await tx
+                  .select()
+                  .from(schema.lists)
+                  .where(
+                    and(
+                      eq(schema.lists.id, payload.listId),
+                      eq(schema.lists.userId, user.id),
+                      isNull(schema.lists.deletedAt)
+                    )
+                  );
+
+                if (!targetList) {
+                  return status(404, { error: "Target list not found" });
+                }
+                targetListId = payload.listId;
+              } else {
+                targetListId = existingTasks[0].listId;
+              }
+            }
+
+            // Handle sectionId
+            if (payload?.sectionId !== undefined && payload.sectionId !== null && payload.sectionId !== "") {
+              const [targetSec] = await tx
+                .select()
+                .from(schema.sections)
+                .where(
+                  and(
+                    eq(schema.sections.id, payload.sectionId),
+                    eq(schema.sections.userId, user.id),
+                    eq(schema.sections.listId, targetListId),
+                    isNull(schema.sections.deletedAt)
+                  )
+                );
+
+              if (!targetSec) {
+                return status(404, { error: "Section not found or does not belong to target list" });
+              }
+              targetSectionId = payload.sectionId;
+            } else {
+              targetSectionId = null;
+            }
+
+            // Query existing tasks in target scope to find last position
+            const scopeConditions = [
+              eq(schema.tasks.userId, user.id),
+              eq(schema.tasks.listId, targetListId),
+              isNull(schema.tasks.deletedAt),
+            ];
+            if (targetParentId) {
+              scopeConditions.push(eq(schema.tasks.parentId, targetParentId));
+            } else {
+              scopeConditions.push(isNull(schema.tasks.parentId));
+            }
+            if (targetSectionId) {
+              scopeConditions.push(eq(schema.tasks.sectionId, targetSectionId));
+            } else {
+              scopeConditions.push(isNull(schema.tasks.sectionId));
+            }
+
+            const existingInScope = await tx
+              .select({ id: schema.tasks.id, position: schema.tasks.position })
+              .from(schema.tasks)
+              .where(
+                and(
+                  ...scopeConditions,
+                  notInArray(schema.tasks.id, ids)
+                )
+              )
+              .orderBy(asc(schema.tasks.position));
+
+            const lastPos = existingInScope.length > 0 ? (existingInScope[existingInScope.length - 1].position as string) : null;
+            const newPositions = generateNKeysBetween(lastPos, null, ids.length);
+
+            const now = new Date();
+            for (let i = 0; i < ids.length; i++) {
+              const taskId = ids[i];
+              const oldTask = taskMap.get(taskId)!;
+              const shouldUpdateDescendants = oldTask.listId !== targetListId;
+
+              if (shouldUpdateDescendants) {
+                const descendants = getTaskDescendants(taskId, user.id);
+                if (descendants.length > 0) {
+                  const descIds = descendants.map((d) => d.id);
+                  await tx
+                    .update(schema.tasks)
+                    .set({
+                      listId: targetListId,
+                      version: sql`${schema.tasks.version} + 1`,
+                      updatedAt: now,
+                    })
+                    .where(
+                      and(
+                        inArray(schema.tasks.id, descIds),
+                        eq(schema.tasks.userId, user.id)
+                      )
+                    );
+                }
+              }
+
+              await tx
+                .update(schema.tasks)
+                .set({
+                  position: newPositions[i],
+                  listId: targetListId,
+                  sectionId: targetSectionId,
+                  parentId: targetParentId,
+                  version: sql`${schema.tasks.version} + 1`,
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(schema.tasks.id, taskId),
+                    eq(schema.tasks.userId, user.id)
+                  )
+                );
+            }
+
+            return { success: true, count: ids.length, action: "move" };
+          }
+
+          case "tag": {
+            const tagIdsToAdd: string[] = [];
+            if (payload?.tagId) tagIdsToAdd.push(payload.tagId);
+            if (Array.isArray(payload?.tagIds)) tagIdsToAdd.push(...payload.tagIds);
+            const uniqueTagIds = Array.from(new Set(tagIdsToAdd));
+            if (uniqueTagIds.length === 0) {
+              return status(400, { error: "tagId or tagIds is required" });
+            }
+
+            const matchingTags = await tx
+              .select({ id: schema.tags.id })
+              .from(schema.tags)
+              .where(
+                and(
+                  inArray(schema.tags.id, uniqueTagIds),
+                  eq(schema.tags.userId, user.id),
+                  isNull(schema.tags.deletedAt)
+                )
+              );
+
+            if (matchingTags.length !== uniqueTagIds.length) {
+              return status(400, { error: "One or more tag IDs are invalid" });
+            }
+
+            const pairs = ids.flatMap((taskId) =>
+              uniqueTagIds.map((tagId) => ({ taskId, tagId }))
+            );
+
+            if (pairs.length > 0) {
+              await tx
+                .insert(schema.taskTags)
+                .values(pairs)
+                .onConflictDoNothing();
+            }
+
+            const now = new Date();
+            await tx
+              .update(schema.tasks)
+              .set({
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, ids),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+
+            return { success: true, count: ids.length, action: "tag" };
+          }
+
+          case "untag": {
+            const tagIdsToRemove: string[] = [];
+            if (payload?.tagId) tagIdsToRemove.push(payload.tagId);
+            if (Array.isArray(payload?.tagIds)) tagIdsToRemove.push(...payload.tagIds);
+            const uniqueTagIds = Array.from(new Set(tagIdsToRemove));
+            if (uniqueTagIds.length === 0) {
+              return status(400, { error: "tagId or tagIds is required" });
+            }
+
+            await tx
+              .delete(schema.taskTags)
+              .where(
+                and(
+                  inArray(schema.taskTags.taskId, ids),
+                  inArray(schema.taskTags.tagId, uniqueTagIds)
+                )
+              );
+
+            const now = new Date();
+            await tx
+              .update(schema.tasks)
+              .set({
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, ids),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+
+            return { success: true, count: ids.length, action: "untag" };
+          }
+
+          case "complete": {
+            const completeSubtasks = Boolean(payload?.completeSubtasks);
+            const now = new Date();
+            const targetTaskIds = new Set(ids);
+
+            if (completeSubtasks) {
+              for (const taskId of ids) {
+                const descendants = getTaskDescendants(taskId, user.id);
+                for (const d of descendants) {
+                  targetTaskIds.add(d.id);
+                }
+              }
+            }
+
+            const allTaskIdsArray = Array.from(targetTaskIds);
+
+            await tx
+              .update(schema.tasks)
+              .set({
+                status: "done",
+                completedAt: now,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, allTaskIdsArray),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+
+            const completedTasks = await tx
+              .select()
+              .from(schema.tasks)
+              .where(
+                and(
+                  inArray(schema.tasks.id, ids),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+
+            for (const task of completedTasks) {
+              await runCompleteHooks(task);
+            }
+
+            return { success: true, count: ids.length, action: "complete" };
+          }
+
+          case "reopen": {
+            const now = new Date();
+            await tx
+              .update(schema.tasks)
+              .set({
+                status: "todo",
+                completedAt: null,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, ids),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+
+            return { success: true, count: ids.length, action: "reopen" };
+          }
+
+          case "archive": {
+            const now = new Date();
+            await tx
+              .update(schema.tasks)
+              .set({
+                archivedAt: now,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, ids),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+
+            return { success: true, count: ids.length, action: "archive" };
+          }
+
+          case "delete": {
+            const now = new Date();
+            const targetDeleteIds = new Set(ids);
+            for (const taskId of ids) {
+              const descendants = getTaskDescendants(taskId, user.id);
+              for (const d of descendants) {
+                targetDeleteIds.add(d.id);
+              }
+            }
+            const allDeleteIds = Array.from(targetDeleteIds);
+
+            await tx
+              .update(schema.tasks)
+              .set({
+                deletedAt: now,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, allDeleteIds),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+
+            return { success: true, count: ids.length, action: "delete" };
+          }
+
+          case "set_priority": {
+            const priority = payload?.priority;
+            if (typeof priority !== "number" || !Number.isInteger(priority) || priority < 0 || priority > 4) {
+              return status(400, { error: "Priority must be an integer between 0 and 4" });
+            }
+
+            const now = new Date();
+            await tx
+              .update(schema.tasks)
+              .set({
+                priority,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, ids),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+
+            return { success: true, count: ids.length, action: "set_priority" };
+          }
+
+          default:
+            return status(400, { error: "Unsupported bulk action" });
+        }
+      });
+    },
+    {
+      auth: true,
+      body: t.Object({
+        ids: t.Array(t.String(), { minItems: 1, maxItems: 200 }),
+        action: t.Union([
+          t.Literal("move"),
+          t.Literal("tag"),
+          t.Literal("untag"),
+          t.Literal("complete"),
+          t.Literal("reopen"),
+          t.Literal("archive"),
+          t.Literal("delete"),
+          t.Literal("set_priority"),
+        ]),
+        payload: t.Optional(t.Any()),
+      }),
+    }
+  )
   // GET /api/v1/tasks/:id - get single task with optional includes
   .get(
     "/:id",
@@ -803,6 +1251,11 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         shouldUpdateDescendantList = true;
       }
 
+      // If moving to a different listId and sectionId is not explicitly provided, reset sectionId to null
+      if (nextListId !== existing.listId && body.sectionId === undefined) {
+        nextSectionId = null;
+      }
+
       // Section ID change check
       if (body.sectionId !== undefined) {
         if (body.sectionId === null || body.sectionId === "") {
@@ -820,7 +1273,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
               )
             );
           if (!sec) {
-            return status(404, { error: "Section not found or does not belong to task's list" });
+            return status(404, { error: "Section not found or does not belong to target list" });
           }
           nextSectionId = body.sectionId;
         }
@@ -996,6 +1449,130 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
       }),
       body: t.Object({
         tagIds: t.Array(t.String()),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/:id/complete - complete task with optional subtask cascading and onComplete hooks
+  .post(
+    "/:id/complete",
+    async ({ user, params: { id }, body, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      const completeSubtasks = Boolean(body?.completeSubtasks);
+      const completedAt = new Date();
+
+      const updatedTask = await db.transaction(async (tx) => {
+        if (completeSubtasks) {
+          const descendants = getTaskDescendants(id, user.id);
+          if (descendants.length > 0) {
+            const descendantIds = descendants.map((d) => d.id);
+            await tx
+              .update(schema.tasks)
+              .set({
+                status: "done",
+                completedAt,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: completedAt,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, descendantIds),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+          }
+        }
+
+        const [updated] = await tx
+          .update(schema.tasks)
+          .set({
+            status: "done",
+            completedAt,
+            version: sql`${schema.tasks.version} + 1`,
+            updatedAt: completedAt,
+          })
+          .where(
+            and(
+              eq(schema.tasks.id, id),
+              eq(schema.tasks.userId, user.id)
+            )
+          )
+          .returning();
+
+        return updated;
+      });
+
+      await runCompleteHooks(updatedTask);
+
+      return updatedTask;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+      body: t.Optional(
+        t.Object({
+          completeSubtasks: t.Optional(t.Boolean()),
+        })
+      ),
+    }
+  )
+  // POST /api/v1/tasks/:id/reopen - reopen completed task (descendants/ancestors unaffected)
+  .post(
+    "/:id/reopen",
+    async ({ user, params: { id }, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      const updatedAt = new Date();
+      const [updated] = await db
+        .update(schema.tasks)
+        .set({
+          status: "todo",
+          completedAt: null,
+          version: sql`${schema.tasks.version} + 1`,
+          updatedAt,
+        })
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id)
+          )
+        )
+        .returning();
+
+      return updated;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
       }),
     }
   );

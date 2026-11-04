@@ -1,4 +1,40 @@
 import { sqlite } from "../db";
+import * as schema from "../db/schema";
+
+export type TaskRow = typeof schema.tasks.$inferSelect;
+export type TaskCompleteHook = (task: TaskRow) => Promise<void> | void;
+
+const completeHooks: TaskCompleteHook[] = [];
+
+/**
+ * Registers an onComplete hook invoked whenever a task is marked complete.
+ * Returns an unregister function.
+ */
+export function registerCompleteHook(hook: TaskCompleteHook): () => void {
+  completeHooks.push(hook);
+  return () => {
+    const idx = completeHooks.indexOf(hook);
+    if (idx !== -1) {
+      completeHooks.splice(idx, 1);
+    }
+  };
+}
+
+/**
+ * Executes all registered onComplete hooks sequentially for a completed task.
+ */
+export async function runCompleteHooks(task: TaskRow): Promise<void> {
+  for (const hook of completeHooks) {
+    await hook(task);
+  }
+}
+
+/**
+ * Clears all registered onComplete hooks (useful in testing).
+ */
+export function clearCompleteHooks(): void {
+  completeHooks.length = 0;
+}
 
 export interface ParentTaskInfo {
   id: string;
