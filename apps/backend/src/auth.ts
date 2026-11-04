@@ -55,33 +55,29 @@ export const auth = betterAuth({
         const body = ctx.body as Record<string, unknown> | undefined;
         const inviteCode = typeof body?.inviteCode === "string" ? body.inviteCode.trim() : null;
 
-        if (!inviteCode) {
-          throw new APIError("BAD_REQUEST", {
-            message: "An invite code is required to sign up",
-          });
-        }
+        if (inviteCode) {
+          const [invite] = await db
+            .select()
+            .from(schema.invites)
+            .where(eq(schema.invites.code, inviteCode));
 
-        const [invite] = await db
-          .select()
-          .from(schema.invites)
-          .where(eq(schema.invites.code, inviteCode));
+          if (!invite) {
+            throw new APIError("BAD_REQUEST", {
+              message: "Invalid invite code",
+            });
+          }
 
-        if (!invite) {
-          throw new APIError("BAD_REQUEST", {
-            message: "Invalid invite code",
-          });
-        }
+          if (invite.usedBy || invite.usedAt) {
+            throw new APIError("BAD_REQUEST", {
+              message: "This invite code has already been used",
+            });
+          }
 
-        if (invite.usedBy || invite.usedAt) {
-          throw new APIError("BAD_REQUEST", {
-            message: "This invite code has already been used",
-          });
-        }
-
-        if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
-          throw new APIError("BAD_REQUEST", {
-            message: "This invite code has expired",
-          });
+          if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
+            throw new APIError("BAD_REQUEST", {
+              message: "This invite code has expired",
+            });
+          }
         }
       }
     }),
