@@ -1937,4 +1937,167 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         id: t.String(),
       }),
     }
+  )
+  // POST /api/v1/tasks/:id/save-as-template - snapshot task tree to template (capped at 100 nodes, depth 3)
+  .post(
+    "/:id/save-as-template",
+    async ({ user, params: { id }, body, status }) => {
+      const trimmedName = body.name?.trim();
+      if (!trimmedName) {
+        return status(400, { error: "Template name cannot be empty" });
+      }
+
+      const [task] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!task) {
+        return status(404, { error: "Task not found" });
+      }
+
+      // Check hierarchy depth and node cap
+      const descendants = getTaskDescendants(task.id, user.id);
+      const totalNodes = 1 + descendants.length;
+      if (totalNodes > 100) {
+        return status(400, { error: "Task tree exceeds maximum template node cap of 100" });
+      }
+
+      const maxSubtreeDepth = descendants.length > 0
+        ? Math.max(...descendants.map((d) => d.subtreeDepth))
+        : 0;
+
+      // Depth: 1 (root) + maxSubtreeDepth
+      const totalDepth = 1 + maxSubtreeDepth;
+      if (totalDepth > 3) {
+        return status(400, { error: "Task hierarchy exceeds maximum template depth of 3" });
+      }
+
+      const descendantIds = descendants.map((d) => d.id);
+      let descendantTasks: Array<typeof schema.tasks.$inferSelect> = [];
+      if (descendantIds.length > 0) {
+        descendantTasks = await db
+          .select()
+          .from(schema.tasks)
+          .where(
+            and(
+              inArray(schema.tasks.id, descendantIds),
+              eq(schema.tasks.userId, user.id),
+              isNull(schema.tasks.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.tasks.position));
+      }
+
+      const allTaskIds = [task.id, ...descendantIds];
+
+      const allChecklistItems = await db
+        .select()
+        .from(schema.checklistItems)
+        .where(
+          and(
+            inArray(schema.checklistItems.taskId, allTaskIds),
+            eq(schema.checklistItems.userId, user.id),
+            isNull(schema.checklistItems.deletedAt)
+          )
+        )
+        .orderBy(asc(schema.checklistItems.position));
+
+      const allTaskTags = await db
+        .select({
+          taskId: schema.taskTags.taskId,
+          tagName: schema.tags.name,
+        })
+        .from(schema.taskTags)
+        .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
+        .where(
+          and(
+            inArray(schema.taskTags.taskId, allTaskIds),
+            eq(schema.tags.userId, user.id),
+            isNull(schema.tags.deletedAt)
+          )
+        )
+        .orderBy(asc(schema.tags.name));
+
+      const checklistByTaskId = new Map<string, string[]>();
+      for (const item of allChecklistItems) {
+        if (!checklistByTaskId.has(item.taskId)) {
+          checklistByTaskId.set(item.taskId, []);
+        }
+        checklistByTaskId.get(item.taskId)!.push(item.text);
+      }
+
+      const tagsByTaskId = new Map<string, string[]>();
+      for (const tt of allTaskTags) {
+        if (!tagsByTaskId.has(tt.taskId)) {
+          tagsByTaskId.set(tt.taskId, []);
+        }
+        tagsByTaskId.get(tt.taskId)!.push(tt.tagName);
+      }
+
+      const childrenByParent = new Map<string, Array<typeof schema.tasks.$inferSelect>>();
+      for (const dt of descendantTasks) {
+        if (dt.parentId) {
+          if (!childrenByParent.has(dt.parentId)) {
+            childrenByParent.set(dt.parentId, []);
+          }
+          childrenByParent.get(dt.parentId)!.push(dt);
+        }
+      }
+
+      function buildTemplatePayload(node: typeof schema.tasks.$inferSelect): schema.TemplatePayload {
+        const payload: schema.TemplatePayload = {
+          title: node.title,
+        };
+        if (node.notes) payload.notes = node.notes;
+        if (node.priority !== undefined && node.priority !== null && node.priority !== 0) {
+          payload.priority = node.priority;
+        }
+        if (node.estimateMin !== undefined && node.estimateMin !== null) {
+          payload.estimateMin = node.estimateMin;
+        }
+        const nodeTags = tagsByTaskId.get(node.id);
+        if (nodeTags && nodeTags.length > 0) {
+          payload.tags = nodeTags;
+        }
+        const nodeChecklist = checklistByTaskId.get(node.id);
+        if (nodeChecklist && nodeChecklist.length > 0) {
+          payload.checklist = nodeChecklist;
+        }
+        const children = childrenByParent.get(node.id);
+        if (children && children.length > 0) {
+          payload.subtasks = children.map(buildTemplatePayload);
+        }
+        return payload;
+      }
+
+      const rootPayload = buildTemplatePayload(task);
+
+      const [createdTemplate] = await db
+        .insert(schema.templates)
+        .values({
+          userId: user.id,
+          name: trimmedName,
+          payload: rootPayload,
+          version: 1,
+        })
+        .returning();
+
+      return status(201, createdTemplate);
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+      body: t.Object({
+        name: t.String({ minLength: 1, maxLength: 255 }),
+      }),
+    }
   );
