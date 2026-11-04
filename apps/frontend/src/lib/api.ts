@@ -149,7 +149,7 @@ export interface BackendTemplate {
   id: string;
   userId: string;
   name: string;
-  payload: any;
+  payload: unknown;
   createdAt: string | number;
   updatedAt: string | number;
   version: number;
@@ -479,9 +479,9 @@ export async function saveTaskAsTemplate(
 export async function bulkTasks(
   ids: string[],
   action: string,
-  payload?: any
-): Promise<any> {
-  return apiFetch<any>("/api/v1/tasks/bulk", {
+  payload?: unknown
+): Promise<unknown> {
+  return apiFetch<unknown>("/api/v1/tasks/bulk", {
     method: "POST",
     body: JSON.stringify({ ids, action, payload }),
   });
@@ -728,8 +728,8 @@ export async function getTrash(
 export async function restoreTrash(
   type: "task" | "list" | "folder" | "section" | string,
   id: string
-): Promise<{ success: boolean; restored: any }> {
-  return apiFetch<{ success: boolean; restored: any }>(
+): Promise<{ success: boolean; restored: unknown }> {
+  return apiFetch<{ success: boolean; restored: unknown }>(
     `/api/v1/trash/${encodeURIComponent(type)}/${encodeURIComponent(id)}/restore`,
     {
       method: "POST",
@@ -765,7 +765,7 @@ export async function getTemplates(): Promise<BackendTemplate[]> {
 
 export async function createTemplate(data: {
   name: string;
-  payload: any;
+  payload: unknown;
 }): Promise<BackendTemplate> {
   return apiFetch<BackendTemplate>("/api/v1/templates", {
     method: "POST",
