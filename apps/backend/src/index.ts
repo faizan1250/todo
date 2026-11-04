@@ -13,6 +13,7 @@ import { taskRoutes } from "./routes/tasks";
 import { templateRoutes } from "./routes/templates";
 import { trashRoutes } from "./routes/trash";
 import { reminderRoutes } from "./routes/reminders";
+import { recurrenceRoutes } from "./routes/recurrences";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
 
@@ -63,6 +64,7 @@ export const app = new Elysia()
   .use(templateRoutes)
   .use(trashRoutes)
   .use(reminderRoutes)
+  .use(recurrenceRoutes)
   .get(
     "/health",
     () => ({
