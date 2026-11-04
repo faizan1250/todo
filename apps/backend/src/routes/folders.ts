@@ -57,6 +57,34 @@ export const folderRoutes = new Elysia({ prefix: "/api/v1/folders" })
       }),
     }
   )
+  // GET /api/v1/folders/:id - get single folder
+  .get(
+    "/:id",
+    async ({ user, params: { id }, status }) => {
+      const [folder] = await db
+        .select()
+        .from(schema.folders)
+        .where(
+          and(
+            eq(schema.folders.id, id),
+            eq(schema.folders.userId, user.id),
+            isNull(schema.folders.deletedAt)
+          )
+        );
+
+      if (!folder) {
+        return status(404, { error: "Folder not found" });
+      }
+
+      return folder;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+    }
+  )
   // PATCH /api/v1/folders/:id - update folder
   .patch(
     "/:id",

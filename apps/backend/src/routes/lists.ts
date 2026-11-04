@@ -99,6 +99,34 @@ export const listRoutes = new Elysia({ prefix: "/api/v1/lists" })
       }),
     }
   )
+  // GET /api/v1/lists/:id - get single list
+  .get(
+    "/:id",
+    async ({ user, params: { id }, status }) => {
+      const [list] = await db
+        .select()
+        .from(schema.lists)
+        .where(
+          and(
+            eq(schema.lists.id, id),
+            eq(schema.lists.userId, user.id),
+            isNull(schema.lists.deletedAt)
+          )
+        );
+
+      if (!list) {
+        return status(404, { error: "List not found" });
+      }
+
+      return list;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+    }
+  )
   // PATCH /api/v1/lists/:id - update list
   .patch(
     "/:id",

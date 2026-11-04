@@ -3,6 +3,9 @@ import { cors } from "@elysiajs/cors";
 import { auth, trustedOrigins } from "./auth";
 import { meRoutes } from "./routes/me";
 import { inviteRoutes } from "./routes/invite";
+import { folderRoutes } from "./routes/folders";
+import { listRoutes } from "./routes/lists";
+import { sectionRoutes } from "./routes/sections";
 
 export const app = new Elysia()
   .use(
@@ -17,6 +20,9 @@ export const app = new Elysia()
   .mount(auth.handler)
   .use(meRoutes)
   .use(inviteRoutes)
+  .use(folderRoutes)
+  .use(listRoutes)
+  .use(sectionRoutes)
   .get(
     "/health",
     () => ({
