@@ -1,22 +1,85 @@
 @import "tailwindcss";
 
 :root {
-  --background: #fafafa;
-  --foreground: #09090b;
+  /* Brand Primitives */
+  --blue-950: #051A4D;
+  --blue-900: #07256C;
+  --blue-700: #09318D;
+  --blue-600: #0D41B4;
+  --blue-50: #F2F5FC;
+  --pink-500: #FD91CC;
+  --pink-400: #FFA8D7;
+  --pink-100: #FFE8F5;
+  --white: #FFFFFF;
+  --ink: #0B1220;
+  --muted: #5B6478;
+  --border: #E4E8F2;
+
+  /* Semantic Theme Tokens - Light Mode */
+  --background: #FFFFFF;
+  --foreground: #0B1220;
+  --card: #FFFFFF;
+  --card-foreground: #0B1220;
+  --surface-subtle: #F2F5FC;
+  --focus-ring: #FD91CC;
+
+  /* Layered Shadows */
+  --shadow-blue-card: 0 4px 20px -2px rgba(9, 49, 141, 0.08), 0 2px 6px -1px rgba(9, 49, 141, 0.04);
+  --shadow-blue-lift: 0 10px 30px -4px rgba(9, 49, 141, 0.12), 0 4px 10px -2px rgba(9, 49, 141, 0.06);
 }
 
 @theme inline {
+  --color-blue-950: var(--blue-950);
+  --color-blue-900: var(--blue-900);
+  --color-blue-700: var(--blue-700);
+  --color-blue-600: var(--blue-600);
+  --color-blue-50: var(--blue-50);
+  --color-pink-500: var(--pink-500);
+  --color-pink-400: var(--pink-400);
+  --color-pink-100: var(--pink-100);
+  --color-white: var(--white);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-surface-subtle: var(--surface-subtle);
+
+  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-geist-mono), monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #09090b;
-    --foreground: #fafafa;
+    --background: #051A4D;
+    --foreground: #F8FAFC;
+    --ink: #F8FAFC;
+    --muted: #9BB0D3;
+    --border: #132E74;
+    --card: #082363;
+    --card-foreground: #F8FAFC;
+    --surface-subtle: #092B7D;
+    --focus-ring: #FD91CC;
+    --shadow-blue-card: 0 4px 20px -2px rgba(0, 0, 0, 0.45), 0 2px 6px -1px rgba(0, 0, 0, 0.35);
+    --shadow-blue-lift: 0 10px 30px -4px rgba(0, 0, 0, 0.55), 0 4px 10px -2px rgba(0, 0, 0, 0.4);
   }
+}
+
+.dark {
+  --background: #051A4D;
+  --foreground: #F8FAFC;
+  --ink: #F8FAFC;
+  --muted: #9BB0D3;
+  --border: #132E74;
+  --card: #082363;
+  --card-foreground: #F8FAFC;
+  --surface-subtle: #092B7D;
+  --focus-ring: #FD91CC;
+  --shadow-blue-card: 0 4px 20px -2px rgba(0, 0, 0, 0.45), 0 2px 6px -1px rgba(0, 0, 0, 0.35);
+  --shadow-blue-lift: 0 10px 30px -4px rgba(0, 0, 0, 0.55), 0 4px 10px -2px rgba(0, 0, 0, 0.4);
 }
 
 body {
@@ -25,24 +88,72 @@ body {
   font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  line-height: 1.6;
 }
 
-/* Painted light 3D-ish interactive CTA button */
-.btn-primary-3d {
-  background: linear-gradient(to bottom, #18181b, #09090b);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 4px rgba(0, 0, 0, 0.15);
-  border-top: 1px solid rgba(255, 255, 255, 0.16);
+/* Visible pink focus ring */
+.focus-ring-pink {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+.focus-ring-pink:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--pink-500);
 }
 
-.dark .btn-primary-3d {
-  background: linear-gradient(to bottom, #ffffff, #f4f4f5);
-  color: #09090b;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 2px 4px rgba(0, 0, 0, 0.35);
-  border-top: 1px solid rgba(255, 255, 255, 0.9);
+/* Layered blue-tinted shadows */
+.shadow-soft-blue {
+  box-shadow: var(--shadow-blue-card);
 }
 
-.btn-primary-3d:active {
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25);
-  transform: translateY(1px);
+.shadow-lift-blue {
+  box-shadow: var(--shadow-blue-lift);
 }
 
+/* Tactile 3D Button Depth styles */
+.btn-primary-depth {
+  background: linear-gradient(to bottom, #0D41B4, #09318D 60%, #07256C);
+  border-top: 1px solid rgba(255, 255, 255, 0.28);
+  border-left: 1px solid rgba(9, 49, 141, 0.8);
+  border-right: 1px solid rgba(9, 49, 141, 0.8);
+  border-bottom: 1px solid #051A4D;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 6px rgba(9, 49, 141, 0.22);
+  transition: all 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+.btn-primary-depth:hover {
+  background: linear-gradient(to bottom, #1049c9, #09318D 60%, #062263);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 3px 8px rgba(9, 49, 141, 0.28);
+}
+.btn-primary-depth:active {
+  transform: translateY(0.5px);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.35);
+}
+
+.btn-accent-pink {
+  background: linear-gradient(to bottom, #FFA8D7, #FD91CC 65%, #F07EBD);
+  color: #051A4D;
+  border-top: 1px solid rgba(255, 255, 255, 0.6);
+  border-left: 1px solid rgba(253, 145, 204, 0.8);
+  border-right: 1px solid rgba(253, 145, 204, 0.8);
+  border-bottom: 1px solid #D66C9F;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 2px 6px rgba(9, 49, 141, 0.12);
+  transition: all 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+.btn-accent-pink:hover {
+  background: linear-gradient(to bottom, #FFB2DF, #FD91CC 65%, #EC72B4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 3px 10px rgba(253, 145, 204, 0.35);
+}
+.btn-accent-pink:active {
+  transform: translateY(0.5px);
+  box-shadow: inset 0 2px 4px rgba(9, 49, 141, 0.25);
+}
+
+/* Reduced motion accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
