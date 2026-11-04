@@ -497,7 +497,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         switch (action) {
           case "move": {
             let targetParentId: string | null = null;
-            let targetListId: string | null = null;
+            let targetListId: string = existingTasks[0].listId;
             let targetSectionId: string | null = null;
 
             // Handle parentId
@@ -533,10 +533,6 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
               targetListId = parentTask.listId;
             } else {
               targetParentId = null;
-            }
-
-            // Handle listId
-            if (!targetListId) {
               if (payload?.listId) {
                 const [targetList] = await tx
                   .select()
@@ -885,7 +881,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           }
 
           default:
-            return status(400, { error: `Unsupported bulk action: ${action}` });
+            return status(400, { error: "Unsupported bulk action" });
         }
       });
     },
