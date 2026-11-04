@@ -27,7 +27,7 @@ export function useInviteValidator(
 ): UseInviteValidatorReturn {
   const { debounceMs = 500, initialCode = "", autoValidate = true } = options;
 
-  const [code, setCode] = useState(initialCode);
+  const [code, setInternalCode] = useState(initialCode);
   const [status, setStatus] = useState<InviteStatus>("idle");
   const [validationResult, setValidationResult] =
     useState<InviteValidationResponse | null>(null);
@@ -96,19 +96,29 @@ export function useInviteValidator(
     []
   );
 
+  const setCode = useCallback(
+    (newCode: string) => {
+      setInternalCode(newCode);
+      if (!newCode.trim()) {
+        setStatus("idle");
+        setValidationResult(null);
+        setErrorMessage(null);
+        if (timerRef.current) {
+          clearTimeout(timerRef.current);
+        }
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     if (!autoValidate) return;
 
+    const trimmed = code.trim();
+    if (!trimmed) return;
+
     if (timerRef.current) {
       clearTimeout(timerRef.current);
-    }
-
-    const trimmed = code.trim();
-    if (!trimmed) {
-      setStatus("idle");
-      setValidationResult(null);
-      setErrorMessage(null);
-      return;
     }
 
     timerRef.current = setTimeout(() => {
@@ -137,7 +147,7 @@ export function useInviteValidator(
       clearTimeout(timerRef.current);
     }
     activeRequestId.current++;
-    setCode("");
+    setInternalCode("");
     setStatus("idle");
     setValidationResult(null);
     setErrorMessage(null);
