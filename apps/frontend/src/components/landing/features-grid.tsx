@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import {
-  KeyRound,
+  Sparkles,
   Zap,
   ShieldCheck,
   RefreshCw,
@@ -24,12 +24,12 @@ interface FeatureItem {
 
 const FEATURES: FeatureItem[] = [
   {
-    icon: KeyRound,
-    title: "Invite-Only Precision Access",
-    badge: "Cryptographic",
+    icon: Sparkles,
+    title: "Instant Open Access",
+    badge: "Frictionless",
     description:
-      "Eliminate spam and anonymous noise. Every workspace seat is guarded by cryptographically signed invite tokens with strictly enforced multi-use or single-use caps.",
-    stat: "100% Guarded",
+      "Start organizing immediately. Create your account with just email and password—no invite codes, waitlists, or gatekeeping.",
+    stat: "Zero Waitlist",
     colSpan: "col-span-12 md:col-span-6 lg:col-span-4",
   },
   {

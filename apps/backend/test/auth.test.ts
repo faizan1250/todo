@@ -101,23 +101,28 @@ describe("Phase 1 Backend: Auth, Invites & Profile", () => {
     });
   });
 
-  describe("Sign-up invite enforcement & sign-in", () => {
-    it("rejects sign-up without invite code", async () => {
+  describe("Sign-up open registration, optional invite handling & sign-in", () => {
+    it("succeeds sign-up without invite code (open registration)", async () => {
+      const email = `noinvite-${Date.now()}@example.com`;
       const res = await app.handle(
         new Request("http://localhost:3001/api/auth/sign-up/email", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            email: `noinvite-${Date.now()}@example.com`,
+            email,
             password: "password123",
             name: "No Invite User",
           }),
         })
       );
 
-      expect(res.status).toBe(400);
-      const data = (await res.json()) as { message: string };
-      expect(data.message).toBe("An invite code is required to sign up");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as {
+        token: string;
+        user: { id: string; email: string; name: string };
+      };
+      expect(data.user.email).toBe(email);
+      expect(data.user.name).toBe("No Invite User");
     });
 
     it("rejects sign-up with invalid invite code", async () => {

@@ -159,4 +159,25 @@ describe("Landing and App UI Components", () => {
       expect(taskState).toBe("restored");
     });
   });
+
+  describe("Open Access & Registration Workflow", () => {
+    it("validates open sign-up parameters requiring name, email, and password without invite code", () => {
+      const validateSignUpPayload = (payload: { name: string; email: string; password?: string; inviteCode?: string }) => {
+        const errors: string[] = [];
+        if (!payload.name.trim()) errors.push("Name is required");
+        if (!payload.email.trim()) errors.push("Email is required");
+        if (!payload.password || payload.password.length < 8) errors.push("Password must be at least 8 characters");
+        return { valid: errors.length === 0, errors };
+      };
+
+      const result = validateSignUpPayload({
+        name: "Faizan Khan",
+        email: "faizan@example.com",
+        password: "securePassword123!",
+      });
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+  });
 });

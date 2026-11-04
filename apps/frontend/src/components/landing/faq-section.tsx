@@ -14,10 +14,10 @@ interface FaqItem {
 
 const FAQ_ITEMS: FaqItem[] = [
   {
-    category: "Access & Invites",
-    question: "How do I obtain an invite code to access Todo Studio?",
+    category: "Access & Registration",
+    question: "Do I need an invite code to access Todo Studio?",
     answer:
-      "Todo Studio operates under an invite-only model to maintain high infrastructure performance and close alignment with engineering teams. Invites are distributed in rolling batches to verified GitHub contributors and peer engineering teams. If you have an invite code, click 'Claim Invite Access' on the hero bar to validate your code and unlock your workspace immediately.",
+      "No! Todo Studio has open registration. You can sign up with just your name, email, and password by clicking 'Get Started Free' on the hero bar to unlock your workspace immediately. Invite codes remain optionally supported for special organizational onboarding.",
   },
   {
     category: "Architecture & Security",
@@ -66,7 +66,7 @@ export function FaqSection() {
             Everything You Need to Know
           </h2>
           <p className="mt-3 text-base text-[#5B6478] dark:text-[#9BB0D3]">
-            Straightforward answers about invites, security, keyboard shortcuts, and data ownership.
+            Straightforward answers about registration, security, keyboard shortcuts, and data ownership.
           </p>
         </div>
 
