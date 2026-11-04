@@ -5,6 +5,7 @@ import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
 import { decodeCursor, encodeCursor } from "../utils/cursor";
 import { dayBounds, resolveTimezone, toUtcMidnight } from "../utils/dates";
+import { compileFilterDsl, type FilterNode } from "../utils/filter-dsl";
 import { DateTime } from "luxon";
 
 export interface ViewTaskRow {
@@ -239,8 +240,19 @@ export const viewRoutes = new Elysia({ prefix: "/api/v1/views" })
           .limit(20);
 
         for (const f of saved) {
-          // Count will be filled via filter compiler or default 0
-          filtersCounts[f.id] = 0;
+          try {
+            const { sql: filterSql, params: filterParams } = compileFilterDsl(f.query as FilterNode, tz, "t");
+            const res = sqlite.query<{ c: number }, any[]>(`
+              SELECT COUNT(*) AS c
+              FROM tasks t
+              WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.archived_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM lists l WHERE l.id = t.list_id AND l.archived_at IS NOT NULL)
+                AND ${filterSql}
+            `).get(user.id, ...filterParams);
+            filtersCounts[f.id] = Number(res?.c) || 0;
+          } catch {
+            filtersCounts[f.id] = 0;
+          }
         }
       }
 
