@@ -5,7 +5,9 @@ import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
 import { positionBetween, generateNKeysBetween } from "../utils/position";
 import { decodeCursor, paginateResults } from "../utils/cursor";
-import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks } from "../utils/tasks";
+import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks, getTasksWithIncludes } from "../utils/tasks";
+import { toUtcMidnight, validateStartDue, validateEstimateMin, validateLocationCoords } from "../utils/dates";
+import { recomputeTaskReminders, firePendingTaskReminders } from "../services/reminders";
 
 /**
  * Normalizes notes string:
@@ -34,122 +36,9 @@ function parseDate(val: any): Date | null | undefined {
 }
 
 /**
- * Batch loads subtasks, checklist items, and tags in at most 3 queries total.
- * Stitches results in-memory with zero N+1 queries.
+ * Batch loads subtasks, checklist items, tags, and computes estimateTotal rollup (root estimate + all descendant estimates)
  */
-export async function attachTaskIncludes<T extends { id: string; userId: string }>(
-  taskList: T[],
-  includeParam?: string | string[] | null,
-  userId?: string
-): Promise<Array<T & { subtasks?: any[]; checklist?: any[]; tags?: any[] }>> {
-  if (taskList.length === 0 || !includeParam) {
-    return taskList;
-  }
-
-  const includeParts = (
-    Array.isArray(includeParam)
-      ? includeParam.join(",")
-      : includeParam
-  )
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-
-  const shouldIncludeSubtasks = includeParts.includes("subtasks");
-  const shouldIncludeChecklist = includeParts.includes("checklist");
-  const shouldIncludeTags = includeParts.includes("tags");
-
-  if (!shouldIncludeSubtasks && !shouldIncludeChecklist && !shouldIncludeTags) {
-    return taskList;
-  }
-
-  const taskIds = taskList.map((t) => t.id);
-  const effectiveUserId = userId ?? taskList[0].userId;
-
-  const [subtasksRows, checklistRows, tagRows] = await Promise.all([
-    shouldIncludeSubtasks
-      ? db
-          .select()
-          .from(schema.tasks)
-          .where(
-            and(
-              inArray(schema.tasks.parentId, taskIds),
-              eq(schema.tasks.userId, effectiveUserId),
-              isNull(schema.tasks.deletedAt)
-            )
-          )
-          .orderBy(asc(schema.tasks.position), asc(schema.tasks.id))
-      : Promise.resolve([]),
-
-    shouldIncludeChecklist
-      ? db
-          .select()
-          .from(schema.checklistItems)
-          .where(
-            and(
-              inArray(schema.checklistItems.taskId, taskIds),
-              eq(schema.checklistItems.userId, effectiveUserId),
-              isNull(schema.checklistItems.deletedAt)
-            )
-          )
-          .orderBy(asc(schema.checklistItems.position))
-      : Promise.resolve([]),
-
-    shouldIncludeTags
-      ? db
-          .select({
-            taskId: schema.taskTags.taskId,
-            tag: schema.tags,
-          })
-          .from(schema.taskTags)
-          .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
-          .where(
-            and(
-              inArray(schema.taskTags.taskId, taskIds),
-              eq(schema.tags.userId, effectiveUserId),
-              isNull(schema.tags.deletedAt)
-            )
-          )
-          .orderBy(asc(schema.tags.name))
-      : Promise.resolve([]),
-  ]);
-
-  // Group subtasks by parent task ID
-  const subtasksByParent = new Map<string, any[]>();
-  for (const st of subtasksRows) {
-    if (st.parentId) {
-      if (!subtasksByParent.has(st.parentId)) {
-        subtasksByParent.set(st.parentId, []);
-      }
-      subtasksByParent.get(st.parentId)!.push(st);
-    }
-  }
-
-  // Group checklist items by task ID
-  const checklistByTask = new Map<string, any[]>();
-  for (const item of checklistRows) {
-    if (!checklistByTask.has(item.taskId)) {
-      checklistByTask.set(item.taskId, []);
-    }
-    checklistByTask.get(item.taskId)!.push(item);
-  }
-
-  // Group tags by task ID
-  const tagsByTask = new Map<string, any[]>();
-  for (const row of tagRows) {
-    if (!tagsByTask.has(row.taskId)) {
-      tagsByTask.set(row.taskId, []);
-    }
-    tagsByTask.get(row.taskId)!.push(row.tag);
-  }
-
-  return taskList.map((task) => ({
-    ...task,
-    ...(shouldIncludeSubtasks ? { subtasks: subtasksByParent.get(task.id) ?? [] } : {}),
-    ...(shouldIncludeChecklist ? { checklist: checklistByTask.get(task.id) ?? [] } : {}),
-    ...(shouldIncludeTags ? { tags: tagsByTask.get(task.id) ?? [] } : {}),
-  }));
-}
+export const attachTaskIncludes = getTasksWithIncludes;
 
 export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
   .use(authMacro)
@@ -349,7 +238,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         }
       }
 
-      // Verify tagIds if provided
+      // Validate tagIds if provided
       if (body.tagIds && body.tagIds.length > 0) {
         const userTags = await db
           .select({ id: schema.tags.id })
@@ -363,6 +252,52 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           );
         if (userTags.length !== body.tagIds.length) {
           return status(400, { error: "One or more tag IDs are invalid" });
+        }
+      }
+
+      // Dates and floating all-day rule
+      const finalAllDay = body.allDay ?? false;
+      let finalStartAt = parseDate(body.startAt) ?? null;
+      let finalDueAt = parseDate(body.dueAt) ?? null;
+      let finalDeadlineAt = parseDate(body.deadlineAt) ?? null;
+
+      if (finalAllDay) {
+        if (finalDueAt) finalDueAt = toUtcMidnight(finalDueAt);
+        if (finalStartAt) finalStartAt = toUtcMidnight(finalStartAt);
+        if (finalDeadlineAt) finalDeadlineAt = toUtcMidnight(finalDeadlineAt);
+      }
+
+      const dateValidation = validateStartDue(finalStartAt, finalDueAt);
+      if (!dateValidation.valid) {
+        return status(400, { error: dateValidation.error });
+      }
+
+      if (body.estimateMin !== undefined && body.estimateMin !== null) {
+        const estValidation = validateEstimateMin(body.estimateMin);
+        if (!estValidation.valid) {
+          return status(400, { error: estValidation.error });
+        }
+      }
+
+      const locValidation = validateLocationCoords(body.lat, body.lng, body.radiusM);
+      if (!locValidation.valid) {
+        return status(400, { error: locValidation.error });
+      }
+
+      let finalPlaceId = body.placeId ?? null;
+      if (finalPlaceId) {
+        const [place] = await db
+          .select()
+          .from(schema.places)
+          .where(
+            and(
+              eq(schema.places.id, finalPlaceId),
+              eq(schema.places.userId, user.id),
+              isNull(schema.places.deletedAt)
+            )
+          );
+        if (!place) {
+          return status(404, { error: "Place not found" });
         }
       }
 
@@ -409,11 +344,17 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
             priority: body.priority ?? 0,
             status: body.status ?? "todo",
             position,
-            startAt: parseDate(body.startAt) ?? null,
-            dueAt: parseDate(body.dueAt) ?? null,
-            deadlineAt: parseDate(body.deadlineAt) ?? null,
-            allDay: body.allDay ?? false,
+            startAt: finalStartAt,
+            dueAt: finalDueAt,
+            deadlineAt: finalDeadlineAt,
+            allDay: finalAllDay,
             estimateMin: body.estimateMin ?? null,
+            placeId: finalPlaceId,
+            locationName: body.locationName ?? null,
+            lat: body.lat ?? null,
+            lng: body.lng ?? null,
+            radiusM: body.radiusM ?? (body.lat ? 200 : null),
+            locationTrigger: body.locationTrigger ?? null,
             completedAt: body.status === "done" ? new Date() : null,
           })
           .returning();
@@ -459,6 +400,14 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         deadlineAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
         allDay: t.Optional(t.Boolean()),
         estimateMin: t.Optional(t.Union([t.Integer(), t.Null()])),
+        placeId: t.Optional(t.Union([t.String(), t.Null()])),
+        locationName: t.Optional(t.Union([t.String(), t.Null()])),
+        lat: t.Optional(t.Union([t.Number(), t.Null()])),
+        lng: t.Optional(t.Union([t.Number(), t.Null()])),
+        radiusM: t.Optional(t.Union([t.Integer(), t.Null()])),
+        locationTrigger: t.Optional(
+          t.Union([t.Literal("arrive"), t.Literal("leave"), t.Null()])
+        ),
         tagIds: t.Optional(t.Array(t.String())),
       }),
     }
@@ -791,6 +740,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
               );
 
             for (const task of completedTasks) {
+              await firePendingTaskReminders(task.id, user.id, tx);
               await runCompleteHooks(task);
             }
 
@@ -1058,6 +1008,76 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         nextArchivedAt = parseDate(body.archivedAt) ?? null;
       }
 
+      // Handle dates and floating all-day rule
+      const nextAllDay = body.allDay !== undefined ? body.allDay : Boolean(existing.allDay);
+      let nextStartAt = body.startAt !== undefined ? (parseDate(body.startAt) ?? null) : existing.startAt;
+      let nextDueAt = body.dueAt !== undefined ? (parseDate(body.dueAt) ?? null) : existing.dueAt;
+      let nextDeadlineAt = body.deadlineAt !== undefined ? (parseDate(body.deadlineAt) ?? null) : existing.deadlineAt;
+
+      if (nextAllDay) {
+        if (body.dueAt !== undefined && body.dueAt !== null) {
+          nextDueAt = toUtcMidnight(body.dueAt);
+        } else if (nextDueAt && body.allDay === true && !existing.allDay) {
+          nextDueAt = toUtcMidnight(nextDueAt);
+        }
+        if (body.startAt !== undefined && body.startAt !== null) {
+          nextStartAt = toUtcMidnight(body.startAt);
+        } else if (nextStartAt && body.allDay === true && !existing.allDay) {
+          nextStartAt = toUtcMidnight(nextStartAt);
+        }
+        if (body.deadlineAt !== undefined && body.deadlineAt !== null) {
+          nextDeadlineAt = toUtcMidnight(body.deadlineAt);
+        } else if (nextDeadlineAt && body.allDay === true && !existing.allDay) {
+          nextDeadlineAt = toUtcMidnight(nextDeadlineAt);
+        }
+      }
+
+      const dateValidation = validateStartDue(nextStartAt, nextDueAt);
+      if (!dateValidation.valid) {
+        return status(400, { error: dateValidation.error });
+      }
+
+      const nextEstimateMin = body.estimateMin !== undefined ? body.estimateMin : existing.estimateMin;
+      if (nextEstimateMin !== undefined && nextEstimateMin !== null) {
+        const estValidation = validateEstimateMin(nextEstimateMin);
+        if (!estValidation.valid) {
+          return status(400, { error: estValidation.error });
+        }
+      }
+
+      const nextLat = body.lat !== undefined ? body.lat : existing.lat;
+      const nextLng = body.lng !== undefined ? body.lng : existing.lng;
+      const nextRadiusM = body.radiusM !== undefined ? body.radiusM : existing.radiusM;
+      const locValidation = validateLocationCoords(nextLat, nextLng, nextRadiusM);
+      if (!locValidation.valid) {
+        return status(400, { error: locValidation.error });
+      }
+
+      let nextPlaceId = existing.placeId;
+      if (body.placeId !== undefined) {
+        if (body.placeId === null || body.placeId === "") {
+          nextPlaceId = null;
+        } else {
+          const [place] = await db
+            .select()
+            .from(schema.places)
+            .where(
+              and(
+                eq(schema.places.id, body.placeId),
+                eq(schema.places.userId, user.id),
+                isNull(schema.places.deletedAt)
+              )
+            );
+          if (!place) {
+            return status(404, { error: "Place not found" });
+          }
+          nextPlaceId = body.placeId;
+        }
+      }
+
+      const nextLocationName = body.locationName !== undefined ? body.locationName : existing.locationName;
+      const nextLocationTrigger = body.locationTrigger !== undefined ? body.locationTrigger : existing.locationTrigger;
+
       // Perform update in transaction
       const updated = await db.transaction(async (tx) => {
         // If listId changed, cascade listId to all descendants
@@ -1080,6 +1100,12 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           }
         }
 
+        const datesChanged =
+          (body.dueAt !== undefined && nextDueAt?.getTime() !== existing.dueAt?.getTime()) ||
+          (body.startAt !== undefined && nextStartAt?.getTime() !== existing.startAt?.getTime()) ||
+          (body.deadlineAt !== undefined && nextDeadlineAt?.getTime() !== existing.deadlineAt?.getTime()) ||
+          (body.allDay !== undefined && nextAllDay !== existing.allDay);
+
         const [res] = await tx
           .update(schema.tasks)
           .set({
@@ -1091,11 +1117,17 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
             priority: body.priority !== undefined ? body.priority : existing.priority,
             status: nextStatus,
             position: body.position !== undefined ? body.position : existing.position,
-            startAt: body.startAt !== undefined ? (parseDate(body.startAt) ?? null) : existing.startAt,
-            dueAt: body.dueAt !== undefined ? (parseDate(body.dueAt) ?? null) : existing.dueAt,
-            deadlineAt: body.deadlineAt !== undefined ? (parseDate(body.deadlineAt) ?? null) : existing.deadlineAt,
-            allDay: body.allDay !== undefined ? body.allDay : existing.allDay,
-            estimateMin: body.estimateMin !== undefined ? body.estimateMin : existing.estimateMin,
+            startAt: nextStartAt,
+            dueAt: nextDueAt,
+            deadlineAt: nextDeadlineAt,
+            allDay: nextAllDay,
+            estimateMin: nextEstimateMin,
+            placeId: nextPlaceId,
+            locationName: nextLocationName,
+            lat: nextLat,
+            lng: nextLng,
+            radiusM: nextRadiusM,
+            locationTrigger: nextLocationTrigger,
             completedAt: nextCompletedAt,
             archivedAt: nextArchivedAt,
             version: sql`${schema.tasks.version} + 1`,
@@ -1109,10 +1141,15 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           )
           .returning();
 
+        if (datesChanged) {
+          await recomputeTaskReminders(id, user.id, { task: res, tx });
+        }
+
         return res;
       });
 
-      return updated;
+      const [withIncludes] = await attachTaskIncludes([updated], null, user.id);
+      return withIncludes;
     },
     {
       auth: true,
@@ -1140,6 +1177,14 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         deadlineAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
         allDay: t.Optional(t.Boolean()),
         estimateMin: t.Optional(t.Union([t.Integer(), t.Null()])),
+        placeId: t.Optional(t.Union([t.String(), t.Null()])),
+        locationName: t.Optional(t.Union([t.String(), t.Null()])),
+        lat: t.Optional(t.Union([t.Number(), t.Null()])),
+        lng: t.Optional(t.Union([t.Number(), t.Null()])),
+        radiusM: t.Optional(t.Union([t.Integer(), t.Null()])),
+        locationTrigger: t.Optional(
+          t.Union([t.Literal("arrive"), t.Literal("leave"), t.Null()])
+        ),
         completedAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
         archivedAt: t.Optional(t.Union([t.String(), t.Integer(), t.Null()])),
       }),
@@ -1508,6 +1553,8 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
             )
           )
           .returning();
+
+        await firePendingTaskReminders(id, user.id, tx);
 
         return updated;
       });

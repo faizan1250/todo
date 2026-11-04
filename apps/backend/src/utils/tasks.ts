@@ -1,4 +1,5 @@
-import { sqlite } from "../db";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { db, sqlite } from "../db";
 import * as schema from "../db/schema";
 
 export type TaskRow = typeof schema.tasks.$inferSelect;
@@ -201,4 +202,184 @@ export function validateSubtaskHierarchy(
     },
     descendantIds,
   };
+}
+
+/**
+ * Computes sum of descendant estimates for given task IDs in a single recursive CTE query.
+ */
+export function computeEstimateTotals(
+  taskIds: string[],
+  userId: string
+): Map<string, number> {
+  if (taskIds.length === 0) return new Map();
+  const placeholders = taskIds.map(() => "?").join(",");
+  const query = sqlite.query<
+    { root_id: string; subtask_estimate_sum: number },
+    any[]
+  >(`
+    WITH RECURSIVE sub(id, parent_id, estimate_min, root_id) AS (
+      SELECT id, parent_id, estimate_min, parent_id AS root_id
+      FROM tasks
+      WHERE parent_id IN (${placeholders}) AND user_id = ? AND deleted_at IS NULL
+      UNION ALL
+      SELECT t.id, t.parent_id, t.estimate_min, sub.root_id
+      FROM tasks t
+      JOIN sub ON t.parent_id = sub.id
+      WHERE t.user_id = ? AND t.deleted_at IS NULL
+    )
+    SELECT root_id, SUM(estimate_min) AS subtask_estimate_sum
+    FROM sub
+    WHERE estimate_min IS NOT NULL
+    GROUP BY root_id;
+  `);
+
+  const rows = query.all(...taskIds, userId, userId);
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    map.set(r.root_id, r.subtask_estimate_sum);
+  }
+  return map;
+}
+
+/**
+ * Batch loads subtasks, checklist items, tags, and computes estimateTotal rollup (root estimate + all descendant estimates)
+ * in at most 4 batch queries total with zero N+1.
+ */
+export async function getTasksWithIncludes<T extends { id: string; userId: string; estimateMin?: number | null }>(
+  taskList: T[],
+  includeParam?: string | string[] | null,
+  userId?: string
+): Promise<Array<T & { subtasks?: any[]; checklist?: any[]; tags?: any[]; estimateTotal: number | null }>> {
+  if (taskList.length === 0) {
+    return [];
+  }
+
+  const effectiveUserId = userId ?? taskList[0].userId;
+  const taskIds = taskList.map((t) => t.id);
+
+  // Compute descendant estimate sums for all tasks in taskList
+  const descendantEstimateMap = computeEstimateTotals(taskIds, effectiveUserId);
+
+  const includeParts = (
+    Array.isArray(includeParam)
+      ? includeParam.join(",")
+      : (includeParam ?? "")
+  )
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  const shouldIncludeSubtasks = includeParts.includes("subtasks");
+  const shouldIncludeChecklist = includeParts.includes("checklist");
+  const shouldIncludeTags = includeParts.includes("tags");
+
+  const [subtasksRows, checklistRows, tagRows] = await Promise.all([
+    shouldIncludeSubtasks
+      ? db
+          .select()
+          .from(schema.tasks)
+          .where(
+            and(
+              inArray(schema.tasks.parentId, taskIds),
+              eq(schema.tasks.userId, effectiveUserId),
+              isNull(schema.tasks.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.tasks.position), asc(schema.tasks.id))
+      : Promise.resolve([]),
+
+    shouldIncludeChecklist
+      ? db
+          .select()
+          .from(schema.checklistItems)
+          .where(
+            and(
+              inArray(schema.checklistItems.taskId, taskIds),
+              eq(schema.checklistItems.userId, effectiveUserId),
+              isNull(schema.checklistItems.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.checklistItems.position))
+      : Promise.resolve([]),
+
+    shouldIncludeTags
+      ? db
+          .select({
+            taskId: schema.taskTags.taskId,
+            tag: schema.tags,
+          })
+          .from(schema.taskTags)
+          .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
+          .where(
+            and(
+              inArray(schema.taskTags.taskId, taskIds),
+              eq(schema.tags.userId, effectiveUserId),
+              isNull(schema.tags.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.tags.name))
+      : Promise.resolve([]),
+  ]);
+
+  // If subtasks are included, compute estimateTotals for direct subtasks as well
+  let subtaskEstimateMap = new Map<string, number>();
+  if (shouldIncludeSubtasks && subtasksRows.length > 0) {
+    const subtaskIds = subtasksRows.map((s) => s.id);
+    subtaskEstimateMap = computeEstimateTotals(subtaskIds, effectiveUserId);
+  }
+
+  // Group subtasks by parent task ID
+  const subtasksByParent = new Map<string, any[]>();
+  for (const st of subtasksRows) {
+    if (st.parentId) {
+      if (!subtasksByParent.has(st.parentId)) {
+        subtasksByParent.set(st.parentId, []);
+      }
+      const stSubSum = subtaskEstimateMap.get(st.id);
+      const stEstimate = st.estimateMin ?? null;
+      let stEstimateTotal: number | null = null;
+      if (stEstimate !== null || stSubSum !== undefined) {
+        stEstimateTotal = (stEstimate ?? 0) + (stSubSum ?? 0);
+      }
+      subtasksByParent.get(st.parentId)!.push({
+        ...st,
+        estimateTotal: stEstimateTotal,
+      });
+    }
+  }
+
+  // Group checklist items by task ID
+  const checklistByTask = new Map<string, any[]>();
+  for (const item of checklistRows) {
+    if (!checklistByTask.has(item.taskId)) {
+      checklistByTask.set(item.taskId, []);
+    }
+    checklistByTask.get(item.taskId)!.push(item);
+  }
+
+  // Group tags by task ID
+  const tagsByTask = new Map<string, any[]>();
+  for (const row of tagRows) {
+    if (!tagsByTask.has(row.taskId)) {
+      tagsByTask.set(row.taskId, []);
+    }
+    tagsByTask.get(row.taskId)!.push(row.tag);
+  }
+
+  return taskList.map((task) => {
+    const subSum = descendantEstimateMap.get(task.id);
+    const ownEstimate = task.estimateMin ?? null;
+    let estimateTotal: number | null = null;
+    if (ownEstimate !== null || subSum !== undefined) {
+      estimateTotal = (ownEstimate ?? 0) + (subSum ?? 0);
+    }
+
+    return {
+      ...task,
+      estimateTotal,
+      ...(shouldIncludeSubtasks ? { subtasks: subtasksByParent.get(task.id) ?? [] } : {}),
+      ...(shouldIncludeChecklist ? { checklist: checklistByTask.get(task.id) ?? [] } : {}),
+      ...(shouldIncludeTags ? { tags: tagsByTask.get(task.id) ?? [] } : {}),
+    };
+  });
 }
