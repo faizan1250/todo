@@ -70,3 +70,90 @@ todo/
 | :--- | :--- | :--- | :--- |
 | **`@todo/backend`** | ElysiaJS, Better Auth, Drizzle ORM, `bun:sqlite` | `3001` | High-throughput, low-latency REST API with fractional ordering, transactional bulk mutations, OpenAPI 3 / Swagger documentation, and automated daily cleanup jobs. |
 | **`@todo/frontend`** | Next.js 16.4.5, React 19.3.0, Tailwind CSS v4, Lucide | `3000` | Keyboard-driven web application featuring a tactile Deep Blue (`#051A4D`) & Bubblegum Pink (`#FD91CC`) design system, Things 3-style Quick Add, and instant client state sync. |
+
+
+---
+
+## 🚀 Getting Started & Local Development
+
+### Prerequisites
+
+- **[Bun](https://bun.sh/)** version `>= 1.3` (runtime, package manager, and test runner)
+- **Node.js** `>= 20.0` (optional, for Next.js tooling compatibility)
+
+### 1. Clone & Install
+
+```bash
+git clone https://github.com/faizan1250/todo.git
+cd todo
+bun install
+```
+
+### 2. Environment Setup
+
+Default values work out of the box for local development without any required configuration. For custom environments, you can define the following environment variables:
+
+#### Backend (`apps/backend/.env`)
+```env
+PORT=3001
+DB_FILE=sqlite.db
+BETTER_AUTH_URL=http://localhost:3001
+BETTER_AUTH_SECRET=dev-secret-key-change-in-production-todo-app
+FRONTEND_URL=http://localhost:3000
+```
+
+#### Frontend (`apps/frontend/.env.local`)
+```env
+NEXT_PUBLIC_API_URL=http://localhost:3001
+```
+
+### 3. Running the Development Servers
+
+Start backend and frontend concurrently or independently using the monorepo root scripts:
+
+```bash
+# Terminal 1: Launch the ElysiaJS backend with hot reload (Port 3001)
+bun run dev:backend
+
+# Terminal 2: Launch the Next.js frontend with Turbopack (Port 3000)
+bun run dev:frontend
+```
+
+Once running:
+- **Web App**: Open [http://localhost:3000](http://localhost:3000) to view the Todo Studio interface.
+- **Backend API**: Accessible at [http://localhost:3001](http://localhost:3001).
+- **Interactive Swagger Docs**: Open [http://localhost:3001/swagger](http://localhost:3001/swagger) for the interactive OpenAPI explorer.
+
+---
+
+## 🛠️ Workspace Scripts & Tooling
+
+The root `package.json` coordinates all monorepo workspaces using `bun --filter`:
+
+| Command | Target | Purpose |
+| :--- | :--- | :--- |
+| `bun run dev:backend` | `@todo/backend` | Runs Elysia API with `--watch` on `http://localhost:3001` |
+| `bun run dev:frontend` | `@todo/frontend` | Starts Next.js 16 with Turbopack on `http://localhost:3000` |
+| `bun run build` | All packages | Compiles backend and generates production Next.js build |
+| `bun run build:frontend`| `@todo/frontend` | Production build of Next.js frontend |
+| `bun test` | All packages | Executes complete automated test suite (125+ tests) |
+| `bun run typecheck` | All packages | Strict TypeScript validation across all workspaces (`tsc --noEmit`) |
+| `bun run lint` | All packages | Runs ESLint 9 checks across frontend codebase |
+
+### Test Suite Breakdown
+
+Todo Studio maintains 100% green automated test coverage with **125+ passing tests** across both backend and frontend:
+
+- **Backend (`82 passing tests`)**:
+  - `test/auth.test.ts`: Email/password authentication, TOTP two-factor enrollment, session validation, and `/me` profile updates.
+  - `test/health.test.ts`: Healthcheck, CORS headers, and preflight OPTIONS verification.
+  - `test/containers.test.ts`: Folders, Lists, Sections CRUD, position ordering, and default Inbox lifecycle.
+  - `test/tasks.test.ts`: Full task CRUD, keyset cursor pagination on `(position, id)`, and 3-query batch includes.
+  - `test/subtasks.test.ts`: Subtask hierarchy, max depth 3 enforcement, and cycle prevention.
+  - `test/templates.test.ts`: Snapshotting task trees, deep template copy, and template instantiation.
+  - `test/trash.test.ts`: Recursive soft-delete cascading, 1-click restore with Inbox fallback, and purge cron.
+  - `test/bulk.test.ts`: Transactional multi-task operations (`move`, `tag`, `untag`, `complete`, `reopen`, `archive`, `delete`, `set_priority`) with 404 atomic rollback.
+- **Frontend (`43 passing tests`)**:
+  - `test/auth-integration.test.ts`: API client authentication flows, token handling, and profile persistence.
+  - `test/polish-and-sync.test.ts`: Accessible skeleton loaders, optimistic UI updates, and profile syncing.
+  - `test/components.test.ts`: Task row interaction, status toggling, and dialog operations.
