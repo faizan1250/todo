@@ -364,10 +364,12 @@ export function TaskPane({
               <button
                 type="button"
                 onClick={() => setIsAddingSection(true)}
-                className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-[#E4E8F2] bg-white px-3 py-1.5 text-xs font-semibold text-[#5B6478] hover:border-[#09318D] hover:text-[#09318D] transition-colors focus-ring-pink dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC] dark:hover:text-[#FFA8D7] cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#E4E8F2] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#5B6478] hover:border-[#09318D] hover:text-[#09318D] transition-colors focus-ring-pink dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC] dark:hover:text-[#FFA8D7] cursor-pointer shrink-0"
+                title="Add Section"
               >
                 <Layers className="h-3.5 w-3.5" />
-                <span>Add Section</span>
+                <span className="hidden sm:inline">Add Section</span>
+                <span className="sm:hidden">Section</span>
               </button>
             )}
 
@@ -406,28 +408,16 @@ export function TaskPane({
             ))}
           </div>
 
-          {/* Priority Quick Filter & Mobile Add Section */}
-          <div className="flex items-center gap-3">
-            {activeListId && !isAddingSection && (
-              <button
-                type="button"
-                onClick={() => setIsAddingSection(true)}
-                className="sm:hidden inline-flex items-center gap-1 text-xs font-semibold text-[#09318D] dark:text-[#FFA8D7] cursor-pointer"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>Section</span>
-              </button>
-            )}
-
-            <div className="flex items-center gap-1.5 text-xs text-[#5B6478] dark:text-[#9BB0D3]">
-              <Filter className="h-3 w-3" />
-              <span>Priority:</span>
-              {[
-                { id: "all" as const, label: "All" },
-                { id: "high" as const, label: "High" },
-                { id: "med" as const, label: "Medium" },
-                { id: "low" as const, label: "Low" },
-              ].map((p) => (
+          {/* Priority Quick Filter */}
+          <div className="flex items-center gap-1.5 text-xs text-[#5B6478] dark:text-[#9BB0D3]">
+            <Filter className="h-3 w-3" />
+            <span>Priority:</span>
+            {[
+              { id: "all" as const, label: "All" },
+              { id: "high" as const, label: "High" },
+              { id: "med" as const, label: "Medium" },
+              { id: "low" as const, label: "Low" },
+            ].map((p) => (
                 <button
                   key={p.id}
                   type="button"
