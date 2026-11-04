@@ -8,17 +8,23 @@ import type { TaskItem } from "./types";
 interface TaskRowProps {
   task: TaskItem;
   isSelected?: boolean;
+  isBulkSelected?: boolean;
+  hasBulkSelection?: boolean;
   onToggleComplete: (id: string) => void;
   onSelect: (task: TaskItem) => void;
   onDelete: (id: string) => void;
+  onToggleBulkSelect?: (id: string, shiftKey: boolean) => void;
 }
 
 export function TaskRow({
   task,
   isSelected = false,
+  isBulkSelected = false,
+  hasBulkSelection = false,
   onToggleComplete,
   onSelect,
   onDelete,
+  onToggleBulkSelect,
 }: TaskRowProps) {
   const priorityConfig = {
     high: {
@@ -49,7 +55,14 @@ export function TaskRow({
       role="button"
       tabIndex={0}
       aria-label={`Task: ${task.title}`}
-      onClick={() => onSelect(task)}
+      onClick={(e) => {
+        if (onToggleBulkSelect && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          onToggleBulkSelect(task.id, e.shiftKey);
+        } else {
+          onSelect(task);
+        }
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           onSelect(task);
@@ -60,13 +73,52 @@ export function TaskRow({
       }}
       className={cn(
         "group relative flex items-center justify-between gap-3 rounded-xl border p-3.5 sm:px-4 sm:py-3 transition-all duration-150 cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-[#FD91CC] focus:ring-offset-1 dark:focus:ring-offset-[#051A4D]",
-        isSelected
+        isBulkSelected
+          ? "border-[#09318D] bg-[#F2F5FC] ring-1 ring-[#09318D]/50 shadow-xs dark:border-[#FD91CC] dark:bg-[#082363] dark:ring-[#FD91CC]/40"
+          : isSelected
           ? "border-[#09318D] bg-[#F2F5FC] shadow-sm dark:border-[#FD91CC] dark:bg-[#082363]"
           : "border-[#E4E8F2] bg-white hover:border-[#CAD5E8] hover:shadow-2xs dark:border-[#132E74] dark:bg-[#082363]/50 dark:hover:border-[#1E4396]",
         task.completed && "opacity-75 bg-[#FAFAFC] dark:bg-[#061D52]/40"
       )}
     >
-      <div className="flex items-center gap-3.5 min-w-0 flex-1">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        {/* Multi-Select Checkbox Column */}
+        {onToggleBulkSelect && (
+          <div
+            className={cn(
+              "flex items-center justify-center shrink-0 transition-opacity duration-150",
+              hasBulkSelection || isBulkSelected
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+            )}
+          >
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={isBulkSelected}
+              aria-label={
+                isBulkSelected
+                  ? `Deselect ${task.title}`
+                  : `Select ${task.title} for bulk actions`
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleBulkSelect(task.id, e.shiftKey);
+              }}
+              className={cn(
+                "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-all duration-150 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FD91CC]",
+                isBulkSelected
+                  ? "border-[#09318D] bg-[#09318D] text-white dark:border-[#FD91CC] dark:bg-[#FD91CC] dark:text-[#051A4D]"
+                  : "border-[#CAD5E8] bg-white hover:border-[#09318D] dark:border-[#1F459E] dark:bg-[#051A4D] dark:hover:border-[#FD91CC]"
+              )}
+            >
+              {isBulkSelected && (
+                <Check className="h-2.5 w-2.5 stroke-[3] animate-in zoom-in-50 duration-150" />
+              )}
+            </button>
+          </div>
+        )}
+
         {/* Custom Animated Checkbox with Bubblegum Accent */}
         <button
           type="button"
