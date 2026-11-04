@@ -1,5 +1,6 @@
 import { BackendStatusBadge } from "@/components/backend-status-badge";
 import { TodoDashboard } from "@/components/todo-dashboard";
+import { UserNav, AuthSessionCard } from "@/components/auth";
 import { ListTodoIcon } from "@/components/icons";
 
 export default function HomePage() {
@@ -22,8 +23,12 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Backend Healthcheck Status Indicator */}
-          <BackendStatusBadge />
+          <div className="flex items-center gap-3">
+            {/* Backend Healthcheck Status Indicator */}
+            <BackendStatusBadge />
+            {/* Authenticated / Unauthenticated Navigation Trigger */}
+            <UserNav />
+          </div>
         </div>
       </header>
 
@@ -37,6 +42,9 @@ export default function HomePage() {
             High-performance task orchestration interface paired with ElysiaJS backend.
           </p>
         </div>
+
+        {/* Live Auth Session / Invite Guard Showcase */}
+        <AuthSessionCard />
 
         {/* Dashboard Surface */}
         <section
@@ -53,9 +61,9 @@ export default function HomePage() {
             <span>•</span>
             <span>TailwindCSS v4</span>
             <span>•</span>
-            <span>ElysiaJS Backend (:3001)</span>
+            <span>Better Auth</span>
             <span>•</span>
-            <span>Bun Workspaces</span>
+            <span>ElysiaJS Backend (:3001)</span>
           </div>
         </footer>
       </main>
