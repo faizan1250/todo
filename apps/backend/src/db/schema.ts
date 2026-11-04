@@ -7,6 +7,7 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  check,
   type AnySQLiteColumn,
 } from "drizzle-orm/sqlite-core";
 
@@ -38,6 +39,7 @@ export type Preferences = {
   quietHours?: { start: string; end: string };
   dailyDigestTime?: string; // "08:00" in user's timezone
   defaultReminderTime?: string; // "09:00" in user's timezone
+  workHours?: string; // "09:00-18:00"
 };
 
 export const users = sqliteTable("user", {
@@ -257,6 +259,15 @@ export const tasks = sqliteTable(
     index("task_parent_idx").on(t.parentId, t.position),
     index("task_recurrence_idx").on(t.recurrenceId),
     index("task_place_idx").on(t.placeId),
+    index("task_active_user_due_idx")
+      .on(t.userId, t.dueAt)
+      .where(sql`deleted_at IS NULL AND archived_at IS NULL AND status IN ('todo', 'in_progress')`),
+    index("task_active_user_priority_idx")
+      .on(t.userId, t.priority)
+      .where(sql`deleted_at IS NULL AND archived_at IS NULL AND status IN ('todo', 'in_progress')`),
+    index("task_done_user_completed_idx")
+      .on(t.userId, t.completedAt)
+      .where(sql`deleted_at IS NULL AND archived_at IS NULL AND status = 'done'`),
   ]
 );
 
@@ -350,4 +361,41 @@ export const notifications = sqliteTable(
     triggeredAt: ts("triggered_at").notNull().$defaultFn(() => new Date()),
   },
   (t) => [index("notification_user_idx").on(t.userId)]
+);
+
+/* =====================================================
+   PHASE 4: VIEWS, FILTERS & TIME BLOCKING
+   ===================================================== */
+export const savedFilters = sqliteTable(
+  "saved_filters",
+  {
+    ...base(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    icon: text("icon"),
+    color: text("color"),
+    query: text("query", { mode: "json" }).$type<Record<string, any>>().notNull(),
+    sort: text("sort", { mode: "json" }).$type<Array<{ by: string; order: "asc" | "desc" }>>(),
+    groupBy: text("group_by"),
+    position: text("position").notNull(),
+    pinned: bool("pinned").notNull().default(false),
+  },
+  (t) => [index("saved_filters_user_pos_idx").on(t.userId, t.position)]
+);
+
+export const timeBlocks = sqliteTable(
+  "time_blocks",
+  {
+    ...base(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
+    title: text("title"),
+    startAt: ts("start_at").notNull(),
+    endAt: ts("end_at").notNull(),
+    color: text("color"),
+  },
+  (t) => [
+    index("time_blocks_user_start_idx").on(t.userId, t.startAt),
+    check("time_blocks_time_check", sql`end_at > start_at`),
+  ]
 );
