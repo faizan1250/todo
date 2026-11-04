@@ -10,7 +10,25 @@ import { CommandPalette } from "./command-palette";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import { MobileNav } from "./mobile-nav";
 import { ToastProvider, useToast } from "./toast-system";
-import { useOptionalAuth } from "@/components/auth";
+import { useAuth } from "@/components/auth";
+import {
+  getLists,
+  getFolders,
+  getTasks,
+  createTask,
+  updateTask,
+  deleteTask,
+  completeTask,
+  reopenTask,
+  restoreTrash,
+  type BackendList,
+  type BackendFolder,
+} from "@/lib/api";
+import {
+  backendTaskToTaskItem,
+  priorityUiToBackend,
+  taskItemToBackendUpdateInput,
+} from "@/lib/adapters";
 import type { TaskItem, ListId, FolderId, Priority } from "./types";
 
 const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
@@ -134,9 +152,16 @@ interface AppWorkspaceInnerProps {
 
 function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externalOpenShortcuts }: AppWorkspaceInnerProps) {
   const { toast, success } = useToast();
-  const auth = useOptionalAuth();
+  const auth = useAuth();
+  const { isAuthenticated, user } = auth;
+  void user;
 
   const [tasks, setTasks] = useState<TaskItem[]>(INITIAL_WORKSPACE_TASKS);
+  const [userLists, setUserLists] = useState<BackendList[]>([]);
+  const [userFolders, setUserFolders] = useState<BackendFolder[]>([]);
+  void userFolders;
+  const [activeListId, setActiveListId] = useState<string | null>(null);
+  const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [selectedListOverride, setSelectedListOverride] = useState<ListId | null>(null);
 
   const prefList = auth?.profile?.preferences?.defaultListId as ListId | undefined;
@@ -159,6 +184,87 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [streakCount, setStreakCount] = useState(5);
   const [isStreakActive, setIsStreakActive] = useState(false);
   const [streakTaskTitle, setStreakTaskTitle] = useState("");
+
+  // Fetch user's lists and folders when authenticated
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let isMounted = true;
+
+    async function loadContainers() {
+      try {
+        const [lists, folders] = await Promise.all([
+          getLists(),
+          getFolders(),
+        ]);
+
+        if (!isMounted) return;
+        setUserLists(lists);
+        setUserFolders(folders);
+
+        // Automatically pick the default Inbox list (or first active list) if no list is selected
+        const inbox = lists.find((l) => l.isInbox) || lists[0];
+        if (inbox) {
+          setActiveListId((prev) => prev || inbox.id);
+        }
+      } catch (err) {
+        if (!isMounted) return;
+        console.error("Failed to load containers:", err);
+      }
+    }
+
+    void loadContainers();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated]);
+
+  // Fetch tasks for the active list
+  useEffect(() => {
+    if (!isAuthenticated || !activeListId) return;
+    const targetListId = activeListId;
+
+    let isMounted = true;
+
+    async function loadTasks(listId: string) {
+      setIsLoadingTasks(true);
+      try {
+        const res = await getTasks({
+          listId,
+          include: "subtasks,checklist,tags",
+        });
+        if (!isMounted) return;
+        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+        setTasks(mapped);
+        if (mapped.length > 0) {
+          setSelectedTaskId((prev) =>
+            prev && mapped.some((t) => t.id === prev) ? prev : mapped[0].id
+          );
+        } else {
+          setSelectedTaskId(null);
+        }
+      } catch (err) {
+        if (!isMounted) return;
+        console.error("Failed to load tasks:", err);
+        toast({
+          title: "Failed to load tasks",
+          message: err instanceof Error ? err.message : "Network error",
+          type: "error",
+        });
+      } finally {
+        if (isMounted) {
+          setIsLoadingTasks(false);
+        }
+      }
+    }
+
+    void loadTasks(targetListId);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, activeListId, toast]);
 
   const handleOpenShortcuts = useCallback(() => {
     setIsShortcutsOpen(true);
@@ -229,6 +335,20 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
               prev.map((t) => (t.id === id ? { ...t, completed: false, updatedAt: "Undone" } : t))
             );
             setStreakCount((s) => Math.max(1, s - 1));
+
+            if (isAuthenticated && !id.startsWith("temp-")) {
+              reopenTask(id).catch((err) => {
+                console.error("Undo reopen task failed:", err);
+                setTasks((prev) =>
+                  prev.map((t) => (t.id === id ? { ...t, completed: true } : t))
+                );
+                toast({
+                  title: "Undo failed",
+                  message: err instanceof Error ? err.message : "Failed to undo task completion",
+                  type: "error",
+                });
+              });
+            }
           },
         });
       } else {
@@ -239,11 +359,60 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             setTasks((prev) =>
               prev.map((t) => (t.id === id ? { ...t, completed: true, updatedAt: "Re-done" } : t))
             );
+
+            if (isAuthenticated && !id.startsWith("temp-")) {
+              completeTask(id).catch((err) => {
+                console.error("Undo complete task failed:", err);
+                setTasks((prev) =>
+                  prev.map((t) => (t.id === id ? { ...t, completed: false } : t))
+                );
+                toast({
+                  title: "Undo failed",
+                  message: err instanceof Error ? err.message : "Failed to undo task reopen",
+                  type: "error",
+                });
+              });
+            }
           },
         });
       }
+
+      if (isAuthenticated && !id.startsWith("temp-")) {
+        const apiCall = willComplete ? completeTask(id) : reopenTask(id);
+        apiCall
+          .then((updated) => {
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === id
+                  ? {
+                      ...t,
+                      version: updated.version,
+                      rawStatus: updated.status,
+                      updatedAt: "Just now",
+                    }
+                  : t
+              )
+            );
+          })
+          .catch((err) => {
+            console.error("Failed to update task completion:", err);
+            // Revert state
+            setTasks((prev) =>
+              prev.map((t) => (t.id === id ? { ...t, completed: !willComplete } : t))
+            );
+            if (willComplete) {
+              setStreakCount((s) => Math.max(1, s - 1));
+              setIsStreakActive(false);
+            }
+            toast({
+              title: "Action failed",
+              message: err instanceof Error ? err.message : "Failed to toggle task",
+              type: "error",
+            });
+          });
+      }
     },
-    [tasks, toast]
+    [tasks, isAuthenticated, toast]
   );
 
   const handleDeleteTask = useCallback(
@@ -254,16 +423,50 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       setTasks((prev) => prev.filter((t) => t.id !== id));
       if (selectedTaskId === id) setSelectedTaskId(null);
 
-      toast({
-        title: "Task deleted",
-        message: `"${target.title}" moved to trash.`,
-        actionLabel: "Undo",
-        onAction: () => {
-          setTasks((prev) => [target, ...prev]);
-        },
-      });
+      if (isAuthenticated && !id.startsWith("temp-")) {
+        deleteTask(id)
+          .then(() => {
+            toast({
+              title: "Task deleted",
+              message: `"${target.title}" moved to trash.`,
+              actionLabel: "Undo",
+              onAction: () => {
+                setTasks((prev) => [target, ...prev]);
+                setSelectedTaskId(target.id);
+
+                restoreTrash("task", id).catch((err) => {
+                  console.error("Failed to restore task from trash:", err);
+                  setTasks((prev) => prev.filter((t) => t.id !== id));
+                  toast({
+                    title: "Undo failed",
+                    message: err instanceof Error ? err.message : "Failed to restore task from trash",
+                    type: "error",
+                  });
+                });
+              },
+            });
+          })
+          .catch((err) => {
+            console.error("Failed to delete task:", err);
+            setTasks((prev) => [target, ...prev]);
+            toast({
+              title: "Delete failed",
+              message: err instanceof Error ? err.message : "Could not delete task",
+              type: "error",
+            });
+          });
+      } else {
+        toast({
+          title: "Task deleted",
+          message: `"${target.title}" moved to trash.`,
+          actionLabel: "Undo",
+          onAction: () => {
+            setTasks((prev) => [target, ...prev]);
+          },
+        });
+      }
     },
-    [tasks, selectedTaskId, toast]
+    [tasks, selectedTaskId, isAuthenticated, toast]
   );
 
   // Global Keyboard Shortcuts Listener
@@ -396,8 +599,12 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
 
   const handleAddTask = useCallback(
     (data: { title: string; priority: Priority; folder: FolderId; list: ListId }) => {
+      const tempId = `temp-${Date.now()}`;
+      const targetBackendListId =
+        activeListId || userLists.find((l) => l.isInbox)?.id || userLists[0]?.id;
+
       const newTask: TaskItem = {
-        id: `task-${Date.now()}`,
+        id: tempId,
         title: data.title,
         completed: false,
         priority: data.priority,
@@ -407,18 +614,68 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         subtasks: [],
         createdAt: "Just now",
         updatedAt: "Just now",
+        listId: targetBackendListId || undefined,
       };
 
       setTasks((prev) => [newTask, ...prev]);
       setSelectedTaskId(newTask.id);
-      success(`Created task "${data.title}"`);
+
+      if (isAuthenticated && targetBackendListId) {
+        const dueAt = data.list === "today" ? new Date().toISOString() : undefined;
+
+        createTask({
+          title: data.title,
+          priority: priorityUiToBackend(data.priority),
+          listId: targetBackendListId,
+          dueAt,
+        })
+          .then((createdBackendTask) => {
+            const mapped = backendTaskToTaskItem(createdBackendTask, {
+              listOverride: data.list,
+              folderOverride: data.folder,
+            });
+            setTasks((prev) => prev.map((t) => (t.id === tempId ? mapped : t)));
+            setSelectedTaskId((prev) => (prev === tempId ? mapped.id : prev));
+            success(`Created task "${data.title}"`);
+          })
+          .catch((err) => {
+            console.error("Failed to create task on backend:", err);
+            setTasks((prev) => prev.filter((t) => t.id !== tempId));
+            setSelectedTaskId((prev) => (prev === tempId ? null : prev));
+            toast({
+              title: "Creation failed",
+              message: err instanceof Error ? err.message : "Could not create task",
+              type: "error",
+            });
+          });
+      } else {
+        success(`Created task "${data.title}"`);
+      }
     },
-    [success]
+    [activeListId, userLists, isAuthenticated, success, toast]
   );
 
-  const handleUpdateTask = useCallback((updated: TaskItem) => {
-    setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-  }, []);
+  const handleUpdateTask = useCallback(
+    (updated: TaskItem) => {
+      const prevTask = tasks.find((t) => t.id === updated.id);
+      setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+
+      if (isAuthenticated && !updated.id.startsWith("temp-") && !updated.id.startsWith("task-")) {
+        updateTask(updated.id, taskItemToBackendUpdateInput(updated)).catch((err) => {
+          console.error("Failed to update task:", err);
+          if (prevTask) {
+            setTasks((prev) => prev.map((t) => (t.id === updated.id ? prevTask : t)));
+          }
+          toast({
+            title: "Update failed",
+            message: err instanceof Error ? err.message : "Could not save task updates",
+            type: "error",
+          });
+        });
+      }
+    },
+    [isAuthenticated, tasks, toast]
+  );
 
   // Cycle folders for mobile nav
   const handleCycleFolder = useCallback(() => {
@@ -460,6 +717,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onToggleComplete={handleToggleComplete}
         onDeleteTask={handleDeleteTask}
         onAddTask={handleAddTask}
+        isLoading={isLoadingTasks}
       />
 
       {/* Collapsible Task Detail Panel */}
