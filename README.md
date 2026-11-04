@@ -449,3 +449,108 @@ Todo Studio is engineered to be operated entirely without a mouse. Master your w
 | :---: | :--- | :--- | :--- |
 | <kbd>?</kbd> or <kbd>Shift + /</kbd> | Cheat Sheet | Open the interactive keyboard shortcuts overlay modal | Global |
 | <kbd>Esc</kbd> | Dismiss Panel | Close any open modal dialog or slide-out drawer safely | Global |
+
+---
+
+## 🚢 Production Deployment & Security Checklist
+
+Todo Studio is designed for straightforward deployment on single-node VPS environments, bare metal, or containerized orchestrators.
+
+### Production Build & Launch
+
+Execute production builds across all workspaces:
+
+```bash
+# 1. Install production dependencies
+bun install --frozen-lockfile --production
+
+# 2. Compile Next.js frontend and backend artifacts
+bun run build
+
+# 3. Start Backend API in production mode (Port 3001)
+NODE_ENV=production bun run apps/backend/src/index.ts
+
+# 4. Start Next.js Frontend Server (Port 3000)
+bun --filter @todo/frontend start
+```
+
+### Production Environment Variables
+
+Ensure all sensitive production secrets are securely configured:
+
+| Variable | Target | Requirement & Guidance |
+| :--- | :--- | :--- |
+| `NODE_ENV` | Backend & Frontend | Set to `production` |
+| `PORT` | Backend | Port number for the Elysia API server (default: `3001`) |
+| `DB_FILE` | Backend | Path to persistent SQLite database (e.g. `/var/lib/todo/prod.db`) |
+| `BETTER_AUTH_SECRET` | Backend | Cryptographically random secret key (minimum 32 characters) |
+| `BETTER_AUTH_URL` | Backend | Canonical backend URL (e.g. `https://api.todo.studio`) |
+| `FRONTEND_URL` | Backend | Canonical frontend URL for CORS validation (e.g. `https://todo.studio`) |
+| `NEXT_PUBLIC_API_URL` | Frontend | Public API endpoint reachable by clients (e.g. `https://api.todo.studio`) |
+
+### Production Security Checklist
+
+- [x] **Zero Plaintext Secrets**: Passwords securely hashed with multi-pass cryptographic functions via Better Auth.
+- [x] **Strict CORS Policy**: Restricted cross-origin resource sharing validating trusted frontend domains with preflight handling.
+- [x] **SQL Injection Immunity**: Parameterized query generation enforced exclusively via Drizzle ORM.
+- [x] **Two-Factor Authentication**: Native TOTP 2FA support with encrypted server-side secrets and single-use emergency backup codes.
+- [x] **Bounded Result Windows**: Hard caps on keyset pagination queries (`limit <= 100`) preventing memory exhaustion attacks.
+- [x] **WAL Persistence & Backups**: Daily hot backups using SQLite `VACUUM INTO '/backups/backup-${Date.now()}.db'` or continuous replication tools like Litestream.
+- [x] **Automated Data Purge**: Background cron job cleaning soft-deleted trash items older than 30 days every day at 03:00 UTC.
+
+---
+
+## 🤝 Contributing & Code Quality Standards
+
+Contributions to Todo Studio are welcome. To maintain our standard of engineering excellence, all contributions must adhere to the following workflow:
+
+### Development Workflow
+
+1. **Fork & Branch**: Create a focused branch off `main` using descriptive conventional prefixes:
+   - `feat/feature-name` for new user-facing functionality
+   - `fix/bug-description` for bug fixes and patches
+   - `refactor/subsystem-name` for structural code refactoring
+   - `docs/topic-name` for documentation improvements
+2. **Deterministic Automated Tests**: Every new feature or bug fix must include deterministic unit or integration tests in `apps/backend/test/` or `apps/frontend/test/`.
+3. **Verify All Checks**: Before submitting a pull request, ensure all test suites and static checks pass:
+   ```bash
+   bun test          # All 125+ tests must pass with 100% green status
+   bun run typecheck # Strict TypeScript check across all packages
+   bun run lint      # ESLint 9 styling and syntax validation
+   ```
+4. **Conventional Commits**: Write clear, imperative commit messages conforming to the Conventional Commits specification:
+   ```
+   feat(backend): add keyset cursor pagination on task tags
+   fix(frontend): prevent focus loss on quick-add escape keypress
+   docs(readme): add production security checklist
+   ```
+
+---
+
+## 📄 License
+
+This project is open-source software licensed under the **[MIT License](https://opensource.org/licenses/MIT)**.
+
+```
+MIT License
+
+Copyright (c) 2026 Todo Studio Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
