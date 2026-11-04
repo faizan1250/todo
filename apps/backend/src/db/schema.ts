@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   sqliteTable,
   text,
@@ -238,7 +239,7 @@ export const tasks = sqliteTable(
     index("task_user_status_idx").on(t.userId, t.status),
     index("task_list_pos_idx").on(t.listId, t.position),
     index("task_section_pos_idx").on(t.sectionId, t.position),
-    index("task_parent_idx").on(t.parentId),
+    index("task_parent_idx").on(t.parentId, t.position),
     index("task_recurrence_idx").on(t.recurrenceId),
   ]
 );
@@ -264,7 +265,11 @@ export const tags = sqliteTable(
     name: text("name").notNull(),
     color: text("color"),
   },
-  (t) => [uniqueIndex("tag_user_name_uq").on(t.userId, t.name)]
+  (t) => [
+    uniqueIndex("tags_user_name_unique")
+      .on(t.userId, sql`${t.name} COLLATE NOCASE`)
+      .where(sql`deleted_at IS NULL`),
+  ]
 );
 
 export const taskTags = sqliteTable(
