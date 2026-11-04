@@ -7,9 +7,6 @@ import {
   Plus,
   Filter,
   CheckCircle2,
-  Calendar,
-  Layers,
-  Sparkles,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";

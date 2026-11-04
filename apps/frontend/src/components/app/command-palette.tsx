@@ -3,7 +3,6 @@
 import * as React from "react";
 import { useState, useEffect, useRef, useMemo } from "react";
 import {
-  Search,
   Calendar,
   Clock,
   Inbox,
@@ -73,11 +72,18 @@ export function CommandPalette({
   // Focus input when opened
   useEffect(() => {
     if (isOpen) {
-      setQuery("");
-      setSelectedIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      const timer = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
+      return () => clearTimeout(timer);
     }
   }, [isOpen]);
+
+  const handleClose = () => {
+    setQuery("");
+    setSelectedIndex(0);
+    onClose();
+  };
 
   const actions: CommandAction[] = useMemo(
     () => [
@@ -262,7 +268,7 @@ export function CommandPalette({
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
-      onClose();
+      handleClose();
     }
   };
 
@@ -274,7 +280,7 @@ export function CommandPalette({
       aria-modal="true"
       aria-label="Command Palette"
       className="fixed inset-0 z-50 flex items-start justify-center pt-16 sm:pt-24 px-4 bg-black/50 backdrop-blur-xs select-none"
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         className="w-full max-w-xl overflow-hidden rounded-2xl border border-[#E4E8F2] bg-white shadow-2xl transition-all duration-200 dark:border-[#132E74] dark:bg-[#051A4D]"

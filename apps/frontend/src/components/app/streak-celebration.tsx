@@ -1,9 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useState } from "react";
-import { Flame, Sparkles, X, Trophy } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useEffect } from "react";
+import { Flame, X } from "lucide-react";
 
 interface StreakCelebrationProps {
   active: boolean;
@@ -22,6 +21,21 @@ interface Particle {
   delay: number;
 }
 
+const PARTICLES: Particle[] = [
+  { id: 0, x: -60, y: -45, size: 6, color: "#FD91CC", delay: 0.02 },
+  { id: 1, x: 45, y: -65, size: 5, color: "#09318D", delay: 0.05 },
+  { id: 2, x: -30, y: -80, size: 7, color: "#FD91CC", delay: 0.08 },
+  { id: 3, x: 70, y: -40, size: 5, color: "#09318D", delay: 0.01 },
+  { id: 4, x: -75, y: -55, size: 6, color: "#FD91CC", delay: 0.06 },
+  { id: 5, x: 20, y: -75, size: 8, color: "#09318D", delay: 0.03 },
+  { id: 6, x: -15, y: -90, size: 5, color: "#FD91CC", delay: 0.09 },
+  { id: 7, x: 55, y: -60, size: 6, color: "#09318D", delay: 0.04 },
+  { id: 8, x: -45, y: -35, size: 7, color: "#FD91CC", delay: 0.07 },
+  { id: 9, x: 35, y: -85, size: 5, color: "#09318D", delay: 0.02 },
+  { id: 10, x: -80, y: -70, size: 6, color: "#FD91CC", delay: 0.05 },
+  { id: 11, x: 65, y: -75, size: 7, color: "#09318D", delay: 0.08 },
+];
+
 export function StreakCelebration({
   active,
   streakCount,
@@ -29,21 +43,8 @@ export function StreakCelebration({
   onDismiss,
   durationMs = 3200,
 }: StreakCelebrationProps) {
-  const [particles, setParticles] = useState<Particle[]>([]);
-
   useEffect(() => {
     if (active) {
-      // Generate restrained particle burst positions
-      const newParticles: Particle[] = Array.from({ length: 12 }, (_, i) => ({
-        id: i,
-        x: (Math.random() - 0.5) * 160,
-        y: -30 - Math.random() * 80,
-        size: Math.floor(Math.random() * 5) + 4,
-        color: i % 2 === 0 ? "#FD91CC" : "#09318D",
-        delay: Math.random() * 0.1,
-      }));
-      setParticles(newParticles);
-
       const timer = setTimeout(() => {
         onDismiss();
       }, durationMs);
@@ -63,7 +64,7 @@ export function StreakCelebration({
       <div className="relative pointer-events-auto">
         {/* Floating Particles Burst (Disabled if prefers-reduced-motion) */}
         <div aria-hidden="true" className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-          {particles.map((p) => (
+          {PARTICLES.map((p) => (
             <span
               key={p.id}
               className="absolute rounded-full animate-out fade-out zoom-out"

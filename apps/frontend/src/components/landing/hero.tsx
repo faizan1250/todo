@@ -1,9 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRight, Sparkles, KeyRound, Terminal, CheckCircle2 } from "lucide-react";
+import { ArrowRight, KeyRound, Terminal, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { LiveDemoPreview } from "./live-demo-preview";
 
 interface HeroProps {

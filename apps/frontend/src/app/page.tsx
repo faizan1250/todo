@@ -6,13 +6,15 @@ import { BackendStatusBadge } from "@/components/backend-status-badge";
 import { UserNav, useAuth } from "@/components/auth";
 import { Hero, FeaturesGrid, FaqSection } from "@/components/landing";
 import { AppWorkspace, ThemeToggle } from "@/components/app";
-import { Sparkles, LayoutDashboard, Globe, Terminal } from "lucide-react";
+import { Sparkles, LayoutDashboard, Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function HomePage() {
   const { isAuthenticated, openAuthModal } = useAuth();
   // If user is authenticated, default to app workspace; otherwise default to landing page
-  const [activeView, setActiveView] = useState<"landing" | "app">("landing");
+  const [activeView, setActiveView] = useState<"landing" | "app">(() =>
+    isAuthenticated ? "app" : "landing"
+  );
 
   const toggleTheme = () => {
     const isDark = document.documentElement.classList.contains("dark");

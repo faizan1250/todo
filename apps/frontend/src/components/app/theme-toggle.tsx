@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -9,27 +9,24 @@ interface ThemeToggleProps {
   className?: string;
 }
 
+const emptySubscribe = () => () => {};
+
 export function ThemeToggle({ className }: ThemeToggleProps) {
-  const [isDark, setIsDark] = useState(false);
-  const [mounted, setMounted] = useState(false);
+  const mounted = useSyncExternalStore(
+    emptySubscribe,
+    () => true,
+    () => false
+  );
 
-  useEffect(() => {
-    setMounted(true);
-    // Check initial preference from class on html or system preference
-    const isDarkInitially =
+  const [isDark, setIsDark] = useState(() => {
+    if (typeof document === "undefined") return false;
+    return (
       document.documentElement.classList.contains("dark") ||
-      (localStorage.getItem("theme") === "dark") ||
+      localStorage.getItem("theme") === "dark" ||
       (!localStorage.getItem("theme") &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches);
-
-    if (isDarkInitially) {
-      document.documentElement.classList.add("dark");
-      setIsDark(true);
-    } else {
-      document.documentElement.classList.remove("dark");
-      setIsDark(false);
-    }
-  }, []);
+        window.matchMedia("(prefers-color-scheme: dark)").matches)
+    );
+  });
 
   const toggleTheme = () => {
     const nextDark = !isDark;

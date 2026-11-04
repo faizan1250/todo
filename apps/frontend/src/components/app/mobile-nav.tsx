@@ -7,7 +7,6 @@ import {
   Plus,
   Command,
   SunMoon,
-  Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ListId, FolderId } from "./types";

@@ -6,16 +6,12 @@ import {
   Clock,
   Inbox,
   CheckCircle2,
-  Folder,
-  FolderOpen,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
   Command,
   Sparkles,
-  ChevronRight,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ListId, FolderId } from "./types";
 

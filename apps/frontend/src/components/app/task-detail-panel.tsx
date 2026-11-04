@@ -4,18 +4,10 @@ import * as React from "react";
 import { useState } from "react";
 import {
   X,
-  Calendar,
-  Tag,
   Check,
   Plus,
   Trash2,
-  Folder,
-  AlertCircle,
-  Clock,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { TaskItem, Priority, FolderId, Subtask } from "./types";
 
