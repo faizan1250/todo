@@ -3,6 +3,7 @@ export * from "./sidebar";
 export * from "./task-row";
 export * from "./task-pane";
 export * from "./task-detail-panel";
+export * from "./task-subtasks-section";
 export * from "./streak-celebration";
 export * from "./command-palette";
 export * from "./toast-system";
