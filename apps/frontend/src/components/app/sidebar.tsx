@@ -11,6 +11,7 @@ import {
   Plus,
   Command,
   Sparkles,
+  HelpCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ListId, FolderId } from "./types";
@@ -25,6 +26,7 @@ interface SidebarProps {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   onOpenCommandPalette: () => void;
+  onOpenShortcuts?: () => void;
   onNewTask: () => void;
   className?: string;
 }
@@ -52,6 +54,7 @@ export function Sidebar({
   isCollapsed,
   onToggleCollapse,
   onOpenCommandPalette,
+  onOpenShortcuts,
   onNewTask,
   className,
 }: SidebarProps) {
@@ -227,13 +230,13 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Sidebar Footer Keyboard Trigger */}
-      <div className="border-t border-[#E4E8F2] p-3 dark:border-[#132E74]">
+      {/* Sidebar Footer Keyboard Trigger & Help */}
+      <div className="border-t border-[#E4E8F2] p-3 dark:border-[#132E74] flex items-center gap-1.5">
         <button
           type="button"
           onClick={onOpenCommandPalette}
           className={cn(
-            "flex w-full items-center justify-between rounded-lg border border-[#E4E8F2] bg-[#F2F5FC]/80 px-2.5 py-2 text-xs text-[#5B6478] transition-colors hover:border-[#CBD5E1] hover:text-[#0B1220] dark:border-[#132E74] dark:bg-[#082363]/60 dark:text-[#9BB0D3] dark:hover:text-white focus-ring-pink cursor-pointer",
+            "flex-1 flex items-center justify-between rounded-lg border border-[#E4E8F2] bg-[#F2F5FC]/80 px-2.5 py-2 text-xs text-[#5B6478] transition-colors hover:border-[#CBD5E1] hover:text-[#0B1220] dark:border-[#132E74] dark:bg-[#082363]/60 dark:text-[#9BB0D3] dark:hover:text-white focus-ring-pink cursor-pointer",
             isCollapsed && "justify-center px-0"
           )}
           title="Open Command Palette (Cmd+K)"
@@ -248,6 +251,18 @@ export function Sidebar({
             </kbd>
           )}
         </button>
+
+        {onOpenShortcuts && (
+          <button
+            type="button"
+            onClick={onOpenShortcuts}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#E4E8F2] bg-[#F2F5FC]/80 text-[#5B6478] transition-colors hover:border-[#CBD5E1] hover:text-[#09318D] dark:border-[#132E74] dark:bg-[#082363]/60 dark:text-[#9BB0D3] dark:hover:text-[#FFA8D7] focus-ring-pink cursor-pointer"
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
+          >
+            <HelpCircle className="h-4 w-4" />
+          </button>
+        )}
       </div>
     </aside>
   );

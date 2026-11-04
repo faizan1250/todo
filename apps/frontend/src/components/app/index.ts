@@ -10,4 +10,5 @@ export * from "./mobile-nav";
 export * from "./theme-toggle";
 export * from "./task-skeleton";
 export * from "./empty-state";
+export * from "./keyboard-shortcuts-modal";
 export * from "./app-workspace";

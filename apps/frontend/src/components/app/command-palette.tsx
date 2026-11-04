@@ -14,6 +14,7 @@ import {
   User,
   ArrowRight,
   Command,
+  Keyboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ListId, FolderId } from "./types";
@@ -37,6 +38,7 @@ interface CommandPaletteProps {
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
   onOpenAuth?: () => void;
+  onOpenShortcuts?: () => void;
 }
 
 export function CommandPalette({
@@ -48,6 +50,7 @@ export function CommandPalette({
   onToggleTheme,
   onToggleSidebar,
   onOpenAuth,
+  onOpenShortcuts,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -210,6 +213,22 @@ export function CommandPalette({
           onClose();
         },
       },
+      ...(onOpenShortcuts
+        ? [
+            {
+              id: "act-keyboard-shortcuts",
+              title: "View Keyboard Shortcuts",
+              subtitle: "Open full cheat sheet of navigation and action shortcuts",
+              category: "Actions" as const,
+              icon: Keyboard,
+              shortcut: "?",
+              perform: () => {
+                onClose();
+                onOpenShortcuts();
+              },
+            },
+          ]
+        : []),
       ...(onOpenAuth
         ? [
             {
@@ -232,6 +251,7 @@ export function CommandPalette({
       onNewTask,
       onToggleTheme,
       onToggleSidebar,
+      onOpenShortcuts,
       onOpenAuth,
       onClose,
     ]

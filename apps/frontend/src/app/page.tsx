@@ -5,8 +5,8 @@ import { useState } from "react";
 import { BackendStatusBadge } from "@/components/backend-status-badge";
 import { UserNav, useAuth } from "@/components/auth";
 import { Hero, FeaturesGrid, FaqSection } from "@/components/landing";
-import { AppWorkspace, ThemeToggle } from "@/components/app";
-import { Sparkles, LayoutDashboard, Globe } from "lucide-react";
+import { AppWorkspace, ThemeToggle, KeyboardShortcutsModal } from "@/components/app";
+import { Sparkles, LayoutDashboard, Globe, HelpCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function HomePage() {
@@ -15,6 +15,7 @@ export default function HomePage() {
   const [activeView, setActiveView] = useState<"landing" | "app">(() =>
     isAuthenticated ? "app" : "landing"
   );
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
   const toggleTheme = () => {
     const isDark = document.documentElement.classList.contains("dark");
@@ -87,9 +88,18 @@ export default function HomePage() {
             </button>
           </nav>
 
-          {/* Right Controls: Backend Status, Theme Switcher & User Auth Nav */}
-          <div className="flex items-center gap-2.5">
+          {/* Right Controls: Backend Status, Shortcuts Guide, Theme Switcher & User Auth Nav */}
+          <div className="flex items-center gap-2">
             <BackendStatusBadge />
+            <button
+              type="button"
+              onClick={() => setIsShortcutsOpen(true)}
+              title="Keyboard shortcuts (?)"
+              aria-label="Keyboard shortcuts"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#E4E8F2] bg-white text-[#5B6478] shadow-2xs transition-colors hover:border-[#CAD5E8] hover:text-[#09318D] focus-ring-pink dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3] dark:hover:text-[#FFA8D7] cursor-pointer"
+            >
+              <HelpCircle className="h-4 w-4" />
+            </button>
             <ThemeToggle />
             <UserNav />
           </div>
@@ -144,9 +154,15 @@ export default function HomePage() {
           <AppWorkspace
             onOpenAuth={() => openAuthModal("sign-in")}
             onToggleTheme={toggleTheme}
+            onOpenShortcuts={() => setIsShortcutsOpen(true)}
           />
         )}
       </main>
+
+      <KeyboardShortcutsModal
+        isOpen={isShortcutsOpen}
+        onClose={() => setIsShortcutsOpen(false)}
+      />
     </div>
   );
 }
