@@ -11,6 +11,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { TaskRow } from "./task-row";
+import { TaskRowSkeletonList } from "./task-skeleton";
 import type { TaskItem, ListId, FolderId, Priority } from "./types";
 
 interface TaskPaneProps {
@@ -248,14 +249,7 @@ export function TaskPane({
 
         {/* Task Rows List */}
         {isLoading ? (
-          <div className="space-y-2">
-            {[1, 2, 3, 4].map((i) => (
-              <div
-                key={i}
-                className="h-14 w-full animate-pulse rounded-xl border border-[#E4E8F2] bg-white dark:border-[#132E74] dark:bg-[#082363]"
-              />
-            ))}
-          </div>
+          <TaskRowSkeletonList count={5} />
         ) : filteredTasks.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#E4E8F2] bg-white/60 py-16 text-center dark:border-[#132E74] dark:bg-[#082363]/30">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#F2F5FC] text-[#09318D] dark:bg-[#051A4D] dark:text-[#FD91CC]">

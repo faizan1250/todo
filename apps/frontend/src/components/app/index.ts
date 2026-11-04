@@ -8,4 +8,5 @@ export * from "./command-palette";
 export * from "./toast-system";
 export * from "./mobile-nav";
 export * from "./theme-toggle";
+export * from "./task-skeleton";
 export * from "./app-workspace";
