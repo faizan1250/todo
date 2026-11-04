@@ -1,4 +1,6 @@
-import { DateTime } from "luxon";
+import { DateTime, IANAZone } from "luxon";
+import { and, eq, gte, lt, or, sql, type SQL } from "drizzle-orm";
+import * as schema from "../db/schema";
 
 /**
  * Normalizes a date to UTC midnight for all-day floating dates.
@@ -76,4 +78,124 @@ export function validateLocationCoords(
     }
   }
   return { valid: true };
+}
+
+export interface DayBoundsResult {
+  startUtc: Date;
+  endUtc: Date;
+  floatStart: Date;
+  floatEnd: Date;
+  localDate: string;
+}
+
+/**
+ * Validates timezone with fallback to "UTC".
+ */
+export function resolveTimezone(tz?: string | null): string {
+  if (!tz || typeof tz !== "string") return "UTC";
+  return IANAZone.isValidZone(tz) ? tz : "UTC";
+}
+
+/**
+ * Computes start and end of day in local timezone and UTC, respecting DST transitions.
+ * Returns { startUtc, endUtc, floatStart, floatEnd, localDate }.
+ */
+export function dayBounds(
+  dateInput: string | Date | number | DateTime,
+  tz: string = "UTC"
+): DayBoundsResult {
+  const validZone = resolveTimezone(tz);
+
+  let localDayStart: DateTime;
+  if (DateTime.isDateTime(dateInput)) {
+    localDayStart = dateInput.setZone(validZone).startOf("day");
+  } else if (dateInput instanceof Date) {
+    localDayStart = DateTime.fromJSDate(dateInput, { zone: validZone }).startOf("day");
+  } else if (typeof dateInput === "number") {
+    localDayStart = DateTime.fromMillis(dateInput, { zone: validZone }).startOf("day");
+  } else if (typeof dateInput === "string") {
+    const trimmed = dateInput.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      localDayStart = DateTime.fromISO(trimmed, { zone: validZone }).startOf("day");
+    } else {
+      const parsed = DateTime.fromISO(trimmed, { zone: validZone });
+      localDayStart = (parsed.isValid ? parsed : DateTime.fromJSDate(new Date(trimmed), { zone: validZone })).startOf("day");
+    }
+  } else {
+    localDayStart = DateTime.now().setZone(validZone).startOf("day");
+  }
+
+  if (!localDayStart.isValid) {
+    localDayStart = DateTime.now().setZone(validZone).startOf("day");
+  }
+
+  // Local day end is localDayStart + 1 day (never +24h due to DST)
+  const localDayEnd = localDayStart.plus({ days: 1 }).startOf("day");
+  const localDate = localDayStart.toISODate()!;
+  const nextLocalDate = localDayEnd.toISODate()!;
+
+  return {
+    startUtc: localDayStart.toUTC().toJSDate(),
+    endUtc: localDayEnd.toUTC().toJSDate(),
+    floatStart: toUtcMidnight(localDate),
+    floatEnd: toUtcMidnight(nextLocalDate),
+    localDate,
+  };
+}
+
+/**
+ * Date query predicate helper for Drizzle:
+ * (all_day = 0 AND due_at >= :startUtc AND due_at < :endUtc) OR (all_day = 1 AND due_at >= :floatStart AND due_at < :floatEnd)
+ */
+export function buildDateBoundsPredicate(
+  bounds: { startUtc: Date; endUtc: Date; floatStart: Date; floatEnd: Date },
+  dueCol = schema.tasks.dueAt,
+  allDayCol = schema.tasks.allDay
+): SQL {
+  return or(
+    and(
+      eq(allDayCol, false),
+      gte(dueCol, bounds.startUtc),
+      lt(dueCol, bounds.endUtc)
+    ),
+    and(
+      eq(allDayCol, true),
+      gte(dueCol, bounds.floatStart),
+      lt(dueCol, bounds.floatEnd)
+    )
+  )!;
+}
+
+/**
+ * Builds raw SQL predicate for SQLite queries
+ */
+export function buildDateBoundsSql(
+  bounds: { startUtc: Date; endUtc: Date; floatStart: Date; floatEnd: Date },
+  tableAlias = "tasks",
+  dueColName = "due_at",
+  allDayColName = "all_day"
+): SQL {
+  return sql`(((${sql.raw(tableAlias)}.${sql.raw(allDayColName)} = 0 OR ${sql.raw(tableAlias)}.${sql.raw(allDayColName)} IS NULL) AND ${sql.raw(tableAlias)}.${sql.raw(dueColName)} >= ${bounds.startUtc.getTime()} AND ${sql.raw(tableAlias)}.${sql.raw(dueColName)} < ${bounds.endUtc.getTime()}) OR (${sql.raw(tableAlias)}.${sql.raw(allDayColName)} = 1 AND ${sql.raw(tableAlias)}.${sql.raw(dueColName)} >= ${bounds.floatStart.getTime()} AND ${sql.raw(tableAlias)}.${sql.raw(dueColName)} < ${bounds.floatEnd.getTime()}))`;
+}
+
+/**
+ * Helper to build overdue predicate:
+ * Timed tasks with due_at < now, all-day tasks with due_at < floatStart
+ */
+export function buildOverduePredicate(
+  now: Date,
+  todayFloatStart: Date,
+  dueCol = schema.tasks.dueAt,
+  allDayCol = schema.tasks.allDay
+): SQL {
+  return or(
+    and(
+      eq(allDayCol, false),
+      lt(dueCol, now)
+    ),
+    and(
+      eq(allDayCol, true),
+      lt(dueCol, todayFloatStart)
+    )
+  )!;
 }
