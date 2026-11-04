@@ -70,6 +70,77 @@ export interface BackendTag {
   deletedAt?: string | number | null;
 }
 
+export interface BackendReminder {
+  id: string;
+  userId: string;
+  taskId: string;
+  kind: "absolute" | "relative";
+  relativeTo?: "due" | "start" | "deadline" | null;
+  offsetMin?: number | null;
+  remindAt: string | number;
+  firedAt?: string | number | null;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version: number;
+  deletedAt?: string | number | null;
+}
+
+export interface BackendPlace {
+  id: string;
+  userId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  radiusM: number;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version: number;
+  deletedAt?: string | number | null;
+}
+
+export interface BackendRecurrence {
+  id: string;
+  userId: string;
+  rrule: string;
+  mode: "fixed" | "after_completion";
+  timezone: string;
+  dtstart: string | number;
+  until?: string | number | null;
+  maxCount?: number | null;
+  completedCount: number;
+  active: boolean;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version: number;
+  deletedAt?: string | number | null;
+}
+
+export interface ParsedToken {
+  type: "tag" | "list" | "priority" | "estimate" | "reminder" | "recurrence" | "date";
+  start: number;
+  end: number;
+  raw: string;
+  value?: unknown;
+}
+
+export interface ParsedTaskResult {
+  title: string;
+  dueAt: string | Date | null;
+  allDay: boolean;
+  priority: number;
+  tags: string[];
+  list: { id: string; name: string } | null;
+  estimateMin: number | null;
+  recurrence: { rrule: string; mode: "fixed" | "after_completion" } | null;
+  reminders: Array<{
+    kind: "absolute" | "relative";
+    relativeTo?: "due" | "start" | "deadline" | null;
+    offsetMin?: number | null;
+    remindAt?: string | Date | null;
+  }>;
+  tokens: ParsedToken[];
+}
+
 export interface BackendTask {
   id: string;
   userId: string;
@@ -86,7 +157,11 @@ export interface BackendTask {
   deadlineAt?: string | number | null;
   allDay?: boolean;
   estimateMin?: number | null;
+  estimateTotal?: number | null;
   recurrenceId?: string | null;
+  recurrenceRule?: { rrule: string; mode: "fixed" | "after_completion" } | null;
+  recurrence?: BackendRecurrence | null;
+  placeId?: string | null;
   locationName?: string | null;
   lat?: number | null;
   lng?: number | null;
@@ -101,6 +176,8 @@ export interface BackendTask {
   subtasks?: BackendTask[];
   checklist?: BackendChecklistItem[];
   tags?: BackendTag[];
+  reminders?: BackendReminder[];
+  nextTask?: BackendTask | null;
 }
 
 export interface BackendFolder {
@@ -185,7 +262,20 @@ export interface CreateTaskInput {
   deadlineAt?: string | number | null;
   allDay?: boolean;
   estimateMin?: number | null;
+  placeId?: string | null;
+  locationName?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  radiusM?: number | null;
+  locationTrigger?: "arrive" | "leave" | null;
   tagIds?: string[];
+  recurrenceRule?: { rrule: string; mode?: "fixed" | "after_completion" };
+  reminders?: Array<{
+    kind: "absolute" | "relative";
+    relativeTo?: "due" | "start" | "deadline" | null;
+    offsetMin?: number | null;
+    remindAt?: string | number | null;
+  }>;
 }
 
 export interface UpdateTaskInput {
@@ -202,6 +292,12 @@ export interface UpdateTaskInput {
   deadlineAt?: string | number | null;
   allDay?: boolean;
   estimateMin?: number | null;
+  placeId?: string | null;
+  locationName?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  radiusM?: number | null;
+  locationTrigger?: "arrive" | "leave" | null;
   completedAt?: string | number | null;
   archivedAt?: string | number | null;
   version?: number;

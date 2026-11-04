@@ -26,6 +26,16 @@ export interface ChecklistItemUi {
   position?: string;
 }
 
+export interface ReminderItem {
+  id: string;
+  taskId?: string;
+  kind: "absolute" | "relative";
+  relativeTo?: "due" | "start" | "deadline" | null;
+  offsetMin?: number | null;
+  remindAt?: string | number | null;
+  firedAt?: string | number | null;
+}
+
 export interface TaskItem {
   id: string;
   title: string;
@@ -40,6 +50,20 @@ export interface TaskItem {
   tagIds?: string[];
   dueDate?: string;
   dueAt?: string | number | null;
+  startAt?: string | number | null;
+  deadlineAt?: string | number | null;
+  allDay?: boolean;
+  estimateMin?: number | null;
+  estimateTotal?: number | null;
+  recurrenceId?: string | null;
+  recurrenceRule?: { rrule: string; mode: "fixed" | "after_completion" } | null;
+  placeId?: string | null;
+  locationName?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  radiusM?: number | null;
+  locationTrigger?: "arrive" | "leave" | null;
+  reminders?: ReminderItem[];
   subtasks: HierarchicalSubtask[];
   checklist: ChecklistItemUi[];
   createdAt: string;
