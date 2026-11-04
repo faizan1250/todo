@@ -206,8 +206,8 @@ export function Sidebar({
               <span className="text-sm font-bold tracking-tight text-[#0B1220] dark:text-white">
                 Todo Studio
               </span>
-              <span className="block text-[10px] font-mono text-[#5B6478] dark:text-[#9BB0D3]">
-                v0.1.0 • ElysiaJS
+              <span className="block text-[10px] font-medium text-[#5B6478] dark:text-[#9BB0D3]">
+                Personal Workspace
               </span>
             </div>
           </div>

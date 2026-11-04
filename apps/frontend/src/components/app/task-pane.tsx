@@ -95,10 +95,10 @@ export function TaskPane({
   const sectionTaskInputRef = useRef<HTMLInputElement>(null);
 
   const listTitles: Record<string, string> = {
-    today: "Today's Milestones",
-    upcoming: "Upcoming Sprints",
-    backlog: "Engineering Backlog",
-    completed: "Completed Archive",
+    today: "Today",
+    upcoming: "Upcoming",
+    backlog: "Backlog",
+    completed: "Completed",
   };
 
   const resolvedTitle =
@@ -418,19 +418,24 @@ export function TaskPane({
             <div className="flex items-center gap-1.5 text-xs text-[#5B6478] dark:text-[#9BB0D3]">
               <Filter className="h-3 w-3" />
               <span>Priority:</span>
-              {(["all", "high", "med", "low"] as const).map((p) => (
+              {[
+                { id: "all" as const, label: "All" },
+                { id: "high" as const, label: "High" },
+                { id: "med" as const, label: "Medium" },
+                { id: "low" as const, label: "Low" },
+              ].map((p) => (
                 <button
-                  key={p}
+                  key={p.id}
                   type="button"
-                  onClick={() => setPriorityFilter(p)}
+                  onClick={() => setPriorityFilter(p.id)}
                   className={cn(
-                    "rounded px-2 py-0.5 text-[11px] font-mono capitalize transition-colors cursor-pointer",
-                    priorityFilter === p
-                      ? "bg-[#09318D] text-white font-bold dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                      : "hover:bg-[#E4E8F2] dark:hover:bg-[#082363]"
+                    "rounded px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer",
+                    priorityFilter === p.id
+                      ? "bg-[#09318D] text-white font-semibold dark:bg-[#FD91CC] dark:text-[#051A4D]"
+                      : "hover:bg-[#E4E8F2] text-[#5B6478] dark:hover:bg-[#082363] dark:text-[#9BB0D3]"
                   )}
                 >
-                  {p}
+                  {p.label}
                 </button>
               ))}
             </div>
@@ -457,19 +462,23 @@ export function TaskPane({
             <div className="flex items-center justify-between sm:justify-end gap-2 border-t border-[#E4E8F2] pt-2 sm:border-t-0 sm:pt-0 dark:border-[#132E74]">
               {/* Priority Choice */}
               <div className="flex items-center gap-1">
-                {(["high", "med", "low"] as const).map((p) => (
+                {[
+                  { id: "high" as const, label: "High" },
+                  { id: "med" as const, label: "Medium" },
+                  { id: "low" as const, label: "Low" },
+                ].map((p) => (
                   <button
-                    key={p}
+                    key={p.id}
                     type="button"
-                    onClick={() => setNewPriority(p)}
+                    onClick={() => setNewPriority(p.id)}
                     className={cn(
-                      "rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase transition-colors cursor-pointer",
-                      newPriority === p
-                        ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
+                      "rounded px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer",
+                      newPriority === p.id
+                        ? "bg-[#09318D] text-white font-semibold dark:bg-[#FD91CC] dark:text-[#051A4D]"
                         : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#051A4D]"
                     )}
                   >
-                    {p}
+                    {p.label}
                   </button>
                 ))}
               </div>
@@ -592,7 +601,7 @@ export function TaskPane({
           )
         ) : effectiveSections.length === 0 ? (
           /* Render Flat Task List when no sections exist */
-          <div className="space-y-2">
+          <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
             {filteredTasks.map((task) => (
               <TaskRow
                 key={task.id}
@@ -628,7 +637,7 @@ export function TaskPane({
                     {unsectionedTasks.length}
                   </span>
                 </div>
-                <div className="space-y-2">
+                <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
                   {unsectionedTasks.map((task) => (
                     <TaskRow
                       key={task.id}
@@ -801,19 +810,23 @@ export function TaskPane({
                           />
                           {/* Priority Picker */}
                           <div className="flex items-center gap-1">
-                            {(["high", "med", "low"] as const).map((p) => (
+                            {[
+                              { id: "high" as const, label: "High" },
+                              { id: "med" as const, label: "Medium" },
+                              { id: "low" as const, label: "Low" },
+                            ].map((p) => (
                               <button
-                                key={p}
+                                key={p.id}
                                 type="button"
-                                onClick={() => setSectionTaskPriority(p)}
+                                onClick={() => setSectionTaskPriority(p.id)}
                                 className={cn(
-                                  "rounded px-1.5 py-0.5 text-[9px] font-mono font-semibold uppercase cursor-pointer",
-                                  sectionTaskPriority === p
-                                    ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
+                                  "rounded px-1.5 py-0.5 text-[10px] font-medium cursor-pointer transition-colors",
+                                  sectionTaskPriority === p.id
+                                    ? "bg-[#09318D] text-white font-semibold dark:bg-[#FD91CC] dark:text-[#051A4D]"
                                     : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3]"
                                 )}
                               >
-                                {p}
+                                {p.label}
                               </button>
                             ))}
                           </div>
@@ -844,7 +857,7 @@ export function TaskPane({
                           No tasks in this section yet. Click &quot;Add task&quot; to create one.
                         </div>
                       ) : (
-                        <div className="space-y-2">
+                        <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
                           {sectionTasks.map((task) => (
                             <TaskRow
                               key={task.id}

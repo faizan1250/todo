@@ -14,9 +14,6 @@ import {
   Flag,
   Star,
   Zap,
-  LayoutList,
-  Kanban,
-  CalendarDays,
   Folder as FolderIcon,
   Check,
   Loader2,
@@ -73,9 +70,7 @@ function ListDialogModalInner({
   const [icon, setIcon] = useState<string>(
     mode === "edit" && listToEdit && listToEdit.icon ? listToEdit.icon : "list"
   );
-  const [viewType, setViewType] = useState<"list" | "board" | "calendar">(
-    mode === "edit" && listToEdit && listToEdit.viewType ? listToEdit.viewType : "list"
-  );
+  const viewType = (mode === "edit" && listToEdit?.viewType) || "list";
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -330,40 +325,6 @@ function ListDialogModalInner({
                     )}
                   >
                     <IconComponent className="h-4 w-4" />
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* View Type Selector (list, board, calendar) */}
-          <div className="space-y-1.5">
-            <label className="block text-xs font-semibold text-[#0B1220] dark:text-white">
-              Default View
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { type: "list" as const, label: "List", icon: LayoutList },
-                { type: "board" as const, label: "Board", icon: Kanban },
-                { type: "calendar" as const, label: "Calendar", icon: CalendarDays },
-              ].map((v) => {
-                const ViewIcon = v.icon;
-                const isSelected = viewType === v.type;
-                return (
-                  <button
-                    key={v.type}
-                    type="button"
-                    onClick={() => setViewType(v.type)}
-                    disabled={isSubmitting}
-                    className={cn(
-                      "flex items-center justify-center gap-2 rounded-lg border py-2 text-xs font-semibold transition-all cursor-pointer focus-ring-pink",
-                      isSelected
-                        ? "border-[#09318D] bg-[#09318D] text-white shadow-xs dark:border-[#0D41B4] dark:bg-[#0D41B4]"
-                        : "border-[#E4E8F2] bg-[#F2F5FC]/50 text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3] dark:hover:text-white"
-                    )}
-                  >
-                    <ViewIcon className="h-3.5 w-3.5" />
-                    <span>{v.label}</span>
                   </button>
                 );
               })}

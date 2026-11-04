@@ -5,8 +5,7 @@ import { useState } from "react";
 import { X, Check, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { TaskItem, Priority, FolderId, HierarchicalSubtask } from "./types";
-import { ChecklistSection } from "./checklist-section";
-import { SubtaskTreeSection } from "./subtask-tree-section";
+import { TaskSubtasksSection } from "./task-subtasks-section";
 import { TagPickerPopover } from "./tag-picker-popover";
 import { MarkdownNotesEditor } from "./markdown-notes-editor";
 import { TaskActionsMenu } from "./task-actions-menu";
@@ -108,9 +107,6 @@ export function TaskDetailPanel({
   onToggleSubtask,
   onAddSubtask,
   onDeleteSubtask,
-  onToggleChecklistItem,
-  onAddChecklistItem,
-  onDeleteChecklistItem,
   onUpdateTags,
 }: TaskDetailPanelProps) {
   const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
@@ -170,42 +166,6 @@ export function TaskDetailPanel({
     }
     const updatedTree = removeSubtaskFromTree(task.subtasks, subtaskId);
     onUpdateTask({ ...task, subtasks: updatedTree, updatedAt: "Just now" });
-  };
-
-  // Checklist Handlers
-  const handleToggleChecklistItem = (itemId: string, currentDone: boolean) => {
-    if (onToggleChecklistItem) {
-      onToggleChecklistItem(itemId, !currentDone);
-    }
-    const updatedChecklist = task.checklist.map((ci) =>
-      ci.id === itemId ? { ...ci, done: !ci.done } : ci
-    );
-    onUpdateTask({ ...task, checklist: updatedChecklist, updatedAt: "Just now" });
-  };
-
-  const handleAddChecklistItem = (text: string) => {
-    if (onAddChecklistItem) {
-      onAddChecklistItem(text);
-    }
-    const newCi = {
-      id: `ci-${Date.now()}`,
-      taskId: task.id,
-      text,
-      done: false,
-    };
-    onUpdateTask({
-      ...task,
-      checklist: [...task.checklist, newCi],
-      updatedAt: "Just now",
-    });
-  };
-
-  const handleDeleteChecklistItem = (itemId: string) => {
-    if (onDeleteChecklistItem) {
-      onDeleteChecklistItem(itemId);
-    }
-    const updatedChecklist = task.checklist.filter((ci) => ci.id !== itemId);
-    onUpdateTask({ ...task, checklist: updatedChecklist, updatedAt: "Just now" });
   };
 
   // Tag Handlers
@@ -318,13 +278,17 @@ export function TaskDetailPanel({
             Priority Level
           </label>
           <div className="mt-1.5 grid grid-cols-3 gap-2">
-            {(["high", "med", "low"] as const).map((p) => {
-              const isSelected = task.priority === p;
+            {[
+              { id: "high" as const, label: "High" },
+              { id: "med" as const, label: "Medium" },
+              { id: "low" as const, label: "Low" },
+            ].map((p) => {
+              const isSelected = task.priority === p.id;
               return (
                 <button
-                  key={p}
+                  key={p.id}
                   type="button"
-                  onClick={() => handlePriorityChange(p)}
+                  onClick={() => handlePriorityChange(p.id)}
                   className={cn(
                     "flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-semibold capitalize transition-all cursor-pointer focus-ring-pink",
                     isSelected
@@ -335,12 +299,12 @@ export function TaskDetailPanel({
                   <span
                     className={cn(
                       "h-1.5 w-1.5 rounded-full",
-                      p === "high" && "bg-rose-500",
-                      p === "med" && "bg-amber-500",
-                      p === "low" && "bg-blue-500"
+                      p.id === "high" && "bg-rose-500",
+                      p.id === "med" && "bg-amber-500",
+                      p.id === "low" && "bg-blue-500"
                     )}
                   />
-                  <span>{p}</span>
+                  <span>{p.label}</span>
                 </button>
               );
             })}
@@ -374,16 +338,8 @@ export function TaskDetailPanel({
           </div>
         </div>
 
-        {/* 1. Checklist Section with Animated Progress Bar */}
-        <ChecklistSection
-          items={task.checklist}
-          onToggleItem={handleToggleChecklistItem}
-          onAddItem={handleAddChecklistItem}
-          onDeleteItem={handleDeleteChecklistItem}
-        />
-
-        {/* 2. Hierarchical Subtask Tree (Depth <= 3) */}
-        <SubtaskTreeSection
+        {/* Unified Subtasks Section with Animated Mini Progress Bar */}
+        <TaskSubtasksSection
           rootTaskId={task.id}
           subtasks={task.subtasks}
           onToggleSubtask={handleToggleSubtask}
