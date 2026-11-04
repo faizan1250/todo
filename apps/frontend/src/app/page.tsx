@@ -5,7 +5,13 @@ import { useState } from "react";
 import { BackendStatusBadge } from "@/components/backend-status-badge";
 import { UserNav, useAuth } from "@/components/auth";
 import { Hero, FeaturesGrid, FaqSection } from "@/components/landing";
-import { AppWorkspace, ThemeToggle, KeyboardShortcutsModal } from "@/components/app";
+import {
+  AppWorkspace,
+  ThemeToggle,
+  KeyboardShortcutsModal,
+  NetworkBanner,
+  ErrorBoundary,
+} from "@/components/app";
 import { Sparkles, LayoutDashboard, Globe, HelpCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -110,57 +116,62 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* Main View Area */}
+      {/* Network & Offline Resilience Banner */}
+      <NetworkBanner />
+
+      {/* Main View Area with Error Boundary */}
       <main className="flex-1 flex flex-col">
-        {activeView === "landing" ? (
-          <div>
-            {/* Landing Hero Section */}
-            <Hero
-              onOpenAuth={(mode) => openAuthModal(mode || "sign-up")}
-              onExploreApp={() => setActiveView("app")}
-            />
+        <ErrorBoundary fallbackTitle="Unable to load workspace view">
+          {activeView === "landing" ? (
+            <div>
+              {/* Landing Hero Section */}
+              <Hero
+                onOpenAuth={(mode) => openAuthModal(mode || "sign-up")}
+                onExploreApp={() => setActiveView("app")}
+              />
 
-            {/* 12-Column Features Grid */}
-            <FeaturesGrid />
+              {/* 12-Column Features Grid */}
+              <FeaturesGrid />
 
-            {/* Polished Accordion FAQ */}
-            <FaqSection />
+              {/* Polished Accordion FAQ */}
+              <FaqSection />
 
-            {/* Architectural Footer */}
-            <footer className="border-t border-[#E4E8F2] bg-[#F2F5FC] py-12 dark:border-[#132E74] dark:bg-[#051A4D]">
-              <div className="mx-auto max-w-7xl px-4 text-center sm:px-6 lg:px-8 space-y-4">
-                <div className="flex items-center justify-center gap-2">
-                  <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-[#09318D] text-white">
-                    <Sparkles className="h-3.5 w-3.5 text-[#FD91CC]" />
+              {/* Architectural Footer */}
+              <footer className="border-t border-[#E4E8F2] bg-[#F2F5FC] py-12 dark:border-[#132E74] dark:bg-[#051A4D]">
+                <div className="mx-auto max-w-7xl px-4 text-center sm:px-6 lg:px-8 space-y-4">
+                  <div className="flex items-center justify-center gap-2">
+                    <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-[#09318D] text-white">
+                      <Sparkles className="h-3.5 w-3.5 text-[#FD91CC]" />
+                    </div>
+                    <span className="text-sm font-bold text-[#0B1220] dark:text-white">
+                      Todo Studio Engineering
+                    </span>
                   </div>
-                  <span className="text-sm font-bold text-[#0B1220] dark:text-white">
-                    Todo Studio Engineering
-                  </span>
-                </div>
 
-                <p className="text-xs text-[#5B6478] dark:text-[#9BB0D3] max-w-md mx-auto">
-                  High-performance task orchestration interface paired with sub-millisecond ElysiaJS backend.
-                </p>
+                  <p className="text-xs text-[#5B6478] dark:text-[#9BB0D3] max-w-md mx-auto">
+                    High-performance task orchestration interface paired with sub-millisecond ElysiaJS backend.
+                  </p>
 
-                <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 font-mono text-xs text-[#5B6478] dark:text-[#9BB0D3]">
-                  <span>Next.js 16 (App Router)</span>
-                  <span>•</span>
-                  <span>TailwindCSS v4</span>
-                  <span>•</span>
-                  <span>Better Auth (2FA + Invites)</span>
-                  <span>•</span>
-                  <span>ElysiaJS Backend (:3001)</span>
+                  <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 font-mono text-xs text-[#5B6478] dark:text-[#9BB0D3]">
+                    <span>Next.js 16 (App Router)</span>
+                    <span>•</span>
+                    <span>TailwindCSS v4</span>
+                    <span>•</span>
+                    <span>Better Auth (2FA + Invites)</span>
+                    <span>•</span>
+                    <span>ElysiaJS Backend (:3001)</span>
+                  </div>
                 </div>
-              </div>
-            </footer>
-          </div>
-        ) : (
-          <AppWorkspace
-            onOpenAuth={() => openAuthModal("sign-in")}
-            onToggleTheme={toggleTheme}
-            onOpenShortcuts={() => setIsShortcutsOpen(true)}
-          />
-        )}
+              </footer>
+            </div>
+          ) : (
+            <AppWorkspace
+              onOpenAuth={() => openAuthModal("sign-in")}
+              onToggleTheme={toggleTheme}
+              onOpenShortcuts={() => setIsShortcutsOpen(true)}
+            />
+          )}
+        </ErrorBoundary>
       </main>
 
       <KeyboardShortcutsModal

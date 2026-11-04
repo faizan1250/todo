@@ -11,4 +11,6 @@ export * from "./theme-toggle";
 export * from "./task-skeleton";
 export * from "./empty-state";
 export * from "./keyboard-shortcuts-modal";
+export * from "./network-banner";
+export * from "./error-boundary";
 export * from "./app-workspace";
