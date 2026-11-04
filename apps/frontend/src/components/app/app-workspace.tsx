@@ -10,6 +10,8 @@ import { CommandPalette } from "./command-palette";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import { MobileNav } from "./mobile-nav";
 import { ToastProvider, useToast } from "./toast-system";
+import { ListDialog } from "./list-dialog";
+import { FolderDialog } from "./folder-dialog";
 import { useAuth } from "@/components/auth";
 import {
   getLists,
@@ -21,6 +23,9 @@ import {
   completeTask,
   reopenTask,
   restoreTrash,
+  deleteList,
+  archiveList,
+  deleteFolder,
   type BackendList,
   type BackendFolder,
 } from "@/lib/api";
@@ -159,10 +164,19 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [tasks, setTasks] = useState<TaskItem[]>(INITIAL_WORKSPACE_TASKS);
   const [userLists, setUserLists] = useState<BackendList[]>([]);
   const [userFolders, setUserFolders] = useState<BackendFolder[]>([]);
-  void userFolders;
   const [activeListId, setActiveListId] = useState<string | null>(null);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [selectedListOverride, setSelectedListOverride] = useState<ListId | null>(null);
+
+  // Modals state for Lists & Folders
+  const [isListDialogOpen, setIsListDialogOpen] = useState(false);
+  const [listDialogMode, setListDialogMode] = useState<"create" | "edit">("create");
+  const [listToEdit, setListToEdit] = useState<BackendList | null>(null);
+  const [listDialogFolderId, setListDialogFolderId] = useState<string | null>(null);
+
+  const [isFolderDialogOpen, setIsFolderDialogOpen] = useState(false);
+  const [folderDialogMode, setFolderDialogMode] = useState<"create" | "edit">("create");
+  const [folderToEdit, setFolderToEdit] = useState<BackendFolder | null>(null);
 
   const prefList = auth?.profile?.preferences?.defaultListId as ListId | undefined;
   const effectiveDefaultList: ListId =
@@ -184,6 +198,133 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [streakCount, setStreakCount] = useState(5);
   const [isStreakActive, setIsStreakActive] = useState(false);
   const [streakTaskTitle, setStreakTaskTitle] = useState("");
+
+  // Container CRUD handlers
+  const handleCreateList = useCallback((folderId?: string | null) => {
+    setListDialogMode("create");
+    setListToEdit(null);
+    setListDialogFolderId(folderId ?? null);
+    setIsListDialogOpen(true);
+  }, []);
+
+  const handleEditList = useCallback((list: BackendList) => {
+    setListDialogMode("edit");
+    setListToEdit(list);
+    setListDialogFolderId(list.folderId ?? null);
+    setIsListDialogOpen(true);
+  }, []);
+
+  const handleArchiveList = useCallback(
+    async (list: BackendList) => {
+      try {
+        await archiveList(list.id);
+        setUserLists((prev) => prev.filter((l) => l.id !== list.id));
+        if (activeListId === list.id) {
+          const inbox = userLists.find((l) => l.isInbox);
+          setActiveListId(inbox?.id ?? null);
+        }
+        success(`Archived list "${list.name}"`);
+      } catch (err) {
+        console.error("Failed to archive list:", err);
+        toast({
+          title: "Archive failed",
+          message: err instanceof Error ? err.message : "Could not archive list",
+          type: "error",
+        });
+      }
+    },
+    [activeListId, userLists, success, toast]
+  );
+
+  const handleDeleteList = useCallback(
+    async (list: BackendList) => {
+      try {
+        await deleteList(list.id);
+        setUserLists((prev) => prev.filter((l) => l.id !== list.id));
+        if (activeListId === list.id) {
+          const inbox = userLists.find((l) => l.isInbox);
+          setActiveListId(inbox?.id ?? null);
+        }
+        success(`Deleted list "${list.name}"`);
+      } catch (err) {
+        console.error("Failed to delete list:", err);
+        toast({
+          title: "Delete failed",
+          message: err instanceof Error ? err.message : "Could not delete list",
+          type: "error",
+        });
+      }
+    },
+    [activeListId, userLists, success, toast]
+  );
+
+  const handleListSuccess = useCallback(
+    (savedList: BackendList) => {
+      if (listDialogMode === "edit") {
+        setUserLists((prev) =>
+          prev.map((l) => (l.id === savedList.id ? savedList : l))
+        );
+        success(`Updated list "${savedList.name}"`);
+      } else {
+        setUserLists((prev) => [...prev, savedList]);
+        setActiveListId(savedList.id);
+        setSelectedListOverride(null);
+        success(`Created list "${savedList.name}"`);
+      }
+    },
+    [listDialogMode, success]
+  );
+
+  const handleCreateFolder = useCallback(() => {
+    setFolderDialogMode("create");
+    setFolderToEdit(null);
+    setIsFolderDialogOpen(true);
+  }, []);
+
+  const handleEditFolder = useCallback((folder: BackendFolder) => {
+    setFolderDialogMode("edit");
+    setFolderToEdit(folder);
+    setIsFolderDialogOpen(true);
+  }, []);
+
+  const handleDeleteFolder = useCallback(
+    async (folder: BackendFolder) => {
+      try {
+        await deleteFolder(folder.id);
+        setUserFolders((prev) => prev.filter((f) => f.id !== folder.id));
+        setUserLists((prev) =>
+          prev.map((l) => (l.folderId === folder.id ? { ...l, folderId: null } : l))
+        );
+        if (activeFolder === folder.id) {
+          setActiveFolder(null);
+        }
+        success(`Deleted folder "${folder.name}"`);
+      } catch (err) {
+        console.error("Failed to delete folder:", err);
+        toast({
+          title: "Delete failed",
+          message: err instanceof Error ? err.message : "Could not delete folder",
+          type: "error",
+        });
+      }
+    },
+    [activeFolder, success, toast]
+  );
+
+  const handleFolderSuccess = useCallback(
+    (savedFolder: BackendFolder) => {
+      if (folderDialogMode === "edit") {
+        setUserFolders((prev) =>
+          prev.map((f) => (f.id === savedFolder.id ? savedFolder : f))
+        );
+        success(`Updated folder "${savedFolder.name}"`);
+      } else {
+        setUserFolders((prev) => [...prev, savedFolder]);
+        success(`Created folder "${savedFolder.name}"`);
+      }
+    },
+    [folderDialogMode, success]
+  );
 
   // Fetch user's lists and folders when authenticated
   useEffect(() => {
@@ -220,20 +361,22 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     };
   }, [isAuthenticated]);
 
-  // Fetch tasks for the active list
+  // Fetch tasks for active list or active smart view
   useEffect(() => {
-    if (!isAuthenticated || !activeListId) return;
-    const targetListId = activeListId;
+    if (!isAuthenticated) return;
 
     let isMounted = true;
 
-    async function loadTasks(listId: string) {
+    async function loadTasks() {
       setIsLoadingTasks(true);
       try {
-        const res = await getTasks({
-          listId,
+        const queryParams: { listId?: string; include: string } = {
           include: "subtasks,checklist,tags",
-        });
+        };
+        if (activeListId) {
+          queryParams.listId = activeListId;
+        }
+        const res = await getTasks(queryParams);
         if (!isMounted) return;
         const mapped = res.items.map((t) => backendTaskToTaskItem(t));
         setTasks(mapped);
@@ -259,7 +402,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
     }
 
-    void loadTasks(targetListId);
+    void loadTasks();
 
     return () => {
       isMounted = false;
@@ -271,23 +414,53 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     externalOpenShortcuts?.();
   }, [externalOpenShortcuts]);
 
+  // Derived Inbox list and active list name
+  const inboxList = useMemo(() => {
+    return userLists.find((l) => l.isInbox) || null;
+  }, [userLists]);
+
+  const activeListName = useMemo(() => {
+    if (activeListId) {
+      const found = userLists.find((l) => l.id === activeListId);
+      if (found) return found.name;
+    }
+    return undefined;
+  }, [activeListId, userLists]);
+
   // Compute counts
   const listCounts = useMemo(() => {
-    return {
+    const counts: Record<string, number> = {
       today: tasks.filter((t) => t.list === "today").length,
       upcoming: tasks.filter((t) => t.list === "upcoming").length,
       backlog: tasks.filter((t) => t.list === "backlog").length,
       completed: tasks.filter((t) => t.completed).length,
     };
-  }, [tasks]);
+
+    for (const list of userLists) {
+      counts[list.id] = tasks.filter((t) => t.listId === list.id).length;
+    }
+
+    return counts;
+  }, [tasks, userLists]);
 
   const folderCounts = useMemo(() => {
-    return {
+    const counts: Record<string, number> = {
       engineering: tasks.filter((t) => t.folder === "engineering").length,
       design: tasks.filter((t) => t.folder === "design").length,
       personal: tasks.filter((t) => t.folder === "personal").length,
     };
-  }, [tasks]);
+
+    for (const folder of userFolders) {
+      const folderListIds = new Set(
+        userLists.filter((l) => l.folderId === folder.id).map((l) => l.id)
+      );
+      counts[folder.id] = tasks.filter(
+        (t) => (t.listId && folderListIds.has(t.listId)) || t.folder === folder.name.toLowerCase()
+      ).length;
+    }
+
+    return counts;
+  }, [tasks, userFolders, userLists]);
 
   // Selected Task
   const selectedTask = useMemo(
@@ -298,7 +471,9 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   // Visible tasks in current list & folder for keyboard navigation
   const visibleTasks = useMemo(() => {
     return tasks.filter((task) => {
-      if (activeList === "completed") {
+      if (activeListId) {
+        if (task.listId && task.listId !== activeListId) return false;
+      } else if (activeList === "completed") {
         if (!task.completed) return false;
       } else {
         if (task.list !== activeList) return false;
@@ -306,7 +481,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       if (activeFolder && task.folder !== activeFolder) return false;
       return true;
     });
-  }, [tasks, activeList, activeFolder]);
+  }, [tasks, activeList, activeListId, activeFolder]);
 
   // Task Handlers
   const handleToggleComplete = useCallback(
@@ -598,7 +773,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   ]);
 
   const handleAddTask = useCallback(
-    (data: { title: string; priority: Priority; folder: FolderId; list: ListId }) => {
+    (data: {
+      title: string;
+      priority: Priority;
+      folder: FolderId;
+      list: ListId;
+      sectionId?: string | null;
+    }) => {
       const tempId = `temp-${Date.now()}`;
       const targetBackendListId =
         activeListId || userLists.find((l) => l.isInbox)?.id || userLists[0]?.id;
@@ -615,6 +796,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         createdAt: "Just now",
         updatedAt: "Just now",
         listId: targetBackendListId || undefined,
+        sectionId: data.sectionId || null,
       };
 
       setTasks((prev) => [newTask, ...prev]);
@@ -627,6 +809,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           title: data.title,
           priority: priorityUiToBackend(data.priority),
           listId: targetBackendListId,
+          sectionId: data.sectionId || undefined,
           dueAt,
         })
           .then((createdBackendTask) => {
@@ -691,8 +874,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       <Sidebar
         activeList={activeList}
         onSelectList={setActiveList}
+        activeListId={activeListId}
+        onSelectListId={setActiveListId}
         activeFolder={activeFolder}
         onSelectFolder={setActiveFolder}
+        lists={userLists}
+        folders={userFolders}
+        inboxList={inboxList}
         listCounts={listCounts}
         folderCounts={folderCounts}
         isCollapsed={isSidebarCollapsed}
@@ -704,6 +892,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
           input?.focus();
         }}
+        onCreateList={handleCreateList}
+        onEditList={handleEditList}
+        onArchiveList={handleArchiveList}
+        onDeleteList={handleDeleteList}
+        onCreateFolder={handleCreateFolder}
+        onEditFolder={handleEditFolder}
+        onDeleteFolder={handleDeleteFolder}
         className="hidden md:flex"
       />
 
@@ -711,6 +906,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       <TaskPane
         tasks={tasks}
         activeList={activeList}
+        activeListId={activeListId}
+        activeListName={activeListName}
         activeFolder={activeFolder}
         selectedTaskId={selectedTaskId}
         onSelectTask={(task) => setSelectedTaskId(task.id)}
@@ -773,6 +970,26 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           input?.focus();
         }}
         onToggleTheme={onToggleTheme}
+      />
+
+      {/* List Dialog Modal */}
+      <ListDialog
+        isOpen={isListDialogOpen}
+        onClose={() => setIsListDialogOpen(false)}
+        mode={listDialogMode}
+        listToEdit={listToEdit}
+        defaultFolderId={listDialogFolderId}
+        folders={userFolders}
+        onSuccess={handleListSuccess}
+      />
+
+      {/* Folder Dialog Modal */}
+      <FolderDialog
+        isOpen={isFolderDialogOpen}
+        onClose={() => setIsFolderDialogOpen(false)}
+        mode={folderDialogMode}
+        folderToEdit={folderToEdit}
+        onSuccess={handleFolderSuccess}
       />
     </div>
   );
