@@ -115,10 +115,6 @@ export function determineTaskFolder(task: BackendTask): FolderId {
  * Determine which smart list a task belongs to (today, upcoming, backlog, completed)
  */
 export function determineTaskList(task: BackendTask): ListId {
-  if (task.status === "done") {
-    return "completed";
-  }
-
   if (task.dueAt) {
     const dueDate = new Date(task.dueAt);
     if (!isNaN(dueDate.getTime())) {
@@ -129,6 +125,10 @@ export function determineTaskList(task: BackendTask): ListId {
       }
       return "upcoming";
     }
+  }
+
+  if (task.status === "done") {
+    return "completed";
   }
 
   return "backlog";
