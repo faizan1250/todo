@@ -197,3 +197,167 @@ Todo Studio combines consumer-grade responsiveness with enterprise-grade data gu
 ### 7. Dual-Mode Authentication & Multi-Tenant Security
 - **Instant Demo Experience**: Explore the full platform without barriers via an ephemeral guest demo session.
 - **Production Better Auth**: Multi-tenant authentication with Argon2/scrypt password hashing, session tokens, TOTP two-factor authentication (2FA) with recovery backup codes, and strict user-scoped tenancy isolation on every database query.
+
+---
+
+## 🗄️ Database Architecture & Data Modeling
+
+Todo Studio leverages `bun:sqlite` paired with Drizzle ORM to combine raw native C-level SQLite query execution speeds with fully type-safe schema definitions and migration safety.
+
+### SQLite WAL Mode & Concurrency Guarantees
+
+The database connection initializes with high-performance production PRAGMAs:
+
+```typescript
+db.run(sql`PRAGMA journal_mode = WAL;`);
+db.run(sql`PRAGMA foreign_keys = ON;`);
+db.run(sql`PRAGMA synchronous = NORMAL;`);
+db.run(sql`PRAGMA busy_timeout = 5000;`);
+```
+
+- **Write-Ahead Logging (WAL)**: Reads and writes never block each other. Background readers query snapshot views concurrently while transactional mutations proceed in the WAL file.
+- **Foreign Key Enforcement**: Cascading deletes and nullifications run natively within the SQLite engine, preventing orphaned rows.
+- **Normal Synchronous**: Balanced durability and high-throughput write performance.
+- **5000ms Busy Timeout**: Prevents instantaneous lock contention under heavy local or background cron tasks.
+
+### Entity Relationship Model
+
+The core relational topology centers around user-scoped organizational hierarchies, recursive task structures, and orthogonal tagging:
+
+```mermaid
+erDiagram
+    USER ||--o{ SESSION : has
+    USER ||--o{ ACCOUNT : owns
+    USER ||--o{ FOLDER : organizes
+    USER ||--o{ LIST : creates
+    USER ||--o{ TASK : manages
+    USER ||--o{ TAG : defines
+    USER ||--o{ TEMPLATE : saves
+    FOLDER ||--o{ LIST : groups
+    LIST ||--o{ SECTION : subdivides
+    LIST ||--o{ TASK : contains
+    SECTION ||--o{ TASK : categorizes
+    TASK ||--o{ TASK : subtasks
+    TASK ||--o{ CHECKLIST_ITEM : includes
+    TASK ||--o{ TASK_TAG : tagged
+    TAG ||--o{ TASK_TAG : classifies
+```
+
+### Core Schema Tables Reference
+
+All synchronized entities inherit shared base metadata:
+- `id`: Monotonically incrementing UUIDv7 generated via `Bun.randomUUIDv7()` for time-ordered index clustering.
+- `createdAt` / `updatedAt`: Millisecond timestamp precision (`mode: "timestamp_ms"`).
+- `version`: Integer sequence incremented on mutations for optimistic concurrency control.
+- `deletedAt`: Soft-delete timestamp for trash workflows and 30-day purge cascades.
+
+| Table Name | Description | Key Relationships & Constraints |
+| :--- | :--- | :--- |
+| **`user`** | User profile, authentication state, locale, and JSON preferences | `id` (PK), `email` (Unique), `two_factor_enabled` |
+| **`session`** | Active authentication sessions with expiration timestamps | `user_id` $\rightarrow$ `user.id` (Cascade delete), Indexed on `user_id` |
+| **`account`** | Credential provider records and hashed passwords | `user_id` $\rightarrow$ `user.id` (Cascade delete), Indexed on `user_id` |
+| **`folders`** | High-level organizational buckets grouping multiple lists | `user_id` $\rightarrow$ `user.id`, Composite index `(user_id, position)` |
+| **`lists`** | Task containers (projects, areas) supporting default Inbox | `folder_id` $\rightarrow$ `folders.id` (Set Null), `is_inbox` boolean flag |
+| **`sections`** | Workflow columns or section dividers within a list | `list_id` $\rightarrow$ `lists.id` (Cascade delete), Indexed on `(list_id, position)` |
+| **`tasks`** | Core task entities supporting scheduling, notes, and priority | `list_id`, `section_id`, recursive `parent_id` $\rightarrow$ `tasks.id` (Cascade) |
+| **`checklist_items`** | Fine-grained checkable sub-items within a parent task | `task_id` $\rightarrow$ `tasks.id` (Cascade delete), Indexed on `(task_id, position)` |
+| **`tags`** | Taxonomy labels with custom colors | Case-insensitive unique index on `(user_id, name)` where active |
+| **`task_tags`** | Many-to-many junction joining tasks and tags | Composite PK `(task_id, tag_id)`, Foreign keys cascade on delete |
+| **`templates`** | Reusable task tree JSON snapshots (up to 100 nodes, depth 3) | `user_id` $\rightarrow$ `user.id`, Indexed on `user_id` |
+| **`recurrences`** | RFC 5545 recurrence rules for periodic tasks | `user_id` $\rightarrow$ `user.id`, mode: `fixed` or `after_completion` |
+
+---
+
+## 📡 API Reference & OpenAPI Specification
+
+The backend exposes a strictly typed, OpenAPI 3.0-compliant REST API built with ElysiaJS. 
+
+### Interactive OpenAPI Explorer
+
+Todo Studio provides an embedded Swagger UI for interactive exploration, schema verification, and direct testing:
+
+- **Swagger UI**: [http://localhost:3001/swagger](http://localhost:3001/swagger)
+- **JSON Specification**: `http://localhost:3001/swagger/json`
+
+### Authentication & User Management
+
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :---: |
+| `POST` | `/api/auth/sign-up/email` | Create new account with email and password | No |
+| `POST` | `/api/auth/sign-in/email` | Authenticate with credentials and receive bearer token | No |
+| `POST` | `/api/auth/sign-out` | Invalidate current bearer token session | Yes |
+| `GET` | `/api/auth/session` | Retrieve active session details and user object | Yes |
+| `POST` | `/api/auth/two-factor/*` | Manage TOTP 2FA (enable, generate QR, verify, disable) | Yes |
+| `GET` | `/api/v1/me` | Fetch user profile, timezones, and JSON preferences | Yes |
+| `PATCH` | `/api/v1/me` | Update name, timezone, week start day, or preferences | Yes |
+
+### Containers: Folders, Lists & Sections
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/folders` | List all non-deleted folders ordered by fractional position |
+| `POST` | `/api/v1/folders` | Create a new folder (`name`, `color`, `icon`, `position`) |
+| `PATCH` | `/api/v1/folders/:id` | Update folder properties |
+| `DELETE` | `/api/v1/folders/:id` | Soft-delete folder (nullifies child list folder references) |
+| `POST` | `/api/v1/folders/:id/move` | Update folder position relative to siblings |
+| `GET` | `/api/v1/lists` | List all active lists (including Inbox and archived flags) |
+| `POST` | `/api/v1/lists` | Create a list inside an optional folder (`name`, `color`, `icon`, `viewType`) |
+| `PATCH` | `/api/v1/lists/:id` | Update list metadata or move to another folder |
+| `DELETE` | `/api/v1/lists/:id` | Soft-delete list and cascade deletion to sections and tasks |
+| `POST` | `/api/v1/lists/:id/move` | Reposition list using fractional index math |
+| `POST` | `/api/v1/lists/:id/archive` | Archive list and suppress from active navigation |
+| `POST` | `/api/v1/lists/:id/unarchive` | Unarchive list back to active status |
+| `GET` | `/api/v1/lists/:listId/sections` | Fetch sections belonging to a list ordered by position |
+| `POST` | `/api/v1/lists/:listId/sections` | Create a new section within a list |
+| `PATCH` | `/api/v1/sections/:id` | Rename or modify section attributes |
+| `DELETE` | `/api/v1/sections/:id` | Soft-delete section (nullifies task section references) |
+| `POST` | `/api/v1/sections/:id/move` | Reposition section within the list |
+
+### Tasks & Subtask Operations
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/tasks` | Keyset cursor-paginated tasks (`limit`, `cursor`, `listId`, `include=subtasks,checklist,tags`) |
+| `POST` | `/api/v1/tasks` | Create task (`title`, `notes`, `priority`, `dueAt`, `listId`, `sectionId`, `parentId`) |
+| `GET` | `/api/v1/tasks/:id` | Retrieve single task with optional nested relation includes |
+| `PATCH` | `/api/v1/tasks/:id` | Update title, notes, status, priority, dates, or container assignment |
+| `DELETE` | `/api/v1/tasks/:id` | Soft-delete task and recursively cascade down subtasks |
+| `POST` | `/api/v1/tasks/:id/move` | Move task to a new list, section, or position |
+| `POST` | `/api/v1/tasks/:id/complete` | Mark task done with optional recursive subtask completion |
+| `POST` | `/api/v1/tasks/:id/reopen` | Reopen a completed task without altering descendant statuses |
+| `POST` | `/api/v1/tasks/:id/archive` | Archive task and its active descendants |
+| `POST` | `/api/v1/tasks/:id/unarchive` | Unarchive task and matching timestamped descendants |
+| `POST` | `/api/v1/tasks/:id/duplicate` | Deep clone task tree (subtasks, checklists, tags) with new IDs |
+| `POST` | `/api/v1/tasks/:id/save-as-template` | Snapshot task hierarchy into a reusable JSON template |
+| `POST` | `/api/v1/tasks/bulk` | Atomic batch execution (`move`, `tag`, `untag`, `complete`, `delete`, etc.) |
+
+### Checklists & Tags
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/tasks/:taskId/checklist` | List all checklist items belonging to a task |
+| `POST` | `/api/v1/tasks/:taskId/checklist` | Append a new checklist item to a task |
+| `PATCH` | `/api/v1/checklist/:id` | Toggle done status or update text |
+| `DELETE` | `/api/v1/checklist/:id` | Remove a checklist item |
+| `POST` | `/api/v1/checklist/:id/move` | Reorder checklist item position |
+| `GET` | `/api/v1/tags` | List all user tags |
+| `POST` | `/api/v1/tags` | Create a new tag (`name`, `color`) |
+| `PATCH` | `/api/v1/tags/:id` | Rename tag or update color badge |
+| `DELETE` | `/api/v1/tags/:id` | Soft-delete tag and disassociate from tasks |
+| `PUT` | `/api/v1/tasks/:id/tags` | Atomically replace all tags assigned to a task |
+
+### Templates, Trash & System
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/templates` | List all saved task tree templates |
+| `POST` | `/api/v1/templates` | Create a new template definition from JSON payload |
+| `GET` | `/api/v1/templates/:id` | Retrieve template payload and structural schema |
+| `PATCH` | `/api/v1/templates/:id` | Rename template or modify structure |
+| `DELETE` | `/api/v1/templates/:id` | Delete saved template |
+| `POST` | `/api/v1/templates/:id/instantiate` | Instantiate template into target list/section with new UUIDs |
+| `GET` | `/api/v1/trash` | List soft-deleted folders, lists, sections, and tasks |
+| `POST` | `/api/v1/trash/restore` | Restore soft-deleted item (auto-repairs to Inbox if parent removed) |
+| `DELETE` | `/api/v1/trash/purge` | Permanently purge a specific soft-deleted record |
+| `DELETE` | `/api/v1/trash` | Permanently purge all soft-deleted items currently in trash |
+| `GET` | `/health` | Unauthenticated uptime health check with server timestamp |
