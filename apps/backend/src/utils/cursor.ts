@@ -1,6 +1,7 @@
 export interface CursorPayload {
-  position: string;
+  position?: string;
   id: string;
+  sortTuple?: any[];
 }
 
 export interface PaginatedResult<T> {
@@ -25,8 +26,12 @@ export function decodeCursor(cursorStr?: string | null): CursorPayload | null {
   try {
     const raw = Buffer.from(cursorStr, "base64url").toString("utf-8");
     const parsed = JSON.parse(raw);
-    if (typeof parsed?.position === "string" && typeof parsed?.id === "string") {
-      return { position: parsed.position, id: parsed.id };
+    if (typeof parsed?.id === "string") {
+      return {
+        position: typeof parsed.position === "string" ? parsed.position : undefined,
+        id: parsed.id,
+        sortTuple: Array.isArray(parsed.sortTuple) ? parsed.sortTuple : undefined,
+      };
     }
     return null;
   } catch {

@@ -123,7 +123,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
 
       // Cursor keyset filter on (position, id)
       const decodedCursor = decodeCursor(query.cursor);
-      if (decodedCursor) {
+      if (decodedCursor && decodedCursor.position) {
         conditions.push(
           or(
             gt(schema.tasks.position, decodedCursor.position),
