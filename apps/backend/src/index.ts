@@ -1,5 +1,8 @@
 import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
+import { auth } from "./auth";
+import { meRoutes } from "./routes/me";
+import { inviteRoutes } from "./routes/invite";
 
 export const app = new Elysia()
   .use(
@@ -7,8 +10,13 @@ export const app = new Elysia()
       origin: ["http://localhost:3000"],
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       credentials: true,
+      allowedHeaders: ["Content-Type", "Authorization"],
+      exposeHeaders: ["set-auth-token"],
     })
   )
+  .mount(auth.handler)
+  .use(meRoutes)
+  .use(inviteRoutes)
   .get(
     "/health",
     () => ({
