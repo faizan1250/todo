@@ -21,7 +21,6 @@ import {
   Tag,
   Repeat,
   Clock,
-  Bell,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -163,7 +162,6 @@ export function TaskPane({
   useEffect(() => {
     const trimmed = newTitle.trim();
     if (!trimmed) {
-      setParsedPreview(null);
       return;
     }
 
@@ -600,7 +598,13 @@ export function TaskPane({
               type="text"
               value={newTitle}
               onFocus={() => setIsQuickAddFocused(true)}
-              onChange={(e) => setNewTitle(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setNewTitle(val);
+                if (!val.trim()) {
+                  setParsedPreview(null);
+                }
+              }}
               onKeyDown={handleInputKeyDown}
               placeholder={`+ Add task to ${resolvedTitle}... (Press Enter)`}
               className="flex-1 bg-transparent py-0.5 text-xs sm:text-sm font-medium text-[#0B1220] placeholder:text-[#5B6478]/60 focus:outline-none dark:text-white dark:placeholder:text-[#9BB0D3]/60"
@@ -613,7 +617,7 @@ export function TaskPane({
           </div>
 
           {/* Natural Language Token Preview Badges */}
-          {parsedPreview && (parsedPreview.tags?.length > 0 || parsedPreview.dueAt || parsedPreview.estimateMin || parsedPreview.recurrence || (parsedPreview.priority && parsedPreview.priority > 1) || parsedPreview.list) && (
+          {newTitle.trim().length > 0 && parsedPreview && (parsedPreview.tags?.length > 0 || parsedPreview.dueAt || parsedPreview.estimateMin || parsedPreview.recurrence || (parsedPreview.priority && parsedPreview.priority > 1) || parsedPreview.list) && (
             <div data-testid="quick-add-preview" className="mt-2 flex flex-wrap items-center gap-1.5 animate-in fade-in duration-150">
               <span className="text-[10px] font-mono font-medium text-[#5B6478]/80 dark:text-[#9BB0D3]/80">
                 Parsed:

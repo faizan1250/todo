@@ -15,7 +15,6 @@ import {
   MapPin,
   Bell,
   Plus,
-  AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatEstimate, formatDateWithTime } from "@/lib/adapters";
@@ -156,7 +155,6 @@ export function TaskDetailPanel({
   const [customRrule, setCustomRrule] = useState("");
   const [customMinutes, setCustomMinutes] = useState("");
   const [isAddingReminder, setIsAddingReminder] = useState(false);
-  const [newReminderOffset, setNewReminderOffset] = useState(-10);
   const [newReminderCustomTime, setNewReminderCustomTime] = useState("");
   const pillsBarRef = useRef<HTMLDivElement>(null);
 
@@ -280,7 +278,7 @@ export function TaskDetailPanel({
     const mode = task.recurrenceRule?.mode || "fixed";
     onUpdateTask({
       ...task,
-      recurrenceId: task.recurrenceId || `rec-${Date.now()}`,
+      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
       recurrenceRule: { rrule, mode },
       updatedAt: "Just now",
     });
@@ -290,7 +288,7 @@ export function TaskDetailPanel({
     const currentRule = task.recurrenceRule?.rrule || "FREQ=DAILY;INTERVAL=1";
     onUpdateTask({
       ...task,
-      recurrenceId: task.recurrenceId || `rec-${Date.now()}`,
+      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
       recurrenceRule: { rrule: currentRule, mode },
       updatedAt: "Just now",
     });
@@ -300,7 +298,7 @@ export function TaskDetailPanel({
     const mode = task.recurrenceRule?.mode || "fixed";
     onUpdateTask({
       ...task,
-      recurrenceId: task.recurrenceId || `rec-${Date.now()}`,
+      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
       recurrenceRule: { rrule: customRule, mode },
       updatedAt: "Just now",
     });
@@ -371,7 +369,7 @@ export function TaskDetailPanel({
     remindAt?: string | null;
   }) => {
     const newReminderItem: ReminderItem = {
-      id: `rem-${Date.now()}`,
+      id: `rem-${new Date().getTime()}`,
       taskId: task.id,
       kind: reminder.kind,
       relativeTo: reminder.relativeTo ?? "due",
@@ -399,7 +397,7 @@ export function TaskDetailPanel({
 
   const handleSnoozeReminder = (reminderId: string, minutes = 15) => {
     const currentReminders = task.reminders || [];
-    const targetTime = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+    const targetTime = new Date(new Date().getTime() + minutes * 60 * 1000).toISOString();
     onUpdateTask({
       ...task,
       reminders: currentReminders.map((r) =>
@@ -438,7 +436,7 @@ export function TaskDetailPanel({
     }
     const childDepth = parentId === task.id ? 2 : 3;
     const newSt: HierarchicalSubtask = {
-      id: `st-${Date.now()}`,
+      id: `st-${new Date().getTime()}`,
       parentId: parentId === task.id ? null : parentId,
       title,
       completed: false,

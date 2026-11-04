@@ -520,6 +520,29 @@ export async function moveTask(
   });
 }
 
+export interface CreateReminderInput {
+  kind: "absolute" | "relative";
+  relativeTo?: "due" | "start" | "deadline" | null;
+  offsetMin?: number | null;
+  remindAt?: string | number | null;
+}
+
+export interface UpdateReminderInput {
+  kind?: "absolute" | "relative";
+  relativeTo?: "due" | "start" | "deadline" | null;
+  offsetMin?: number | null;
+  remindAt?: string | number | null;
+}
+
+export interface SetRecurrenceInput {
+  rrule: string;
+  mode?: "fixed" | "after_completion";
+  timezone?: string;
+  dtstart?: string;
+  until?: string;
+  maxCount?: number;
+}
+
 export interface TaskCompletionResult extends BackendTask {
   task?: BackendTask;
   nextTask?: BackendTask | null;
@@ -534,7 +557,7 @@ export async function completeTask(
   id: string,
   completeSubtasks?: boolean
 ): Promise<TaskCompletionResult> {
-  const res = await apiFetch<any>(`/api/v1/tasks/${encodeURIComponent(id)}/complete`, {
+  const res = await apiFetch<TaskCompletionResult>(`/api/v1/tasks/${encodeURIComponent(id)}/complete`, {
     method: "POST",
     body: JSON.stringify(completeSubtasks !== undefined ? { completeSubtasks } : {}),
   });
@@ -546,7 +569,7 @@ export async function completeTask(
 }
 
 export async function skipTask(id: string): Promise<SkipTaskResponse> {
-  const res = await apiFetch<any>(`/api/v1/tasks/${encodeURIComponent(id)}/skip`, {
+  const res = await apiFetch<SkipTaskResponse>(`/api/v1/tasks/${encodeURIComponent(id)}/skip`, {
     method: "POST",
   });
   const task = res.task || res;
@@ -564,14 +587,7 @@ export async function skipTask(id: string): Promise<SkipTaskResponse> {
 
 export async function setTaskRecurrence(
   taskId: string,
-  rule: {
-    rrule: string;
-    mode?: "fixed" | "after_completion";
-    timezone?: string;
-    dtstart?: string;
-    until?: string;
-    maxCount?: number;
-  }
+  rule: SetRecurrenceInput
 ): Promise<{ task: BackendTask; recurrence: BackendRecurrence }> {
   return apiFetch<{ task: BackendTask; recurrence: BackendRecurrence }>(
     `/api/v1/tasks/${encodeURIComponent(taskId)}/recurrence`,
@@ -603,12 +619,7 @@ export async function getTaskReminders(taskId: string): Promise<BackendReminder[
 
 export async function createTaskReminder(
   taskId: string,
-  data: {
-    kind: "absolute" | "relative";
-    relativeTo?: "due" | "start" | "deadline" | null;
-    offsetMin?: number | null;
-    remindAt?: string | number | null;
-  }
+  data: CreateReminderInput
 ): Promise<BackendReminder> {
   return apiFetch<BackendReminder>(`/api/v1/tasks/${encodeURIComponent(taskId)}/reminders`, {
     method: "POST",
