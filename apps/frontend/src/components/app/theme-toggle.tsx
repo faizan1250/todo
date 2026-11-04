@@ -4,6 +4,7 @@ import * as React from "react";
 import { useState, useSyncExternalStore } from "react";
 import { Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useOptionalAuth } from "@/components/auth";
 
 interface ThemeToggleProps {
   className?: string;
@@ -12,6 +13,7 @@ interface ThemeToggleProps {
 const emptySubscribe = () => () => {};
 
 export function ThemeToggle({ className }: ThemeToggleProps) {
+  const auth = useOptionalAuth();
   const mounted = useSyncExternalStore(
     emptySubscribe,
     () => true,
@@ -31,12 +33,17 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
   const toggleTheme = () => {
     const nextDark = !isDark;
     setIsDark(nextDark);
+    const themeStr = nextDark ? "dark" : "light";
     if (nextDark) {
       document.documentElement.classList.add("dark");
       localStorage.setItem("theme", "dark");
     } else {
       document.documentElement.classList.remove("dark");
       localStorage.setItem("theme", "light");
+    }
+
+    if (auth?.isAuthenticated && auth.updatePreferences) {
+      void auth.updatePreferences({ theme: themeStr });
     }
   };
 

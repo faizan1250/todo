@@ -6,7 +6,7 @@ import { useAuth } from "./auth-provider";
 import { updateCurrentProfile } from "@/lib/api";
 import { Button, Input, Badge } from "@/components/ui";
 import { CheckCircle2Icon, AlertCircleIcon } from "@/components/icons";
-import { X, User, Globe, Calendar, ShieldCheck, ShieldAlert } from "lucide-react";
+import { X, User, Globe, Calendar, ShieldCheck, ShieldAlert, SunMoon, LayoutList } from "lucide-react";
 
 export interface ProfileModalProps {
   isOpen: boolean;
@@ -25,6 +25,12 @@ function ProfileModalDialog({ onClose }: ProfileModalDialogProps) {
   const [locale, setLocale] = useState(profile?.locale || "en-US");
   const [weekStartsOn, setWeekStartsOn] = useState<number>(
     profile?.weekStartsOn ?? 1
+  );
+  const [theme, setTheme] = useState<string>(
+    (profile?.preferences?.theme as string) || "system"
+  );
+  const [defaultListId, setDefaultListId] = useState<string>(
+    (profile?.preferences?.defaultListId as string) || "today"
   );
 
   const [isSaving, setIsSaving] = useState(false);
@@ -67,7 +73,29 @@ function ProfileModalDialog({ onClose }: ProfileModalDialogProps) {
         timezone: timezone.trim(),
         locale: locale.trim(),
         weekStartsOn: Number(weekStartsOn),
+        preferences: {
+          ...(profile?.preferences || {}),
+          theme,
+          defaultListId,
+        },
       });
+
+      // Synchronize document theme immediately
+      if (theme === "dark") {
+        document.documentElement.classList.add("dark");
+        localStorage.setItem("theme", "dark");
+      } else if (theme === "light") {
+        document.documentElement.classList.remove("dark");
+        localStorage.setItem("theme", "light");
+      } else if (theme === "system") {
+        const isSystemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        if (isSystemDark) {
+          document.documentElement.classList.add("dark");
+        } else {
+          document.documentElement.classList.remove("dark");
+        }
+        localStorage.removeItem("theme");
+      }
 
       setProfile(updated);
       setSuccessMessage("Profile preferences updated successfully.");
@@ -226,6 +254,53 @@ function ProfileModalDialog({ onClose }: ProfileModalDialogProps) {
                 className="text-xs"
                 placeholder="en-US"
               />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label
+                htmlFor="profile-theme"
+                className="mb-1 block text-xs font-medium text-[#0B1220] dark:text-[#F8FAFC]"
+              >
+                Theme Preference
+              </label>
+              <div className="relative">
+                <select
+                  id="profile-theme"
+                  value={theme}
+                  onChange={(e) => setTheme(e.target.value)}
+                  className="flex h-10 w-full rounded-[10px] border border-[#E4E8F2] bg-white pl-9 pr-3 py-2 text-xs text-[#0B1220] shadow-2xs focus:border-[#09318D] focus:outline-none focus:ring-2 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#072366]/50 dark:text-[#F8FAFC]"
+                >
+                  <option value="system">System Default</option>
+                  <option value="light">Light Mode</option>
+                  <option value="dark">Deep Blue Dark</option>
+                </select>
+                <SunMoon className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#5B6478] dark:text-[#9BB0D3]" />
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="profile-default-list"
+                className="mb-1 block text-xs font-medium text-[#0B1220] dark:text-[#F8FAFC]"
+              >
+                Default View
+              </label>
+              <div className="relative">
+                <select
+                  id="profile-default-list"
+                  value={defaultListId}
+                  onChange={(e) => setDefaultListId(e.target.value)}
+                  className="flex h-10 w-full rounded-[10px] border border-[#E4E8F2] bg-white pl-9 pr-3 py-2 text-xs text-[#0B1220] shadow-2xs focus:border-[#09318D] focus:outline-none focus:ring-2 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#072366]/50 dark:text-[#F8FAFC]"
+                >
+                  <option value="today">Today</option>
+                  <option value="upcoming">Upcoming</option>
+                  <option value="backlog">Backlog</option>
+                  <option value="completed">Completed</option>
+                </select>
+                <LayoutList className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#5B6478] dark:text-[#9BB0D3]" />
+              </div>
             </div>
           </div>
 

@@ -10,7 +10,7 @@ import { Sparkles, LayoutDashboard, Globe, HelpCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function HomePage() {
-  const { isAuthenticated, openAuthModal } = useAuth();
+  const { isAuthenticated, openAuthModal, updatePreferences } = useAuth();
   // If user is authenticated, default to app workspace; otherwise default to landing page
   const [activeView, setActiveView] = useState<"landing" | "app">(() =>
     isAuthenticated ? "app" : "landing"
@@ -19,12 +19,16 @@ export default function HomePage() {
 
   const toggleTheme = () => {
     const isDark = document.documentElement.classList.contains("dark");
+    const nextTheme = isDark ? "light" : "dark";
     if (isDark) {
       document.documentElement.classList.remove("dark");
       localStorage.setItem("theme", "light");
     } else {
       document.documentElement.classList.add("dark");
       localStorage.setItem("theme", "dark");
+    }
+    if (isAuthenticated) {
+      void updatePreferences({ theme: nextTheme });
     }
   };
 

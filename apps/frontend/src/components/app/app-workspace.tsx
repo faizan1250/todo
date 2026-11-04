@@ -10,6 +10,7 @@ import { CommandPalette } from "./command-palette";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import { MobileNav } from "./mobile-nav";
 import { ToastProvider, useToast } from "./toast-system";
+import { useOptionalAuth } from "@/components/auth";
 import type { TaskItem, ListId, FolderId, Priority } from "./types";
 
 const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
@@ -133,14 +134,29 @@ interface AppWorkspaceInnerProps {
 
 function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externalOpenShortcuts }: AppWorkspaceInnerProps) {
   const { toast, success } = useToast();
+  const auth = useOptionalAuth();
 
   const [tasks, setTasks] = useState<TaskItem[]>(INITIAL_WORKSPACE_TASKS);
-  const [activeList, setActiveList] = useState<ListId>("today");
+  const [activeList, setActiveList] = useState<ListId>(() => {
+    const pref = auth?.profile?.preferences?.defaultListId as ListId | undefined;
+    if (pref && ["today", "upcoming", "backlog", "completed"].includes(pref)) {
+      return pref;
+    }
+    return "today";
+  });
   const [activeFolder, setActiveFolder] = useState<FolderId | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>("task-3");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+
+  // Sync preference list if updated later
+  useEffect(() => {
+    const pref = auth?.profile?.preferences?.defaultListId as ListId | undefined;
+    if (pref && ["today", "upcoming", "backlog", "completed"].includes(pref)) {
+      setActiveList(pref);
+    }
+  }, [auth?.profile?.preferences?.defaultListId]);
 
   // Streak State
   const [streakCount, setStreakCount] = useState(5);
