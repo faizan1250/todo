@@ -22,6 +22,7 @@ import { filterRoutes } from "./routes/filters";
 import { searchRoutes } from "./routes/search";
 import { calendarRoutes } from "./routes/calendar";
 import { boardRoutes } from "./routes/board";
+import { plannerRoutes } from "./routes/planner";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
 
@@ -81,6 +82,7 @@ export const app = new Elysia()
   .use(searchRoutes)
   .use(calendarRoutes)
   .use(boardRoutes)
+  .use(plannerRoutes)
   .get(
     "/health",
     () => ({
