@@ -232,19 +232,38 @@ export const listRoutes = new Elysia({ prefix: "/api/v1/lists" })
         return status(400, { error: "Cannot delete the default Inbox list" });
       }
 
-      await db
-        .update(schema.lists)
-        .set({
-          deletedAt: new Date(),
-          updatedAt: new Date(),
-          version: sql`${schema.lists.version} + 1`,
-        })
-        .where(
-          and(
-            eq(schema.lists.id, id),
-            eq(schema.lists.userId, user.id)
-          )
-        );
+      const now = new Date();
+
+      await db.transaction(async (tx) => {
+        await tx
+          .update(schema.lists)
+          .set({
+            deletedAt: now,
+            updatedAt: now,
+            version: sql`${schema.lists.version} + 1`,
+          })
+          .where(
+            and(
+              eq(schema.lists.id, id),
+              eq(schema.lists.userId, user.id)
+            )
+          );
+
+        await tx
+          .update(schema.tasks)
+          .set({
+            deletedAt: now,
+            updatedAt: now,
+            version: sql`${schema.tasks.version} + 1`,
+          })
+          .where(
+            and(
+              eq(schema.tasks.listId, id),
+              eq(schema.tasks.userId, user.id),
+              isNull(schema.tasks.deletedAt)
+            )
+          );
+      });
 
       return { success: true };
     },

@@ -1,6 +1,6 @@
 import { Elysia, t } from "elysia";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
-import { db } from "../db";
+import { db, sqlite } from "../db";
 import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
 import { positionBetween, generateNKeysBetween } from "../utils/position";
@@ -830,28 +830,19 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
 
           case "delete": {
             const now = new Date();
-            const targetDeleteIds = new Set(ids);
-            for (const taskId of ids) {
-              const descendants = getTaskDescendants(taskId, user.id);
-              for (const d of descendants) {
-                targetDeleteIds.add(d.id);
-              }
-            }
-            const allDeleteIds = Array.from(targetDeleteIds);
-
-            await tx
-              .update(schema.tasks)
-              .set({
-                deletedAt: now,
-                version: sql`${schema.tasks.version} + 1`,
-                updatedAt: now,
-              })
-              .where(
-                and(
-                  inArray(schema.tasks.id, allDeleteIds),
-                  eq(schema.tasks.userId, user.id)
-                )
-              );
+            const nowMs = now.getTime();
+            const placeholders = ids.map(() => "?").join(",");
+            sqlite.run(
+              `WITH RECURSIVE sub(id) AS (
+                SELECT id FROM tasks WHERE id IN (${placeholders}) AND user_id = ? AND deleted_at IS NULL
+                UNION ALL
+                SELECT t.id FROM tasks t JOIN sub ON t.parent_id = sub.id WHERE t.user_id = ? AND t.deleted_at IS NULL
+              )
+              UPDATE tasks
+              SET deleted_at = ?, updated_at = ?, version = version + 1
+              WHERE id IN (SELECT id FROM sub);`,
+              [...ids, user.id, user.id, nowMs, nowMs]
+            );
 
             return { success: true, count: ids.length, action: "delete" };
           }
@@ -1165,22 +1156,20 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         return status(404, { error: "Task not found" });
       }
 
-      const descendants = getTaskDescendants(id, user.id);
-      const allIds = [id, ...descendants.map((d) => d.id)];
+      const now = new Date();
+      const nowMs = now.getTime();
 
-      await db
-        .update(schema.tasks)
-        .set({
-          deletedAt: new Date(),
-          version: sql`${schema.tasks.version} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            inArray(schema.tasks.id, allIds),
-            eq(schema.tasks.userId, user.id)
-          )
-        );
+      sqlite.run(
+        `WITH RECURSIVE sub(id) AS (
+          SELECT id FROM tasks WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
+          UNION ALL
+          SELECT t.id FROM tasks t JOIN sub ON t.parent_id = sub.id WHERE t.user_id = ?2 AND t.deleted_at IS NULL
+        )
+        UPDATE tasks
+        SET deleted_at = ?3, updated_at = ?3, version = version + 1
+        WHERE id IN (SELECT id FROM sub);`,
+        [id, user.id, nowMs]
+      );
 
       return { success: true };
     },
