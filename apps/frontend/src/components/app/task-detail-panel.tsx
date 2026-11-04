@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { useState } from "react";
-import { X, Check, Trash2 } from "lucide-react";
+import { useState, useRef, useMemo, useEffect } from "react";
+import { X, Check, Trash2, Calendar, Flag, Folder, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BackendFolder } from "@/lib/api";
 import type { TaskItem, Priority, FolderId, HierarchicalSubtask } from "./types";
@@ -113,6 +113,36 @@ export function TaskDetailPanel({
   onUpdateTags,
 }: TaskDetailPanelProps) {
   const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
+  const [openPicker, setOpenPicker] = useState<"due" | "priority" | "folder" | null>(null);
+  const pillsBarRef = useRef<HTMLDivElement>(null);
+
+  // Close open picker on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (pillsBarRef.current && !pillsBarRef.current.contains(e.target as Node)) {
+        setOpenPicker(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const currentFolderObj = useMemo(() => {
+    if (!task?.folder || task.folder === "none") return null;
+    return (
+      folders.find(
+        (f) => f.id === task.folder || f.name.toLowerCase() === task.folder.toLowerCase()
+      ) || null
+    );
+  }, [task?.folder, folders]);
+
+  const folderDisplayName = useMemo(() => {
+    if (!task?.folder || task.folder === "none") return "None";
+    if (currentFolderObj) return currentFolderObj.name;
+    return task.folder.charAt(0).toUpperCase() + task.folder.slice(1);
+  }, [task?.folder, currentFolderObj]);
+
+  const folderDisplayColor = currentFolderObj?.color || (task?.folder && task.folder !== "none" ? "#09318D" : "#94A3B8");
 
   if (!isOpen || !task) return null;
 
@@ -126,6 +156,33 @@ export function TaskDetailPanel({
 
   const handleFolderChange = (folder: FolderId) => {
     onUpdateTask({ ...task, folder, updatedAt: "Just now" });
+  };
+
+  const handleDueDateChange = (newDueDate?: string) => {
+    let dueAt: string | null = null;
+    if (newDueDate === "Today") {
+      dueAt = new Date().toISOString();
+    } else if (newDueDate === "Tomorrow") {
+      const tmr = new Date();
+      tmr.setDate(tmr.getDate() + 1);
+      dueAt = tmr.toISOString();
+    } else if (newDueDate === "Next week") {
+      const nw = new Date();
+      nw.setDate(nw.getDate() + 7);
+      dueAt = nw.toISOString();
+    } else if (newDueDate) {
+      const parsed = new Date(newDueDate);
+      if (!isNaN(parsed.getTime())) {
+        dueAt = parsed.toISOString();
+      }
+    }
+
+    onUpdateTask({
+      ...task,
+      dueDate: newDueDate || undefined,
+      dueAt,
+      updatedAt: "Just now",
+    });
   };
 
   // Subtask Handlers
@@ -275,102 +332,205 @@ export function TaskDetailPanel({
           />
         </div>
 
-        {/* Priority Selector */}
-        <div>
-          <label className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-            Priority Level
-          </label>
-          <div className="mt-1.5 grid grid-cols-3 gap-2">
-            {[
-              { id: "high" as const, label: "High" },
-              { id: "med" as const, label: "Medium" },
-              { id: "low" as const, label: "Low" },
-            ].map((p) => {
-              const isSelected = task.priority === p.id;
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => handlePriorityChange(p.id)}
-                  className={cn(
-                    "flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-semibold capitalize transition-all cursor-pointer focus-ring-pink",
-                    isSelected
-                      ? "border-[#09318D] bg-[#09318D] text-white shadow-xs dark:border-[#FD91CC] dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                      : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                  )}
-                >
-                  <span
+        {/* Horizontal Attribute Pills Bar */}
+        <div className="space-y-2">
+          <div ref={pillsBarRef} className="flex flex-wrap items-center gap-2">
+            {/* 1. Due Date Pill */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenPicker(openPicker === "due" ? null : "due")}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                  task.dueDate
+                    ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
+                    : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                )}
+                title="Change Due Date"
+              >
+                <Calendar className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />
+                <span>Due: <span className="font-semibold">{task.dueDate || "None"}</span></span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {openPicker === "due" && (
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[170px] rounded-xl border border-[#E4E8F2] bg-white p-1.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D]">
+                  {[
+                    { label: "No due date", value: "" },
+                    { label: "Today", value: "Today" },
+                    { label: "Tomorrow", value: "Tomorrow" },
+                    { label: "Next week", value: "Next week" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      onClick={() => {
+                        handleDueDateChange(opt.value);
+                        setOpenPicker(null);
+                      }}
+                      className={cn(
+                        "flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors",
+                        (task.dueDate || "") === opt.value
+                          ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                          : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
+                      )}
+                    >
+                      <span>{opt.label}</span>
+                      {(task.dueDate || "") === opt.value && <Check className="h-3.5 w-3.5" />}
+                    </button>
+                  ))}
+                  <div className="mt-1 border-t border-[#E4E8F2] pt-1.5 px-2 pb-1 dark:border-[#132E74]">
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                      Pick Date
+                    </label>
+                    <input
+                      type="date"
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          handleDueDateChange(e.target.value);
+                          setOpenPicker(null);
+                        }
+                      }}
+                      className="mt-1 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2. Priority Pill */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenPicker(openPicker === "priority" ? null : "priority")}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                  task.priority === "high"
+                    ? "border-rose-300 bg-rose-50/80 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-400"
+                    : task.priority === "med"
+                    ? "border-amber-300 bg-amber-50/80 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-400"
+                    : "border-blue-300 bg-blue-50/80 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-400"
+                )}
+                title="Change Priority"
+              >
+                <Flag className="h-3.5 w-3.5" />
+                <span>Priority: <span className="capitalize font-semibold">{task.priority || "None"}</span></span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {openPicker === "priority" && (
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[140px] rounded-xl border border-[#E4E8F2] bg-white p-1 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D]">
+                  {[
+                    { id: "low" as const, label: "Low", dot: "bg-blue-500" },
+                    { id: "med" as const, label: "Medium", dot: "bg-amber-500" },
+                    { id: "high" as const, label: "High", dot: "bg-rose-500" },
+                  ].map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        handlePriorityChange(p.id);
+                        setOpenPicker(null);
+                      }}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors",
+                        task.priority === p.id
+                          ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                          : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
+                      )}
+                    >
+                      <span className={cn("h-2 w-2 rounded-full shrink-0", p.dot)} />
+                      <span className="flex-1">{p.label}</span>
+                      {task.priority === p.id && <Check className="h-3.5 w-3.5" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 3. Folder Pill (Connected to Real Dynamic Folders) */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenPicker(openPicker === "folder" ? null : "folder")}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                  task.folder && task.folder !== "none"
+                    ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
+                    : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                )}
+                title="Change Folder"
+              >
+                <Folder className="h-3.5 w-3.5 text-[#5B6478] dark:text-[#9BB0D3]" />
+                <span
+                  className="h-2 w-2 rounded-full shrink-0"
+                  style={{ backgroundColor: folderDisplayColor }}
+                />
+                <span>Folder: <span className="font-semibold truncate max-w-[110px] inline-block align-bottom">{folderDisplayName}</span></span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {openPicker === "folder" && (
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[170px] max-h-52 overflow-y-auto rounded-xl border border-[#E4E8F2] bg-white p-1 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleFolderChange("none");
+                      setOpenPicker(null);
+                    }}
                     className={cn(
-                      "h-1.5 w-1.5 rounded-full",
-                      p.id === "high" && "bg-rose-500",
-                      p.id === "med" && "bg-amber-500",
-                      p.id === "low" && "bg-blue-500"
+                      "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors",
+                      !task.folder || task.folder === "none"
+                        ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                        : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
                     )}
-                  />
-                  <span>{p.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+                  >
+                    <span className="h-2 w-2 rounded-full bg-slate-400 shrink-0" />
+                    <span className="flex-1">No folder</span>
+                    {(!task.folder || task.folder === "none") && <Check className="h-3.5 w-3.5" />}
+                  </button>
+                  {folders.map((f) => {
+                    const isSelected = task.folder === f.id || task.folder.toLowerCase() === f.name.toLowerCase();
+                    return (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => {
+                          handleFolderChange(f.id);
+                          setOpenPicker(null);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors",
+                          isSelected
+                            ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                            : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                        )}
+                      >
+                        <span
+                          className="h-2 w-2 rounded-full shrink-0"
+                          style={{ backgroundColor: f.color || "#09318D" }}
+                        />
+                        <span className="flex-1 truncate">{f.name}</span>
+                        {isSelected && <Check className="h-3.5 w-3.5" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
-        {/* Folder / Project Selector */}
-        <div>
-          <label className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-            Folder
-          </label>
-          <div className="mt-1.5 grid grid-cols-3 gap-2">
-            {(["engineering", "design", "personal"] as const).map((f) => {
-              const isSelected = task.folder === f;
-              return (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => handleFolderChange(f)}
-                  className={cn(
-                    "rounded-lg border py-1.5 text-xs font-medium capitalize transition-all cursor-pointer focus-ring-pink",
-                    isSelected
-                      ? "border-[#09318D] bg-[#F2F5FC] text-[#09318D] font-bold dark:border-[#FD91CC] dark:bg-[#082363] dark:text-[#FFA8D7]"
-                      : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                  )}
-                >
-                  {f}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Unified Subtasks Section with Animated Mini Progress Bar */}
-        <TaskSubtasksSection
-          rootTaskId={task.id}
-          subtasks={task.subtasks}
-          onToggleSubtask={handleToggleSubtask}
-          onAddSubtask={handleAddSubtask}
-          onDeleteSubtask={handleDeleteSubtask}
-        />
-
-        {/* 3. Tags Section with TagPickerPopover */}
-        <div>
-          <div className="flex items-center justify-between pb-1">
-            <label className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-              Tags ({task.tags.length})
-            </label>
+            {/* 4. Tags Pill */}
             <TagPickerPopover
               taskId={task.id}
               activeTags={task.tags}
               activeTagIds={task.tagIds}
               onTagsUpdated={handleTagsUpdated}
+              label={task.tags.length > 0 ? `Tags (${task.tags.length})` : "Tags"}
+              triggerClassName="inline-flex items-center gap-1.5 rounded-lg border border-[#E4E8F2] bg-white px-2.5 py-1 text-xs font-medium text-[#5B6478] hover:bg-[#F2F5FC] transition-all cursor-pointer focus-ring-pink dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
             />
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {task.tags.length === 0 ? (
-              <span className="text-xs italic text-[#5B6478]/70 dark:text-[#9BB0D3]/60">
-                No tags assigned. Click Tag to add.
-              </span>
-            ) : (
-              task.tags.map((t) => (
+          {/* Assigned Tag Chips */}
+          {task.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {task.tags.map((t) => (
                 <span
                   key={t}
                   className="inline-flex items-center gap-1 rounded-md border border-[#E4E8F2] bg-[#F2F5FC] px-2 py-0.5 text-xs font-medium text-[#09318D] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#FFA8D7]"
@@ -385,10 +545,19 @@ export function TaskDetailPanel({
                     <X className="h-3 w-3" />
                   </button>
                 </span>
-              ))
-            )}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* Unified Subtasks Section with Animated Mini Progress Bar */}
+        <TaskSubtasksSection
+          rootTaskId={task.id}
+          subtasks={task.subtasks}
+          onToggleSubtask={handleToggleSubtask}
+          onAddSubtask={handleAddSubtask}
+          onDeleteSubtask={handleDeleteSubtask}
+        />
 
         {/* 4. Markdown Notes Editor */}
         <MarkdownNotesEditor
