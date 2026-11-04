@@ -58,7 +58,7 @@ export default function HomePage() {
                   Todo Studio
                 </span>
                 <span className="ml-2 rounded-md bg-[#FFE8F5] px-1.5 py-0.5 text-[10px] font-bold text-[#051A4D] border border-[#FD91CC]/50 dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]">
-                  Invite-Only
+                  Instant Access
                 </span>
               </div>
             </button>

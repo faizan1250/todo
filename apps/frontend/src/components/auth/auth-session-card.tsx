@@ -138,10 +138,10 @@ export function AuthSessionCard() {
             </div>
             <div>
               <CardTitle className="text-base sm:text-lg">
-                Private Workspace Access
+                Instant Workspace Access
               </CardTitle>
               <CardDescription className="text-xs">
-                Registration is currently invite-only. Sign in or validate your invite token below.
+                Registration is open to all users. Sign in or create your free account below.
               </CardDescription>
             </div>
           </div>
@@ -163,7 +163,7 @@ export function AuthSessionCard() {
               onClick={() => openAuthModal("sign-up")}
               className="text-xs"
             >
-              Claim Invite Code
+              Get Started Free
             </Button>
           </div>
         </div>

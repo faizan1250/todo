@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRight, KeyRound, Terminal, CheckCircle2 } from "lucide-react";
+import { ArrowRight, Sparkles, Terminal, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LiveDemoPreview } from "./live-demo-preview";
 
@@ -25,10 +25,10 @@ export function Hero({ onOpenAuth, onExploreApp }: HeroProps) {
           <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs backdrop-blur-md mb-6 shadow-sm">
             <span className="flex h-2 w-2 rounded-full bg-[#FD91CC] animate-pulse" />
             <span className="font-semibold tracking-wide uppercase text-white/90">
-              Invite-Only Early Access
+              Instant Free Access
             </span>
             <span className="text-white/40">•</span>
-            <span className="text-[#FFA8D7] font-medium">Batch #04 Open</span>
+            <span className="text-[#FFA8D7] font-medium">Open Registration</span>
           </div>
 
           {/* Main Hero Headline */}
@@ -46,7 +46,7 @@ export function Hero({ onOpenAuth, onExploreApp }: HeroProps) {
 
           {/* Subtitle */}
           <p className="mt-6 max-w-2xl text-base sm:text-lg text-white/80 leading-relaxed">
-            Eliminate mental drag with sub-millisecond local reactions, cryptographic invite guards,
+            Eliminate mental drag with sub-millisecond local reactions, seamless team sync,
             and keyboard-first ergonomics. Built on Next.js 16 and Bun + ElysiaJS.
           </p>
 
@@ -58,8 +58,8 @@ export function Hero({ onOpenAuth, onExploreApp }: HeroProps) {
               onClick={() => onOpenAuth("sign-up")}
               className="w-full sm:w-auto text-[#051A4D] font-bold shadow-lg hover:shadow-[0_0_20px_rgba(253,145,204,0.4)]"
             >
-              <KeyRound className="h-4 w-4" />
-              <span>Claim Invite Access</span>
+              <Sparkles className="h-4 w-4" />
+              <span>Get Started Free</span>
               <ArrowRight className="h-4 w-4" />
             </Button>
 
