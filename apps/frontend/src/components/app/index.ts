@@ -13,4 +13,6 @@ export * from "./empty-state";
 export * from "./keyboard-shortcuts-modal";
 export * from "./network-banner";
 export * from "./error-boundary";
+export * from "./list-dialog";
+export * from "./folder-dialog";
 export * from "./app-workspace";

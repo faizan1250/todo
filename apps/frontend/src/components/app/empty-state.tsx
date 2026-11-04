@@ -60,8 +60,15 @@ export function EmptyState({
       resolvedType = "search";
     } else if (activeFolder) {
       resolvedType = "folder";
-    } else if (activeList) {
-      resolvedType = activeList;
+    } else if (
+      activeList === "today" ||
+      activeList === "upcoming" ||
+      activeList === "backlog" ||
+      activeList === "completed"
+    ) {
+      resolvedType = activeList as EmptyStateType;
+    } else {
+      resolvedType = "generic";
     }
   }
 
