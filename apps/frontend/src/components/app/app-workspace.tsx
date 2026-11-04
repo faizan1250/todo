@@ -22,6 +22,14 @@ import {
   deleteTask,
   completeTask,
   reopenTask,
+  archiveTask,
+  unarchiveTask,
+  duplicateTask,
+  saveTaskAsTemplate,
+  createChecklistItem,
+  updateChecklistItem,
+  deleteChecklistItem,
+  replaceTaskTags,
   restoreTrash,
   deleteList,
   archiveList,
@@ -41,6 +49,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     id: "task-1",
     title: "Verify ElysiaJS cryptographic invite token verification contract",
     description: "Ensure constant-time comparison on invite hash validation to prevent timing side channels.",
+    notes: "# Cryptographic Verification Specs\n\nEnsure constant-time comparison on invite hash validation to prevent timing side channels.\n\n- [x] Strict length pre-check\n- [ ] Constant-time XOR accumulator",
     completed: true,
     priority: "high",
     list: "today",
@@ -48,8 +57,35 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     tags: ["security", "elysia"],
     dueDate: "Today",
     subtasks: [
-      { id: "st-1", title: "Write constant-time string comparator", completed: true },
-      { id: "st-2", title: "Add test cases with valid/expired codes", completed: true },
+      {
+        id: "st-1",
+        title: "Write constant-time string comparator",
+        completed: true,
+        depth: 2,
+        priority: "high",
+        subtasks: [
+          {
+            id: "st-1-1",
+            title: "Validate buffer boundary checks",
+            completed: true,
+            depth: 3,
+            priority: "med",
+            subtasks: [],
+          },
+        ],
+      },
+      {
+        id: "st-2",
+        title: "Add test cases with valid/expired codes",
+        completed: true,
+        depth: 2,
+        priority: "med",
+        subtasks: [],
+      },
+    ],
+    checklist: [
+      { id: "cl-1", text: "Bench constant-time comp against naive string equals", done: true },
+      { id: "cl-2", text: "Validate against token forgery payloads", done: false },
     ],
     createdAt: "9:00 AM",
     updatedAt: "Just now",
@@ -58,6 +94,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     id: "task-2",
     title: "Implement tactile 3D split-border depth on primary buttons",
     description: "Align with light model: top border lightest, side borders neutral, bottom border grounded shadow.",
+    notes: "### Button Physics\n\n- Base gradient 8-12% lightness drop\n- Active state 1px down shift + inset shadow",
     completed: true,
     priority: "med",
     list: "today",
@@ -65,8 +102,26 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     tags: ["ui-tokens", "tailwind"],
     dueDate: "Today",
     subtasks: [
-      { id: "st-3", title: "Audit buttons against 8-12% lightness gradient", completed: true },
-      { id: "st-4", title: "Ensure active/pressed inset depth shift", completed: true },
+      {
+        id: "st-3",
+        title: "Audit buttons against 8-12% lightness gradient",
+        completed: true,
+        depth: 2,
+        priority: "med",
+        subtasks: [],
+      },
+      {
+        id: "st-4",
+        title: "Ensure active/pressed inset depth shift",
+        completed: true,
+        depth: 2,
+        priority: "low",
+        subtasks: [],
+      },
+    ],
+    checklist: [
+      { id: "cl-3", text: "Inspect button pressed state in dark mode", done: true },
+      { id: "cl-4", text: "Test on mobile touchscreen", done: true },
     ],
     createdAt: "10:30 AM",
     updatedAt: "10:45 AM",
@@ -75,6 +130,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     id: "task-3",
     title: "Configure Cmd+K accessible command palette dialog",
     description: "Fuzzy navigation between lists, folders, theme toggle, and keyboard shortcuts.",
+    notes: "Dialog should trap focus cleanly and support ArrowUp / ArrowDown cycling.",
     completed: false,
     priority: "high",
     list: "today",
@@ -82,9 +138,43 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     tags: ["keyboard", "a11y"],
     dueDate: "Today",
     subtasks: [
-      { id: "st-5", title: "Trap keyboard focus inside modal", completed: true },
-      { id: "st-6", title: "Add ArrowUp / ArrowDown navigation", completed: true },
-      { id: "st-7", title: "Handle Escape key dismiss", completed: true },
+      {
+        id: "st-5",
+        title: "Trap keyboard focus inside modal",
+        completed: true,
+        depth: 2,
+        priority: "high",
+        subtasks: [
+          {
+            id: "st-5-1",
+            title: "Verify tab-loop barrier at dialog edges",
+            completed: true,
+            depth: 3,
+            priority: "high",
+            subtasks: [],
+          },
+        ],
+      },
+      {
+        id: "st-6",
+        title: "Add ArrowUp / ArrowDown navigation",
+        completed: true,
+        depth: 2,
+        priority: "med",
+        subtasks: [],
+      },
+      {
+        id: "st-7",
+        title: "Handle Escape key dismiss",
+        completed: true,
+        depth: 2,
+        priority: "low",
+        subtasks: [],
+      },
+    ],
+    checklist: [
+      { id: "cl-5", text: "Test Screen Reader aria-modal announcing", done: true },
+      { id: "cl-6", text: "Add fuzzy match scoring threshold", done: false },
     ],
     createdAt: "11:15 AM",
     updatedAt: "11:15 AM",
@@ -93,6 +183,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     id: "task-4",
     title: "Benchmark Sub-millisecond ElysiaJS JSON throughput",
     description: "Confirm P99 latency remains below 1.2ms on local Bun runtime under concurrency.",
+    notes: null,
     completed: false,
     priority: "med",
     list: "upcoming",
@@ -100,7 +191,17 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     tags: ["perf", "bun"],
     dueDate: "Tomorrow",
     subtasks: [
-      { id: "st-8", title: "Configure autocannon test runner", completed: false },
+      {
+        id: "st-8",
+        title: "Configure autocannon test runner",
+        completed: false,
+        depth: 2,
+        priority: "med",
+        subtasks: [],
+      },
+    ],
+    checklist: [
+      { id: "cl-7", text: "Warm up JIT compiler before recording metrics", done: false },
     ],
     createdAt: "Yesterday",
     updatedAt: "Yesterday",
@@ -109,6 +210,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     id: "task-5",
     title: "Refine Bubblegum Pink accent glow behind product mockup",
     description: "Restrain opacity to 5-10% budget; avoid high-saturation neon spill onto body copy.",
+    notes: null,
     completed: false,
     priority: "low",
     list: "upcoming",
@@ -116,6 +218,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     tags: ["design-tokens", "visual"],
     dueDate: "Friday",
     subtasks: [],
+    checklist: [],
     createdAt: "2 days ago",
     updatedAt: "2 days ago",
   },
@@ -123,6 +226,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     id: "task-6",
     title: "Review personal engineering logs & workflow optimization notes",
     description: "Write summary report on Bun + Next.js App Router pairing efficiency.",
+    notes: null,
     completed: false,
     priority: "low",
     list: "backlog",
@@ -130,6 +234,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     tags: ["notes", "review"],
     dueDate: "Next week",
     subtasks: [],
+    checklist: [],
     createdAt: "3 days ago",
     updatedAt: "3 days ago",
   },
@@ -137,6 +242,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     id: "task-7",
     title: "Initial Next.js 16 monorepo architecture scaffolding",
     description: "Completed project bootstrap with Bun workspace packages.",
+    notes: null,
     completed: true,
     priority: "high",
     list: "completed",
@@ -144,6 +250,7 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
     tags: ["arch", "scaffold"],
     dueDate: "Completed",
     subtasks: [],
+    checklist: [],
     createdAt: "Sprint 0",
     updatedAt: "Sprint 0",
   },
@@ -793,6 +900,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         list: data.list,
         tags: [data.folder],
         subtasks: [],
+        checklist: [],
         createdAt: "Just now",
         updatedAt: "Just now",
         listId: targetBackendListId || undefined,
@@ -860,6 +968,243 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     [isAuthenticated, tasks, toast]
   );
 
+  const handleDuplicateTask = useCallback(
+    async (taskId: string) => {
+      const original = tasks.find((t) => t.id === taskId);
+      if (!original) return;
+
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        try {
+          const backendDuplicated = await duplicateTask(taskId);
+          const mapped = backendTaskToTaskItem(backendDuplicated, {
+            listOverride: original.list,
+            folderOverride: original.folder,
+          });
+          const originalIndex = tasks.findIndex((t) => t.id === taskId);
+          setTasks((prev) => {
+            const next = [...prev];
+            next.splice(originalIndex + 1, 0, mapped);
+            return next;
+          });
+          setSelectedTaskId(mapped.id);
+          success(`Duplicated "${original.title}"`);
+        } catch (err) {
+          console.error("Failed to duplicate task on backend:", err);
+          toast({
+            title: "Duplicate failed",
+            message: err instanceof Error ? err.message : "Could not duplicate task",
+            type: "error",
+          });
+        }
+      } else {
+        const duplicateItem: TaskItem = {
+          ...original,
+          id: `temp-${Date.now()}`,
+          title: `${original.title} (Copy)`,
+          createdAt: "Just now",
+          updatedAt: "Just now",
+        };
+        const originalIndex = tasks.findIndex((t) => t.id === taskId);
+        setTasks((prev) => {
+          const next = [...prev];
+          next.splice(originalIndex + 1, 0, duplicateItem);
+          return next;
+        });
+        setSelectedTaskId(duplicateItem.id);
+        success(`Duplicated "${original.title}"`);
+      }
+    },
+    [tasks, isAuthenticated, success, toast]
+  );
+
+  const handleArchiveTask = useCallback(
+    async (taskId: string) => {
+      const target = tasks.find((t) => t.id === taskId);
+      if (!target) return;
+
+      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+      if (selectedTaskId === taskId) {
+        setSelectedTaskId(null);
+      }
+
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        try {
+          await archiveTask(taskId);
+          toast({
+            title: "Task archived",
+            message: `"${target.title}" moved to archive.`,
+            actionLabel: "Undo",
+            onAction: () => {
+              setTasks((prev) => [target, ...prev]);
+              setSelectedTaskId(target.id);
+              unarchiveTask(taskId).catch((err) => {
+                console.error("Failed to unarchive task:", err);
+                setTasks((prev) => prev.filter((t) => t.id !== taskId));
+                toast({
+                  title: "Undo failed",
+                  message: err instanceof Error ? err.message : "Could not restore archived task",
+                  type: "error",
+                });
+              });
+            },
+          });
+        } catch (err) {
+          console.error("Failed to archive task:", err);
+          setTasks((prev) => [target, ...prev]);
+          toast({
+            title: "Archive failed",
+            message: err instanceof Error ? err.message : "Could not archive task",
+            type: "error",
+          });
+        }
+      } else {
+        toast({
+          title: "Task archived",
+          message: `"${target.title}" moved to archive.`,
+          actionLabel: "Undo",
+          onAction: () => {
+            setTasks((prev) => [target, ...prev]);
+            setSelectedTaskId(target.id);
+          },
+        });
+      }
+    },
+    [tasks, selectedTaskId, isAuthenticated, toast]
+  );
+
+  const handleSaveAsTemplate = useCallback(
+    async (taskId: string, name: string) => {
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        try {
+          await saveTaskAsTemplate(taskId, name);
+          success(`Saved "${name}" as template`);
+        } catch (err) {
+          console.error("Failed to save template on backend:", err);
+          toast({
+            title: "Template save failed",
+            message: err instanceof Error ? err.message : "Could not save template",
+            type: "error",
+          });
+        }
+      } else {
+        success(`Saved "${name}" as template`);
+      }
+    },
+    [isAuthenticated, success, toast]
+  );
+
+  const handleToggleSubtask = useCallback(
+    (subtaskId: string, completed: boolean) => {
+      if (isAuthenticated && !subtaskId.startsWith("st-") && !subtaskId.startsWith("temp-")) {
+        const apiCall = completed ? completeTask(subtaskId) : reopenTask(subtaskId);
+        apiCall.catch((err) => {
+          console.error("Failed to toggle subtask on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated]
+  );
+
+  const handleAddSubtask = useCallback(
+    (title: string, parentId: string) => {
+      const targetBackendListId =
+        activeListId || userLists.find((l) => l.isInbox)?.id || userLists[0]?.id;
+
+      if (isAuthenticated && targetBackendListId && !parentId.startsWith("temp-") && !parentId.startsWith("task-")) {
+        createTask({
+          title,
+          parentId,
+          listId: targetBackendListId,
+          priority: 1,
+        }).catch((err) => {
+          console.error("Failed to create subtask on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated, activeListId, userLists]
+  );
+
+  const handleDeleteSubtask = useCallback(
+    (subtaskId: string) => {
+      if (isAuthenticated && !subtaskId.startsWith("st-") && !subtaskId.startsWith("temp-")) {
+        deleteTask(subtaskId).catch((err) => {
+          console.error("Failed to delete subtask on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated]
+  );
+
+  const handleAddChecklistItem = useCallback(
+    (text: string) => {
+      if (
+        isAuthenticated &&
+        selectedTaskId &&
+        !selectedTaskId.startsWith("temp-") &&
+        !selectedTaskId.startsWith("task-")
+      ) {
+        createChecklistItem(selectedTaskId, text)
+          .then((createdItem) => {
+            setTasks((prev) =>
+              prev.map((t) => {
+                if (t.id !== selectedTaskId) return t;
+                const updatedList = t.checklist.map((ci) =>
+                  ci.text === text && ci.id.startsWith("ci-")
+                    ? { ...ci, id: createdItem.id }
+                    : ci
+                );
+                return { ...t, checklist: updatedList };
+              })
+            );
+          })
+          .catch((err) => {
+            console.error("Failed to create checklist item on backend:", err);
+          });
+      }
+    },
+    [isAuthenticated, selectedTaskId]
+  );
+
+  const handleToggleChecklistItem = useCallback(
+    (itemId: string, done: boolean) => {
+      if (isAuthenticated && !itemId.startsWith("ci-")) {
+        updateChecklistItem(itemId, { done }).catch((err) => {
+          console.error("Failed to update checklist item on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated]
+  );
+
+  const handleDeleteChecklistItem = useCallback(
+    (itemId: string) => {
+      if (isAuthenticated && !itemId.startsWith("ci-")) {
+        deleteChecklistItem(itemId).catch((err) => {
+          console.error("Failed to delete checklist item on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated]
+  );
+
+  const handleUpdateTags = useCallback(
+    (tagNames: string[], tagIds?: string[]) => {
+      if (
+        isAuthenticated &&
+        selectedTaskId &&
+        tagIds &&
+        tagIds.length > 0 &&
+        !selectedTaskId.startsWith("temp-") &&
+        !selectedTaskId.startsWith("task-")
+      ) {
+        replaceTaskTags(selectedTaskId, tagIds).catch((err) => {
+          console.error("Failed to replace tags on backend:", err);
+        });
+      }
+    },
+    [isAuthenticated, selectedTaskId]
+  );
+
   // Cycle folders for mobile nav
   const handleCycleFolder = useCallback(() => {
     const folders: (FolderId | null)[] = [null, "engineering", "design", "personal"];
@@ -925,6 +1270,16 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           onClose={() => setSelectedTaskId(null)}
           onUpdateTask={handleUpdateTask}
           onDeleteTask={handleDeleteTask}
+          onDuplicateTask={handleDuplicateTask}
+          onArchiveTask={handleArchiveTask}
+          onSaveAsTemplate={handleSaveAsTemplate}
+          onToggleSubtask={handleToggleSubtask}
+          onAddSubtask={handleAddSubtask}
+          onDeleteSubtask={handleDeleteSubtask}
+          onToggleChecklistItem={handleToggleChecklistItem}
+          onAddChecklistItem={handleAddChecklistItem}
+          onDeleteChecklistItem={handleDeleteChecklistItem}
+          onUpdateTags={handleUpdateTags}
         />
       )}
 

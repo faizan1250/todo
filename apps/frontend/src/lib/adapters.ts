@@ -5,7 +5,14 @@ import type {
   CreateTaskInput,
   UpdateTaskInput,
 } from "./api";
-import type { TaskItem, Subtask, ChecklistItemUi, Priority, ListId, FolderId } from "@/components/app/types";
+import type {
+  TaskItem,
+  HierarchicalSubtask,
+  ChecklistItemUi,
+  Priority,
+  ListId,
+  FolderId,
+} from "@/components/app/types";
 
 /**
  * Convert backend integer priority (0..4) to UI Priority ("low" | "med" | "high")
@@ -135,6 +142,26 @@ export function determineTaskList(task: BackendTask): ListId {
 }
 
 /**
+ * Recursively map backend tasks to HierarchicalSubtask tree with depth tracking
+ */
+export function mapBackendSubtasks(
+  subtasks?: BackendTask[],
+  parentDepth = 1
+): HierarchicalSubtask[] {
+  if (!Array.isArray(subtasks) || subtasks.length === 0) return [];
+  const currentDepth = Math.min(3, parentDepth + 1);
+  return subtasks.map((st) => ({
+    id: st.id,
+    parentId: st.parentId ?? null,
+    title: st.title,
+    completed: st.status === "done",
+    priority: priorityBackendToUi(st.priority),
+    depth: currentDepth,
+    subtasks: mapBackendSubtasks(st.subtasks, currentDepth),
+  }));
+}
+
+/**
  * Convert a backend task entity to the UI TaskItem model
  */
 export function backendTaskToTaskItem(
@@ -148,27 +175,18 @@ export function backendTaskToTaskItem(
   const tags: string[] = Array.isArray(task.tags)
     ? task.tags.map((t: BackendTag | string) => (typeof t === "string" ? t : t.name))
     : [];
+  const tagIds: string[] = Array.isArray(task.tags)
+    ? task.tags.map((t: BackendTag | string) => (typeof t === "string" ? t : t.id))
+    : [];
 
-  // Extract subtasks (from task.subtasks or task.checklist)
-  let subtasks: Subtask[] = [];
-  if (Array.isArray(task.subtasks) && task.subtasks.length > 0) {
-    subtasks = task.subtasks.map((st) => ({
-      id: st.id,
-      title: st.title,
-      completed: st.status === "done",
-    }));
-  } else if (Array.isArray(task.checklist) && task.checklist.length > 0) {
-    subtasks = task.checklist.map((ci) => ({
-      id: ci.id,
-      title: ci.text,
-      completed: ci.done,
-    }));
-  }
+  // Extract hierarchical subtasks strictly from task.subtasks (recursive tree)
+  const subtasks: HierarchicalSubtask[] = mapBackendSubtasks(task.subtasks, 1);
 
-  // Extract checklist items
+  // Extract checklist items strictly from task.checklist
   const checklist: ChecklistItemUi[] = Array.isArray(task.checklist)
     ? task.checklist.map((ci: BackendChecklistItem) => ({
         id: ci.id,
+        taskId: ci.taskId,
         text: ci.text,
         done: ci.done,
         position: ci.position,
@@ -191,6 +209,7 @@ export function backendTaskToTaskItem(
     list,
     folder,
     tags,
+    tagIds,
     dueDate: formatDueDate(task.dueAt),
     dueAt: task.dueAt,
     subtasks,
@@ -249,7 +268,7 @@ export function taskItemToBackendCreateInput(
  * Convert a UI task item to UpdateTaskInput for the backend API
  */
 export function taskItemToBackendUpdateInput(
-  item: Partial<TaskItem>
+  item: Partial<TaskItem> & { tagIds?: string[] }
 ): UpdateTaskInput {
   const input: UpdateTaskInput = {};
 
@@ -272,6 +291,7 @@ export function taskItemToBackendUpdateInput(
   if (item.parentId !== undefined) input.parentId = item.parentId;
   if (item.position !== undefined) input.position = item.position;
   if (item.version !== undefined) input.version = item.version;
+  if (item.tagIds !== undefined) input.tagIds = item.tagIds;
 
   return input;
 }

@@ -2,14 +2,15 @@
 
 import * as React from "react";
 import { useState } from "react";
-import {
-  X,
-  Check,
-  Plus,
-  Trash2,
-} from "lucide-react";
+import { X, Check, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { TaskItem, Priority, FolderId, Subtask } from "./types";
+import type { TaskItem, Priority, FolderId, HierarchicalSubtask } from "./types";
+import { ChecklistSection } from "./checklist-section";
+import { SubtaskTreeSection } from "./subtask-tree-section";
+import { TagPickerPopover } from "./tag-picker-popover";
+import { MarkdownNotesEditor } from "./markdown-notes-editor";
+import { TaskActionsMenu } from "./task-actions-menu";
+import { SaveTemplateModal } from "./save-template-modal";
 
 interface TaskDetailPanelProps {
   task: TaskItem | null;
@@ -17,6 +18,82 @@ interface TaskDetailPanelProps {
   onClose: () => void;
   onUpdateTask: (updated: TaskItem) => void;
   onDeleteTask: (id: string) => void;
+  onDuplicateTask?: (id: string) => void;
+  onArchiveTask?: (id: string) => void;
+  onSaveAsTemplate?: (id: string, name: string) => Promise<void> | void;
+  onToggleSubtask?: (subtaskId: string, completed: boolean) => void;
+  onAddSubtask?: (title: string, parentId: string) => void;
+  onDeleteSubtask?: (subtaskId: string) => void;
+  onToggleChecklistItem?: (itemId: string, done: boolean) => void;
+  onAddChecklistItem?: (text: string) => void;
+  onDeleteChecklistItem?: (itemId: string) => void;
+  onUpdateTags?: (tagNames: string[], tagIds?: string[]) => void;
+}
+
+function updateSubtaskInTree(
+  list: HierarchicalSubtask[],
+  targetId: string,
+  updater: (st: HierarchicalSubtask) => HierarchicalSubtask
+): HierarchicalSubtask[] {
+  return list.map((st) => {
+    if (st.id === targetId) {
+      return updater(st);
+    }
+    if (st.subtasks && st.subtasks.length > 0) {
+      return {
+        ...st,
+        subtasks: updateSubtaskInTree(st.subtasks, targetId, updater),
+      };
+    }
+    return st;
+  });
+}
+
+function addSubtaskToTree(
+  list: HierarchicalSubtask[],
+  parentId: string,
+  rootTaskId: string,
+  newSubtask: HierarchicalSubtask
+): HierarchicalSubtask[] {
+  if (parentId === rootTaskId) {
+    return [...list, newSubtask];
+  }
+  return list.map((st) => {
+    if (st.id === parentId) {
+      const childDepth = Math.min(3, (st.depth ?? 2) + 1);
+      return {
+        ...st,
+        subtasks: [
+          ...(st.subtasks || []),
+          { ...newSubtask, depth: childDepth, parentId: st.id },
+        ],
+      };
+    }
+    if (st.subtasks && st.subtasks.length > 0) {
+      return {
+        ...st,
+        subtasks: addSubtaskToTree(st.subtasks, parentId, rootTaskId, newSubtask),
+      };
+    }
+    return st;
+  });
+}
+
+function removeSubtaskFromTree(
+  list: HierarchicalSubtask[],
+  targetId: string
+): HierarchicalSubtask[] {
+  return list
+    .filter((st) => st.id !== targetId)
+    .map((st) => {
+      if (st.subtasks && st.subtasks.length > 0) {
+        return {
+          ...st,
+          subtasks: removeSubtaskFromTree(st.subtasks, targetId),
+        };
+      }
+      return st;
+    });
 }
 
 export function TaskDetailPanel({
@@ -25,9 +102,18 @@ export function TaskDetailPanel({
   onClose,
   onUpdateTask,
   onDeleteTask,
+  onDuplicateTask,
+  onArchiveTask,
+  onSaveAsTemplate,
+  onToggleSubtask,
+  onAddSubtask,
+  onDeleteSubtask,
+  onToggleChecklistItem,
+  onAddChecklistItem,
+  onDeleteChecklistItem,
+  onUpdateTags,
 }: TaskDetailPanelProps) {
-  const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
-  const [newTagInput, setNewTagInput] = useState("");
+  const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
 
   if (!isOpen || !task) return null;
 
@@ -43,56 +129,121 @@ export function TaskDetailPanel({
     onUpdateTask({ ...task, folder, updatedAt: "Just now" });
   };
 
-  const handleToggleSubtask = (subtaskId: string) => {
-    const updated = task.subtasks.map((st) =>
-      st.id === subtaskId ? { ...st, completed: !st.completed } : st
-    );
-    onUpdateTask({ ...task, subtasks: updated, updatedAt: "Just now" });
+  // Subtask Handlers
+  const handleToggleSubtask = (subtaskId: string, currentCompleted: boolean) => {
+    if (onToggleSubtask) {
+      onToggleSubtask(subtaskId, !currentCompleted);
+    }
+    const updatedTree = updateSubtaskInTree(task.subtasks, subtaskId, (st) => ({
+      ...st,
+      completed: !st.completed,
+    }));
+    onUpdateTask({ ...task, subtasks: updatedTree, updatedAt: "Just now" });
   };
 
-  const handleAddSubtask = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newSubtaskTitle.trim();
-    if (!trimmed) return;
-    const newSt: Subtask = {
+  const handleAddSubtask = (title: string, parentId: string) => {
+    if (onAddSubtask) {
+      onAddSubtask(title, parentId);
+    }
+    const childDepth = parentId === task.id ? 2 : 3;
+    const newSt: HierarchicalSubtask = {
       id: `st-${Date.now()}`,
-      title: trimmed,
+      parentId: parentId === task.id ? null : parentId,
+      title,
       completed: false,
+      depth: childDepth,
+      priority: "med",
+      subtasks: [],
     };
-    onUpdateTask({
-      ...task,
-      subtasks: [...task.subtasks, newSt],
-      updatedAt: "Just now",
-    });
-    setNewSubtaskTitle("");
+    const updatedTree = addSubtaskToTree(
+      task.subtasks,
+      parentId,
+      task.id,
+      newSt
+    );
+    onUpdateTask({ ...task, subtasks: updatedTree, updatedAt: "Just now" });
   };
 
   const handleDeleteSubtask = (subtaskId: string) => {
+    if (onDeleteSubtask) {
+      onDeleteSubtask(subtaskId);
+    }
+    const updatedTree = removeSubtaskFromTree(task.subtasks, subtaskId);
+    onUpdateTask({ ...task, subtasks: updatedTree, updatedAt: "Just now" });
+  };
+
+  // Checklist Handlers
+  const handleToggleChecklistItem = (itemId: string, currentDone: boolean) => {
+    if (onToggleChecklistItem) {
+      onToggleChecklistItem(itemId, !currentDone);
+    }
+    const updatedChecklist = task.checklist.map((ci) =>
+      ci.id === itemId ? { ...ci, done: !ci.done } : ci
+    );
+    onUpdateTask({ ...task, checklist: updatedChecklist, updatedAt: "Just now" });
+  };
+
+  const handleAddChecklistItem = (text: string) => {
+    if (onAddChecklistItem) {
+      onAddChecklistItem(text);
+    }
+    const newCi = {
+      id: `ci-${Date.now()}`,
+      taskId: task.id,
+      text,
+      done: false,
+    };
     onUpdateTask({
       ...task,
-      subtasks: task.subtasks.filter((st) => st.id !== subtaskId),
+      checklist: [...task.checklist, newCi],
       updatedAt: "Just now",
     });
   };
 
-  const handleAddTag = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newTagInput.trim().toLowerCase();
-    if (!trimmed || task.tags.includes(trimmed)) return;
+  const handleDeleteChecklistItem = (itemId: string) => {
+    if (onDeleteChecklistItem) {
+      onDeleteChecklistItem(itemId);
+    }
+    const updatedChecklist = task.checklist.filter((ci) => ci.id !== itemId);
+    onUpdateTask({ ...task, checklist: updatedChecklist, updatedAt: "Just now" });
+  };
+
+  // Tag Handlers
+  const handleTagsUpdated = (updatedNames: string[], updatedIds: string[]) => {
+    if (onUpdateTags) {
+      onUpdateTags(updatedNames, updatedIds);
+    }
     onUpdateTask({
       ...task,
-      tags: [...task.tags, trimmed],
+      tags: updatedNames,
+      tagIds: updatedIds,
       updatedAt: "Just now",
     });
-    setNewTagInput("");
   };
 
   const handleRemoveTag = (tagToRemove: string) => {
+    const nextTags = task.tags.filter((t) => t !== tagToRemove);
+    const nextIds = task.tagIds
+      ? task.tagIds.filter((_, idx) => task.tags[idx] !== tagToRemove)
+      : undefined;
+    handleTagsUpdated(nextTags, nextIds || []);
+  };
+
+  // Notes Handler
+  const handleNotesSave = (notes: string) => {
     onUpdateTask({
       ...task,
-      tags: task.tags.filter((t) => t !== tagToRemove),
+      notes,
+      description: notes || undefined,
       updatedAt: "Just now",
     });
+  };
+
+  // Template Save Handler
+  const handleSaveTemplate = async (templateName: string) => {
+    if (onSaveAsTemplate) {
+      await onSaveAsTemplate(task.id, templateName);
+    }
   };
 
   return (
@@ -102,6 +253,7 @@ export function TaskDetailPanel({
     >
       {/* Detail Header */}
       <div className="flex h-16 items-center justify-between border-b border-[#E4E8F2] px-4 dark:border-[#132E74]">
+        {/* Status Checkbox */}
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -126,14 +278,23 @@ export function TaskDetailPanel({
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close task details panel"
-          className="flex h-8 w-8 items-center justify-center rounded-md text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] transition-colors focus-ring-pink dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-white cursor-pointer"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        {/* Header Right Actions */}
+        <div className="flex items-center gap-1">
+          <TaskActionsMenu
+            onDuplicate={() => onDuplicateTask?.(task.id)}
+            onSaveAsTemplate={() => setIsSaveTemplateOpen(true)}
+            onArchive={() => onArchiveTask?.(task.id)}
+            onDelete={() => onDeleteTask(task.id)}
+          />
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close task details panel"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] transition-colors focus-ring-pink dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-white cursor-pointer"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* Detail Scrollable Body */}
@@ -213,114 +374,68 @@ export function TaskDetailPanel({
           </div>
         </div>
 
-        {/* Subtasks Checklist */}
+        {/* 1. Checklist Section with Animated Progress Bar */}
+        <ChecklistSection
+          items={task.checklist}
+          onToggleItem={handleToggleChecklistItem}
+          onAddItem={handleAddChecklistItem}
+          onDeleteItem={handleDeleteChecklistItem}
+        />
+
+        {/* 2. Hierarchical Subtask Tree (Depth <= 3) */}
+        <SubtaskTreeSection
+          rootTaskId={task.id}
+          subtasks={task.subtasks}
+          onToggleSubtask={handleToggleSubtask}
+          onAddSubtask={handleAddSubtask}
+          onDeleteSubtask={handleDeleteSubtask}
+        />
+
+        {/* 3. Tags Section with TagPickerPopover */}
         <div>
           <div className="flex items-center justify-between pb-1">
             <label className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-              Checklist ({task.subtasks.filter((s) => s.completed).length}/
-              {task.subtasks.length})
+              Tags ({task.tags.length})
             </label>
+            <TagPickerPopover
+              taskId={task.id}
+              activeTags={task.tags}
+              activeTagIds={task.tagIds}
+              onTagsUpdated={handleTagsUpdated}
+            />
           </div>
 
-          <div className="space-y-1.5 mt-2">
-            {task.subtasks.map((st) => (
-              <div
-                key={st.id}
-                className="group flex items-center justify-between gap-2 rounded-lg border border-[#E4E8F2] bg-[#F2F5FC]/50 px-2.5 py-1.5 text-xs dark:border-[#132E74] dark:bg-[#082363]/40"
-              >
-                <div className="flex items-center gap-2 min-w-0">
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {task.tags.length === 0 ? (
+              <span className="text-xs italic text-[#5B6478]/70 dark:text-[#9BB0D3]/60">
+                No tags assigned. Click Tag to add.
+              </span>
+            ) : (
+              task.tags.map((t) => (
+                <span
+                  key={t}
+                  className="inline-flex items-center gap-1 rounded-md border border-[#E4E8F2] bg-[#F2F5FC] px-2 py-0.5 text-xs font-medium text-[#09318D] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#FFA8D7]"
+                >
+                  <span>{t}</span>
                   <button
                     type="button"
-                    onClick={() => handleToggleSubtask(st.id)}
-                    className={cn(
-                      "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors cursor-pointer",
-                      st.completed
-                        ? "border-[#FD91CC] bg-[#FD91CC] text-[#051A4D]"
-                        : "border-[#CAD5E8] bg-white dark:border-[#1F459E] dark:bg-[#051A4D]"
-                    )}
+                    onClick={() => handleRemoveTag(t)}
+                    aria-label={`Remove tag ${t}`}
+                    className="hover:text-rose-600 transition-colors cursor-pointer"
                   >
-                    {st.completed && <Check className="h-3 w-3 stroke-[3]" />}
+                    <X className="h-3 w-3" />
                   </button>
-                  <span
-                    className={cn(
-                      "truncate transition-all",
-                      st.completed && "line-through text-[#5B6478]/70 dark:text-[#9BB0D3]/60"
-                    )}
-                  >
-                    {st.title}
-                  </span>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleDeleteSubtask(st.id)}
-                  className="opacity-0 group-hover:opacity-100 text-[#5B6478] hover:text-rose-500 transition-opacity p-0.5"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
-
-            {/* Add Subtask Input */}
-            <form onSubmit={handleAddSubtask} className="flex gap-1.5 pt-1">
-              <input
-                type="text"
-                value={newSubtaskTitle}
-                onChange={(e) => setNewSubtaskTitle(e.target.value)}
-                placeholder="Add checklist sub-item..."
-                className="flex-1 rounded-lg border border-[#E4E8F2] bg-white px-2.5 py-1 text-xs placeholder:text-[#5B6478]/50 focus:border-[#09318D] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363]"
-              />
-              <button
-                type="submit"
-                disabled={!newSubtaskTitle.trim()}
-                className="rounded-lg bg-[#09318D] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#0D41B4] disabled:opacity-40 transition-colors dark:bg-[#0D41B4]"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            </form>
+                </span>
+              ))
+            )}
           </div>
         </div>
 
-        {/* Tags Section */}
-        <div>
-          <label className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-            Tags
-          </label>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {task.tags.map((t) => (
-              <span
-                key={t}
-                className="inline-flex items-center gap-1 rounded-md border border-[#E4E8F2] bg-[#F2F5FC] px-2 py-0.5 text-xs font-medium text-[#5B6478] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
-              >
-                <span>{t}</span>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveTag(t)}
-                  className="hover:text-rose-600 transition-colors"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-          </div>
-
-          <form onSubmit={handleAddTag} className="flex gap-1.5 pt-2">
-            <input
-              type="text"
-              value={newTagInput}
-              onChange={(e) => setNewTagInput(e.target.value)}
-              placeholder="Add tag (e.g. backend, ui)..."
-              className="flex-1 rounded-lg border border-[#E4E8F2] bg-white px-2.5 py-1 text-xs placeholder:text-[#5B6478]/50 focus:border-[#09318D] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363]"
-            />
-            <button
-              type="submit"
-              disabled={!newTagInput.trim()}
-              className="rounded-lg border border-[#E4E8F2] bg-[#F2F5FC] px-2.5 py-1 text-xs font-semibold text-[#09318D] hover:bg-[#E4E8F2] disabled:opacity-40 transition-colors dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-            >
-              Add
-            </button>
-          </form>
-        </div>
+        {/* 4. Markdown Notes Editor */}
+        <MarkdownNotesEditor
+          initialNotes={task.notes}
+          onSave={handleNotesSave}
+        />
 
         {/* Timestamps */}
         <div className="border-t border-[#E4E8F2] pt-4 text-[11px] font-mono text-[#5B6478] dark:border-[#132E74] dark:text-[#9BB0D3] space-y-1">
@@ -346,6 +461,14 @@ export function TaskDetailPanel({
           <span>Delete Task</span>
         </button>
       </div>
+
+      {/* Save Template Modal */}
+      <SaveTemplateModal
+        isOpen={isSaveTemplateOpen}
+        defaultName={task.title}
+        onClose={() => setIsSaveTemplateOpen(false)}
+        onSave={handleSaveTemplate}
+      />
     </aside>
   );
 }
