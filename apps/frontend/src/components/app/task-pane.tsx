@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { TaskRow } from "./task-row";
 import { TaskRowSkeletonList } from "./task-skeleton";
+import { EmptyState } from "./empty-state";
 import type { TaskItem, ListId, FolderId, Priority } from "./types";
 
 interface TaskPaneProps {
@@ -251,19 +252,50 @@ export function TaskPane({
         {isLoading ? (
           <TaskRowSkeletonList count={5} />
         ) : filteredTasks.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#E4E8F2] bg-white/60 py-16 text-center dark:border-[#132E74] dark:bg-[#082363]/30">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#F2F5FC] text-[#09318D] dark:bg-[#051A4D] dark:text-[#FD91CC]">
-              <CheckCircle2 className="h-6 w-6 stroke-[1.5]" />
-            </div>
-            <h3 className="mt-4 text-base font-bold text-[#0B1220] dark:text-white">
-              No tasks found in this view
-            </h3>
-            <p className="mt-1 max-w-sm text-xs text-[#5B6478] dark:text-[#9BB0D3]">
-              {searchQuery
-                ? `No tasks matched your query "${searchQuery}". Try clearing search.`
-                : "You're all caught up! Create a new task above or switch folders."}
-            </p>
-          </div>
+          searchQuery.trim().length > 0 ? (
+            <EmptyState
+              type="search"
+              searchQuery={searchQuery}
+              onAction={() => setSearchQuery("")}
+              actionLabel="Clear search"
+              secondaryAction={
+                statusFilter !== "all" || priorityFilter !== "all"
+                  ? () => {
+                      setStatusFilter("all");
+                      setPriorityFilter("all");
+                    }
+                  : undefined
+              }
+              secondaryActionLabel="Reset filters"
+            />
+          ) : statusFilter !== "all" || priorityFilter !== "all" ? (
+            <EmptyState
+              type="filter"
+              onAction={() => {
+                setStatusFilter("all");
+                setPriorityFilter("all");
+              }}
+              actionLabel="Reset filters"
+            />
+          ) : (
+            <EmptyState
+              activeList={activeList}
+              activeFolder={activeFolder}
+              onAction={() => {
+                const input = document.querySelector<HTMLInputElement>(
+                  "input[placeholder*='Add task']"
+                );
+                input?.focus();
+              }}
+              actionLabel={
+                activeList === "completed"
+                  ? "View active tasks"
+                  : activeFolder
+                  ? `Create task in ${activeFolder}`
+                  : "Create a task"
+              }
+            />
+          )
         ) : (
           <div className="space-y-2">
             {filteredTasks.map((task) => (

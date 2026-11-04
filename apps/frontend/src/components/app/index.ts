@@ -9,4 +9,5 @@ export * from "./toast-system";
 export * from "./mobile-nav";
 export * from "./theme-toggle";
 export * from "./task-skeleton";
+export * from "./empty-state";
 export * from "./app-workspace";
