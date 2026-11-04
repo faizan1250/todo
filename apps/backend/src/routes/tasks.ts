@@ -492,7 +492,172 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           });
         }
 
+        const taskMap = new Map(existingTasks.map((t) => [t.id, t]));
+
         switch (action) {
+          case "move": {
+            let targetParentId: string | null = null;
+            let targetListId: string | null = null;
+            let targetSectionId: string | null = null;
+
+            // Handle parentId
+            if (payload?.parentId !== undefined && payload.parentId !== null) {
+              if (ids.includes(payload.parentId)) {
+                return status(400, { error: "A task cannot be moved under one of the moving tasks" });
+              }
+
+              const [parentTask] = await tx
+                .select()
+                .from(schema.tasks)
+                .where(
+                  and(
+                    eq(schema.tasks.id, payload.parentId),
+                    eq(schema.tasks.userId, user.id),
+                    isNull(schema.tasks.deletedAt)
+                  )
+                );
+
+              if (!parentTask) {
+                return status(404, { error: "Target parent task not found" });
+              }
+
+              // Validate hierarchy for each moving task
+              for (const taskId of ids) {
+                const validation = validateSubtaskHierarchy(user.id, taskId, payload.parentId);
+                if (!validation.valid) {
+                  return status(validation.statusCode ?? 400, { error: validation.error });
+                }
+              }
+
+              targetParentId = payload.parentId;
+              targetListId = parentTask.listId;
+            } else {
+              targetParentId = null;
+            }
+
+            // Handle listId
+            if (!targetListId) {
+              if (payload?.listId) {
+                const [targetList] = await tx
+                  .select()
+                  .from(schema.lists)
+                  .where(
+                    and(
+                      eq(schema.lists.id, payload.listId),
+                      eq(schema.lists.userId, user.id),
+                      isNull(schema.lists.deletedAt)
+                    )
+                  );
+
+                if (!targetList) {
+                  return status(404, { error: "Target list not found" });
+                }
+                targetListId = payload.listId;
+              } else {
+                targetListId = existingTasks[0].listId;
+              }
+            }
+
+            // Handle sectionId
+            if (payload?.sectionId !== undefined && payload.sectionId !== null && payload.sectionId !== "") {
+              const [targetSec] = await tx
+                .select()
+                .from(schema.sections)
+                .where(
+                  and(
+                    eq(schema.sections.id, payload.sectionId),
+                    eq(schema.sections.userId, user.id),
+                    eq(schema.sections.listId, targetListId),
+                    isNull(schema.sections.deletedAt)
+                  )
+                );
+
+              if (!targetSec) {
+                return status(404, { error: "Section not found or does not belong to target list" });
+              }
+              targetSectionId = payload.sectionId;
+            } else {
+              targetSectionId = null;
+            }
+
+            // Query existing tasks in target scope to find last position
+            const scopeConditions = [
+              eq(schema.tasks.userId, user.id),
+              eq(schema.tasks.listId, targetListId),
+              isNull(schema.tasks.deletedAt),
+            ];
+            if (targetParentId) {
+              scopeConditions.push(eq(schema.tasks.parentId, targetParentId));
+            } else {
+              scopeConditions.push(isNull(schema.tasks.parentId));
+            }
+            if (targetSectionId) {
+              scopeConditions.push(eq(schema.tasks.sectionId, targetSectionId));
+            } else {
+              scopeConditions.push(isNull(schema.tasks.sectionId));
+            }
+
+            const existingInScope = await tx
+              .select({ id: schema.tasks.id, position: schema.tasks.position })
+              .from(schema.tasks)
+              .where(
+                and(
+                  ...scopeConditions,
+                  notInArray(schema.tasks.id, ids)
+                )
+              )
+              .orderBy(asc(schema.tasks.position));
+
+            const lastPos = existingInScope.length > 0 ? (existingInScope[existingInScope.length - 1].position as string) : null;
+            const newPositions = generateNKeysBetween(lastPos, null, ids.length);
+
+            const now = new Date();
+            for (let i = 0; i < ids.length; i++) {
+              const taskId = ids[i];
+              const oldTask = taskMap.get(taskId)!;
+              const shouldUpdateDescendants = oldTask.listId !== targetListId;
+
+              if (shouldUpdateDescendants) {
+                const descendants = getTaskDescendants(taskId, user.id);
+                if (descendants.length > 0) {
+                  const descIds = descendants.map((d) => d.id);
+                  await tx
+                    .update(schema.tasks)
+                    .set({
+                      listId: targetListId,
+                      version: sql`${schema.tasks.version} + 1`,
+                      updatedAt: now,
+                    })
+                    .where(
+                      and(
+                        inArray(schema.tasks.id, descIds),
+                        eq(schema.tasks.userId, user.id)
+                      )
+                    );
+                }
+              }
+
+              await tx
+                .update(schema.tasks)
+                .set({
+                  position: newPositions[i],
+                  listId: targetListId,
+                  sectionId: targetSectionId,
+                  parentId: targetParentId,
+                  version: sql`${schema.tasks.version} + 1`,
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(schema.tasks.id, taskId),
+                    eq(schema.tasks.userId, user.id)
+                  )
+                );
+            }
+
+            return { success: true, count: ids.length, action: "move" };
+          }
+
           default:
             return status(400, { error: `Unsupported bulk action: ${action}` });
         }
