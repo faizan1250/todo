@@ -17,6 +17,12 @@ import { recurrenceRoutes } from "./routes/recurrences";
 import { parseRoutes } from "./routes/parse";
 import { placeRoutes } from "./routes/places";
 import { geofenceRoutes } from "./routes/geofences";
+import { viewRoutes } from "./routes/views";
+import { filterRoutes } from "./routes/filters";
+import { searchRoutes } from "./routes/search";
+import { calendarRoutes } from "./routes/calendar";
+import { boardRoutes } from "./routes/board";
+import { plannerRoutes } from "./routes/planner";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
 
@@ -71,6 +77,12 @@ export const app = new Elysia()
   .use(parseRoutes)
   .use(placeRoutes)
   .use(geofenceRoutes)
+  .use(viewRoutes)
+  .use(filterRoutes)
+  .use(searchRoutes)
+  .use(calendarRoutes)
+  .use(boardRoutes)
+  .use(plannerRoutes)
   .get(
     "/health",
     () => ({
