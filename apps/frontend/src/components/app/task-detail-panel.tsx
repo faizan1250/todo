@@ -4,6 +4,7 @@ import * as React from "react";
 import { useState } from "react";
 import { X, Check, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { BackendFolder } from "@/lib/api";
 import type { TaskItem, Priority, FolderId, HierarchicalSubtask } from "./types";
 import { TaskSubtasksSection } from "./task-subtasks-section";
 import { TagPickerPopover } from "./tag-picker-popover";
@@ -14,6 +15,7 @@ import { SaveTemplateModal } from "./save-template-modal";
 interface TaskDetailPanelProps {
   task: TaskItem | null;
   isOpen: boolean;
+  folders?: BackendFolder[];
   onClose: () => void;
   onUpdateTask: (updated: TaskItem) => void;
   onDeleteTask: (id: string) => void;
@@ -98,6 +100,7 @@ function removeSubtaskFromTree(
 export function TaskDetailPanel({
   task,
   isOpen,
+  folders = [],
   onClose,
   onUpdateTask,
   onDeleteTask,

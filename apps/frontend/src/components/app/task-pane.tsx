@@ -24,6 +24,7 @@ import {
   updateSection,
   deleteSection,
   type BackendSection,
+  type BackendFolder,
 } from "@/lib/api";
 import { TaskRow } from "./task-row";
 import { TaskRowSkeletonList } from "./task-skeleton";
@@ -36,6 +37,7 @@ interface TaskPaneProps {
   activeListId?: string | null;
   activeListName?: string;
   activeFolder: FolderId | null;
+  folders?: BackendFolder[];
   selectedTaskId: string | null;
   onSelectTask: (task: TaskItem) => void;
   onToggleComplete: (id: string) => void;
@@ -46,6 +48,7 @@ interface TaskPaneProps {
     folder: FolderId;
     list: ListId;
     sectionId?: string | null;
+    dueDate?: string | null;
   }) => void;
   isLoading?: boolean;
   selectedTaskIds?: Set<string>;
@@ -58,6 +61,7 @@ export function TaskPane({
   activeListId = null,
   activeListName,
   activeFolder,
+  folders = [],
   selectedTaskId,
   onSelectTask,
   onToggleComplete,
