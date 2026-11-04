@@ -1,13 +1,13 @@
 import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
-import { auth } from "./auth";
+import { auth, trustedOrigins } from "./auth";
 import { meRoutes } from "./routes/me";
 import { inviteRoutes } from "./routes/invite";
 
 export const app = new Elysia()
   .use(
     cors({
-      origin: ["http://localhost:3000"],
+      origin: trustedOrigins,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       credentials: true,
       allowedHeaders: ["Content-Type", "Authorization"],
