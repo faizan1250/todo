@@ -803,6 +803,11 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         shouldUpdateDescendantList = true;
       }
 
+      // If moving to a different listId and sectionId is not explicitly provided, reset sectionId to null
+      if (nextListId !== existing.listId && body.sectionId === undefined) {
+        nextSectionId = null;
+      }
+
       // Section ID change check
       if (body.sectionId !== undefined) {
         if (body.sectionId === null || body.sectionId === "") {
@@ -820,7 +825,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
               )
             );
           if (!sec) {
-            return status(404, { error: "Section not found or does not belong to task's list" });
+            return status(404, { error: "Section not found or does not belong to target list" });
           }
           nextSectionId = body.sectionId;
         }
