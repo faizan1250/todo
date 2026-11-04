@@ -46,6 +46,7 @@ interface TaskDetailPanelProps {
   onDeleteTask: (id: string) => void;
   onDuplicateTask?: (id: string) => void;
   onArchiveTask?: (id: string) => void;
+  onSkipTask?: (id: string) => void;
   onSaveAsTemplate?: (id: string, name: string) => Promise<void> | void;
   onToggleSubtask?: (subtaskId: string, completed: boolean) => void;
   onAddSubtask?: (title: string, parentId: string) => void;
@@ -140,6 +141,7 @@ export function TaskDetailPanel({
   onDeleteTask,
   onDuplicateTask,
   onArchiveTask,
+  onSkipTask,
   onSaveAsTemplate,
   onToggleSubtask,
   onAddSubtask,
@@ -538,6 +540,8 @@ export function TaskDetailPanel({
             onSaveAsTemplate={() => setIsSaveTemplateOpen(true)}
             onArchive={() => onArchiveTask?.(task.id)}
             onDelete={() => onDeleteTask(task.id)}
+            isRecurring={Boolean(task.recurrenceId || task.recurrenceRule)}
+            onSkip={onSkipTask ? () => onSkipTask(task.id) : undefined}
           />
           <button
             type="button"
