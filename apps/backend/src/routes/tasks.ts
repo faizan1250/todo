@@ -1683,4 +1683,258 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         id: t.String(),
       }),
     }
+  )
+  // POST /api/v1/tasks/:id/duplicate - deep duplication with old->new ID map, position right after original
+  .post(
+    "/:id/duplicate",
+    async ({ user, params: { id }, status }) => {
+      const [original] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!original) {
+        return status(404, { error: "Task not found" });
+      }
+
+      // 1. Fetch all descendants
+      const descendants = getTaskDescendants(original.id, user.id);
+      const descendantIds = descendants.map((d) => d.id);
+
+      let descendantTasks: Array<typeof schema.tasks.$inferSelect> = [];
+      if (descendantIds.length > 0) {
+        descendantTasks = await db
+          .select()
+          .from(schema.tasks)
+          .where(
+            and(
+              inArray(schema.tasks.id, descendantIds),
+              eq(schema.tasks.userId, user.id),
+              isNull(schema.tasks.deletedAt)
+            )
+          )
+          .orderBy(asc(schema.tasks.position));
+
+        const depthMap = new Map(descendants.map((d) => [d.id, d.subtreeDepth]));
+        descendantTasks.sort((a, b) => (depthMap.get(a.id) ?? 0) - (depthMap.get(b.id) ?? 0));
+      }
+
+      // 2. Prepare old -> new ID map
+      const oldToNewId = new Map<string, string>();
+      const rootNewId = Bun.randomUUIDv7();
+      oldToNewId.set(original.id, rootNewId);
+
+      for (const dt of descendantTasks) {
+        oldToNewId.set(dt.id, Bun.randomUUIDv7());
+      }
+
+      const allOldTaskIds = [original.id, ...descendantTasks.map((t) => t.id)];
+
+      // 3. Fetch checklist items and tags
+      const oldChecklistItems = await db
+        .select()
+        .from(schema.checklistItems)
+        .where(
+          and(
+            inArray(schema.checklistItems.taskId, allOldTaskIds),
+            eq(schema.checklistItems.userId, user.id),
+            isNull(schema.checklistItems.deletedAt)
+          )
+        )
+        .orderBy(asc(schema.checklistItems.position));
+
+      const oldTaskTags = await db
+        .select({
+          taskId: schema.taskTags.taskId,
+          tagId: schema.taskTags.tagId,
+          tag: schema.tags,
+        })
+        .from(schema.taskTags)
+        .innerJoin(schema.tags, eq(schema.taskTags.tagId, schema.tags.id))
+        .where(
+          and(
+            inArray(schema.taskTags.taskId, allOldTaskIds),
+            eq(schema.tags.userId, user.id),
+            isNull(schema.tags.deletedAt)
+          )
+        )
+        .orderBy(asc(schema.tags.name));
+
+      // 4. Calculate position right after original in the same container scope
+      const scopeConditions: SQL[] = [
+        eq(schema.tasks.userId, user.id),
+        eq(schema.tasks.listId, original.listId),
+        isNull(schema.tasks.deletedAt),
+      ];
+      if (original.sectionId) {
+        scopeConditions.push(eq(schema.tasks.sectionId, original.sectionId));
+      } else {
+        scopeConditions.push(isNull(schema.tasks.sectionId));
+      }
+      if (original.parentId) {
+        scopeConditions.push(eq(schema.tasks.parentId, original.parentId));
+      } else {
+        scopeConditions.push(isNull(schema.tasks.parentId));
+      }
+
+      const newRootPosition = await positionBetween(
+        {
+          table: schema.tasks,
+          where: and(...scopeConditions),
+        },
+        original.id,
+        null
+      );
+
+      const now = new Date();
+
+      // 5. Build entities to insert
+      const newRootTask: typeof schema.tasks.$inferInsert = {
+        id: rootNewId,
+        userId: user.id,
+        listId: original.listId,
+        sectionId: original.sectionId,
+        parentId: original.parentId,
+        title: `${original.title} (copy)`,
+        notes: original.notes,
+        status: "todo",
+        priority: original.priority,
+        position: newRootPosition,
+        startAt: original.startAt,
+        dueAt: original.dueAt,
+        deadlineAt: original.deadlineAt,
+        allDay: original.allDay,
+        estimateMin: original.estimateMin,
+        recurrenceId: null,
+        locationName: original.locationName,
+        lat: original.lat,
+        lng: original.lng,
+        radiusM: original.radiusM,
+        locationTrigger: original.locationTrigger,
+        completedAt: null,
+        archivedAt: null,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      };
+
+      const newDescendantTasks: Array<typeof schema.tasks.$inferInsert> = descendantTasks.map((dt) => ({
+        id: oldToNewId.get(dt.id)!,
+        userId: user.id,
+        listId: dt.listId,
+        sectionId: dt.sectionId,
+        parentId: dt.parentId ? oldToNewId.get(dt.parentId)! : null,
+        title: dt.title,
+        notes: dt.notes,
+        status: "todo",
+        priority: dt.priority,
+        position: dt.position,
+        startAt: dt.startAt,
+        dueAt: dt.dueAt,
+        deadlineAt: dt.deadlineAt,
+        allDay: dt.allDay,
+        estimateMin: dt.estimateMin,
+        recurrenceId: null,
+        locationName: dt.locationName,
+        lat: dt.lat,
+        lng: dt.lng,
+        radiusM: dt.radiusM,
+        locationTrigger: dt.locationTrigger,
+        completedAt: null,
+        archivedAt: null,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      }));
+
+      const newChecklistItems: Array<typeof schema.checklistItems.$inferInsert> = oldChecklistItems.map((item) => ({
+        id: Bun.randomUUIDv7(),
+        userId: user.id,
+        taskId: oldToNewId.get(item.taskId)!,
+        text: item.text,
+        done: false,
+        position: item.position,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      }));
+
+      const newTaskTags = oldTaskTags.map((tt) => ({
+        taskId: oldToNewId.get(tt.taskId)!,
+        tagId: tt.tagId,
+      }));
+
+      // 6. Execute in single transaction
+      await db.transaction(async (tx) => {
+        await tx.insert(schema.tasks).values(newRootTask);
+
+        if (newDescendantTasks.length > 0) {
+          await tx.insert(schema.tasks).values(newDescendantTasks);
+        }
+
+        if (newChecklistItems.length > 0) {
+          await tx.insert(schema.checklistItems).values(newChecklistItems);
+        }
+
+        if (newTaskTags.length > 0) {
+          await tx.insert(schema.taskTags).values(newTaskTags);
+        }
+      });
+
+      // 7. Assemble response tree
+      const checklistByNewTaskId = new Map<string, any[]>();
+      for (const item of newChecklistItems) {
+        if (!checklistByNewTaskId.has(item.taskId)) {
+          checklistByNewTaskId.set(item.taskId, []);
+        }
+        checklistByNewTaskId.get(item.taskId)!.push(item);
+      }
+
+      const tagsByNewTaskId = new Map<string, any[]>();
+      for (const row of oldTaskTags) {
+        const newTaskId = oldToNewId.get(row.taskId)!;
+        if (!tagsByNewTaskId.has(newTaskId)) {
+          tagsByNewTaskId.set(newTaskId, []);
+        }
+        tagsByNewTaskId.get(newTaskId)!.push(row.tag);
+      }
+
+      const childrenByParent = new Map<string, any[]>();
+      for (const dt of newDescendantTasks) {
+        if (dt.parentId) {
+          if (!childrenByParent.has(dt.parentId)) {
+            childrenByParent.set(dt.parentId, []);
+          }
+          childrenByParent.get(dt.parentId)!.push(dt);
+        }
+      }
+
+      function buildTree(node: any): any {
+        const children = childrenByParent.get(node.id) ?? [];
+        return {
+          ...node,
+          checklist: checklistByNewTaskId.get(node.id) ?? [],
+          tags: tagsByNewTaskId.get(node.id) ?? [],
+          subtasks: children.map(buildTree),
+        };
+      }
+
+      const tree = buildTree(newRootTask);
+      return status(201, tree);
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+    }
   );
