@@ -5,7 +5,7 @@ import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
 import { positionBetween } from "../utils/position";
 import { decodeCursor, paginateResults } from "../utils/cursor";
-import { validateSubtaskHierarchy, getTaskDescendants } from "../utils/tasks";
+import { validateSubtaskHierarchy, getTaskDescendants, runCompleteHooks } from "../utils/tasks";
 
 /**
  * Normalizes notes string:
@@ -996,6 +996,130 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
       }),
       body: t.Object({
         tagIds: t.Array(t.String()),
+      }),
+    }
+  )
+  // POST /api/v1/tasks/:id/complete - complete task with optional subtask cascading and onComplete hooks
+  .post(
+    "/:id/complete",
+    async ({ user, params: { id }, body, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      const completeSubtasks = Boolean(body?.completeSubtasks);
+      const completedAt = new Date();
+
+      const updatedTask = await db.transaction(async (tx) => {
+        if (completeSubtasks) {
+          const descendants = getTaskDescendants(id, user.id);
+          if (descendants.length > 0) {
+            const descendantIds = descendants.map((d) => d.id);
+            await tx
+              .update(schema.tasks)
+              .set({
+                status: "done",
+                completedAt,
+                version: sql`${schema.tasks.version} + 1`,
+                updatedAt: completedAt,
+              })
+              .where(
+                and(
+                  inArray(schema.tasks.id, descendantIds),
+                  eq(schema.tasks.userId, user.id)
+                )
+              );
+          }
+        }
+
+        const [updated] = await tx
+          .update(schema.tasks)
+          .set({
+            status: "done",
+            completedAt,
+            version: sql`${schema.tasks.version} + 1`,
+            updatedAt: completedAt,
+          })
+          .where(
+            and(
+              eq(schema.tasks.id, id),
+              eq(schema.tasks.userId, user.id)
+            )
+          )
+          .returning();
+
+        return updated;
+      });
+
+      await runCompleteHooks(updatedTask);
+
+      return updatedTask;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
+      }),
+      body: t.Optional(
+        t.Object({
+          completeSubtasks: t.Optional(t.Boolean()),
+        })
+      ),
+    }
+  )
+  // POST /api/v1/tasks/:id/reopen - reopen completed task (descendants/ancestors unaffected)
+  .post(
+    "/:id/reopen",
+    async ({ user, params: { id }, status }) => {
+      const [existing] = await db
+        .select()
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id),
+            isNull(schema.tasks.deletedAt)
+          )
+        );
+
+      if (!existing) {
+        return status(404, { error: "Task not found" });
+      }
+
+      const updatedAt = new Date();
+      const [updated] = await db
+        .update(schema.tasks)
+        .set({
+          status: "todo",
+          completedAt: null,
+          version: sql`${schema.tasks.version} + 1`,
+          updatedAt,
+        })
+        .where(
+          and(
+            eq(schema.tasks.id, id),
+            eq(schema.tasks.userId, user.id)
+          )
+        )
+        .returning();
+
+      return updated;
+    },
+    {
+      auth: true,
+      params: t.Object({
+        id: t.String(),
       }),
     }
   );
