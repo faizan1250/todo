@@ -9,7 +9,7 @@ import {
   useCallback,
 } from "react";
 import { authClient } from "@/lib/auth-client";
-import { getCurrentProfile, type UserProfile } from "@/lib/api";
+import { getCurrentProfile, updateCurrentProfile, type UserProfile } from "@/lib/api";
 import { AuthModal } from "./auth-modal";
 
 export interface AuthUser {
@@ -43,6 +43,7 @@ export interface AuthContextType {
   openAuthModal: (mode?: "sign-in" | "sign-up") => void;
   closeAuthModal: () => void;
   setProfile: React.Dispatch<React.SetStateAction<UserProfile | null>>;
+  updatePreferences: (newPrefs: Record<string, unknown>) => Promise<UserProfile | null>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -77,6 +78,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isCurrent = false;
     };
   }, [userId]);
+
+  // Synchronize theme preference from profile to document
+  useEffect(() => {
+    if (typeof window === "undefined" || !profile?.preferences) return;
+    const themePref = profile.preferences.theme;
+    if (typeof themePref === "string") {
+      if (themePref === "dark") {
+        document.documentElement.classList.add("dark");
+        localStorage.setItem("theme", "dark");
+      } else if (themePref === "light") {
+        document.documentElement.classList.remove("dark");
+        localStorage.setItem("theme", "light");
+      } else if (themePref === "system") {
+        const isSystemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        if (isSystemDark) {
+          document.documentElement.classList.add("dark");
+        } else {
+          document.documentElement.classList.remove("dark");
+        }
+        localStorage.removeItem("theme");
+      }
+    }
+  }, [profile?.preferences]);
+
+  const updatePreferences = useCallback(
+    async (newPrefs: Record<string, unknown>) => {
+      const merged = {
+        ...(profile?.preferences || {}),
+        ...newPrefs,
+      };
+
+      // Optimistic update
+      setProfile((prev) => (prev ? { ...prev, preferences: merged } : null));
+
+      try {
+        const updated = await updateCurrentProfile({ preferences: merged });
+        setProfile(updated);
+        return updated;
+      } catch (err) {
+        console.warn("Failed to sync profile preferences to backend:", err);
+        return null;
+      }
+    },
+    [profile]
+  );
 
   const refreshSession = useCallback(async () => {
     try {
@@ -132,6 +178,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     openAuthModal,
     closeAuthModal,
     setProfile,
+    updatePreferences,
   };
 
   return (
@@ -153,4 +200,8 @@ export function useAuth() {
     throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
+}
+
+export function useOptionalAuth() {
+  return useContext(AuthContext);
 }

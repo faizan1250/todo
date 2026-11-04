@@ -7,8 +7,10 @@ import { TaskPane } from "./task-pane";
 import { TaskDetailPanel } from "./task-detail-panel";
 import { StreakCelebration } from "./streak-celebration";
 import { CommandPalette } from "./command-palette";
+import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import { MobileNav } from "./mobile-nav";
 import { ToastProvider, useToast } from "./toast-system";
+import { useOptionalAuth } from "@/components/auth";
 import type { TaskItem, ListId, FolderId, Priority } from "./types";
 
 const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
@@ -127,36 +129,41 @@ const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
 interface AppWorkspaceInnerProps {
   onOpenAuth?: () => void;
   onToggleTheme: () => void;
+  onOpenShortcuts?: () => void;
 }
 
-function AppWorkspaceInner({ onOpenAuth, onToggleTheme }: AppWorkspaceInnerProps) {
+function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externalOpenShortcuts }: AppWorkspaceInnerProps) {
   const { toast, success } = useToast();
+  const auth = useOptionalAuth();
 
   const [tasks, setTasks] = useState<TaskItem[]>(INITIAL_WORKSPACE_TASKS);
-  const [activeList, setActiveList] = useState<ListId>("today");
+  const [selectedListOverride, setSelectedListOverride] = useState<ListId | null>(null);
+
+  const prefList = auth?.profile?.preferences?.defaultListId as ListId | undefined;
+  const effectiveDefaultList: ListId =
+    prefList && ["today", "upcoming", "backlog", "completed"].includes(prefList)
+      ? prefList
+      : "today";
+  const activeList = selectedListOverride ?? effectiveDefaultList;
+  const setActiveList = useCallback((list: ListId) => {
+    setSelectedListOverride(list);
+  }, []);
+
   const [activeFolder, setActiveFolder] = useState<FolderId | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>("task-3");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
   // Streak State
   const [streakCount, setStreakCount] = useState(5);
   const [isStreakActive, setIsStreakActive] = useState(false);
   const [streakTaskTitle, setStreakTaskTitle] = useState("");
 
-  // Listen for global Cmd+K
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setIsCommandPaletteOpen((prev) => !prev);
-      } else if (e.key === "Escape") {
-        setSelectedTaskId(null);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  const handleOpenShortcuts = useCallback(() => {
+    setIsShortcutsOpen(true);
+    externalOpenShortcuts?.();
+  }, [externalOpenShortcuts]);
 
   // Compute counts
   const listCounts = useMemo(() => {
@@ -181,6 +188,19 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme }: AppWorkspaceInnerProps
     () => tasks.find((t) => t.id === selectedTaskId) || null,
     [tasks, selectedTaskId]
   );
+
+  // Visible tasks in current list & folder for keyboard navigation
+  const visibleTasks = useMemo(() => {
+    return tasks.filter((task) => {
+      if (activeList === "completed") {
+        if (!task.completed) return false;
+      } else {
+        if (task.list !== activeList) return false;
+      }
+      if (activeFolder && task.folder !== activeFolder) return false;
+      return true;
+    });
+  }, [tasks, activeList, activeFolder]);
 
   // Task Handlers
   const handleToggleComplete = useCallback(
@@ -246,6 +266,134 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme }: AppWorkspaceInnerProps
     [tasks, selectedTaskId, toast]
   );
 
+  // Global Keyboard Shortcuts Listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeElement = document.activeElement;
+      const isInput =
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement instanceof HTMLSelectElement ||
+        (activeElement as HTMLElement)?.isContentEditable;
+
+      // Handle Escape in all contexts
+      if (e.key === "Escape") {
+        if (isShortcutsOpen) {
+          setIsShortcutsOpen(false);
+          return;
+        }
+        if (isCommandPaletteOpen) {
+          setIsCommandPaletteOpen(false);
+          return;
+        }
+        if (selectedTaskId) {
+          setSelectedTaskId(null);
+          return;
+        }
+      }
+
+      // Handle Cmd+K / Ctrl+K in all contexts
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+        return;
+      }
+
+      // If user is focused on an input/editable, don't hijack single-character hotkeys
+      if (isInput) return;
+
+      // Modals open -> don't trigger workspace hotkeys
+      if (isShortcutsOpen || isCommandPaletteOpen) return;
+
+      // ? or Shift+/ -> Open Shortcuts Modal
+      if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+        e.preventDefault();
+        setIsShortcutsOpen(true);
+        return;
+      }
+
+      // / without modifiers -> Open Command Palette
+      if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setIsCommandPaletteOpen(true);
+        return;
+      }
+
+      // N -> Quick-focus task creation
+      if (e.key.toLowerCase() === "n" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
+        input?.focus();
+        return;
+      }
+
+      // J / ArrowDown -> Navigate to next task
+      if (
+        (e.key.toLowerCase() === "j" || e.key === "ArrowDown") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        if (visibleTasks.length === 0) return;
+        const currentIndex = visibleTasks.findIndex((t) => t.id === selectedTaskId);
+        if (currentIndex === -1 || currentIndex >= visibleTasks.length - 1) {
+          setSelectedTaskId(visibleTasks[0]?.id ?? null);
+        } else {
+          setSelectedTaskId(visibleTasks[currentIndex + 1]?.id ?? null);
+        }
+        return;
+      }
+
+      // K / ArrowUp -> Navigate to previous task
+      if (
+        (e.key.toLowerCase() === "k" || e.key === "ArrowUp") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        if (visibleTasks.length === 0) return;
+        const currentIndex = visibleTasks.findIndex((t) => t.id === selectedTaskId);
+        if (currentIndex <= 0) {
+          setSelectedTaskId(visibleTasks[visibleTasks.length - 1]?.id ?? null);
+        } else {
+          setSelectedTaskId(visibleTasks[currentIndex - 1]?.id ?? null);
+        }
+        return;
+      }
+
+      // Space or X -> Toggle selected task completion
+      if ((e.key === " " || e.key.toLowerCase() === "x") && selectedTaskId) {
+        e.preventDefault();
+        handleToggleComplete(selectedTaskId);
+        return;
+      }
+
+      // D or Backspace -> Delete selected task
+      if (
+        (e.key.toLowerCase() === "d" || e.key === "Backspace") &&
+        selectedTaskId &&
+        !e.ctrlKey &&
+        !e.metaKey
+      ) {
+        e.preventDefault();
+        handleDeleteTask(selectedTaskId);
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    isShortcutsOpen,
+    isCommandPaletteOpen,
+    selectedTaskId,
+    visibleTasks,
+    handleToggleComplete,
+    handleDeleteTask,
+  ]);
+
   const handleAddTask = useCallback(
     (data: { title: string; priority: Priority; folder: FolderId; list: ListId }) => {
       const newTask: TaskItem = {
@@ -293,6 +441,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme }: AppWorkspaceInnerProps
         isCollapsed={isSidebarCollapsed}
         onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
         onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+        onOpenShortcuts={handleOpenShortcuts}
         onNewTask={() => {
           // Focus or select add task
           const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
@@ -345,6 +494,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme }: AppWorkspaceInnerProps
         onToggleTheme={onToggleTheme}
         onToggleSidebar={() => setIsSidebarCollapsed((prev) => !prev)}
         onOpenAuth={onOpenAuth}
+        onOpenShortcuts={handleOpenShortcuts}
+      />
+
+      {/* Global Keyboard Shortcuts Modal */}
+      <KeyboardShortcutsModal
+        isOpen={isShortcutsOpen}
+        onClose={() => setIsShortcutsOpen(false)}
       />
 
       {/* Mobile Bottom Navigation */}
