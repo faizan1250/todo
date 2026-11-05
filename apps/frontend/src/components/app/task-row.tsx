@@ -12,10 +12,16 @@ interface TaskRowProps {
   isBulkSelected?: boolean;
   hasBulkSelection?: boolean;
   showListName?: boolean;
+  /** Nesting depth (1 = top level). Deeper rows get a subtle indent. */
+  depth?: number;
   onToggleComplete: (id: string) => void;
   onSelect: (task: TaskItem) => void;
   onDelete: (id: string) => void;
   onToggleBulkSelect?: (id: string, shiftKey: boolean) => void;
+  /** Right-click / Shift+F10 origin. The pane renders the shared menu. */
+  onContextMenuTask?: (task: TaskItem, anchor: { x: number; y: number }) => void;
+  /** Tab (indent) / Shift+Tab (outdent). The pane owns the move. */
+  onIndentTask?: (id: string, direction: "indent" | "outdent") => void;
 }
 
 export function TaskRow({
@@ -24,10 +30,13 @@ export function TaskRow({
   isBulkSelected = false,
   hasBulkSelection = false,
   showListName = false,
+  depth = 1,
   onToggleComplete,
   onSelect,
   onDelete,
   onToggleBulkSelect,
+  onContextMenuTask,
+  onIndentTask,
 }: TaskRowProps) {
   const isSelectionMode = Boolean(hasBulkSelection || isBulkSelected);
 
@@ -44,10 +53,17 @@ export function TaskRow({
   const totalChecklist = task.checklist.length;
   const hasNotes = Boolean(task.notes?.trim());
 
+  const anchorFromRect = (el: HTMLElement | null): { x: number; y: number } => {
+    if (!el) return { x: 0, y: 0 };
+    const rect = el.getBoundingClientRect();
+    return { x: Math.min(rect.left + 120, window.innerWidth - 240), y: rect.bottom + 4 };
+  };
+
   return (
     <div
       role="button"
       tabIndex={0}
+      data-task-id={task.id}
       aria-label={`Task: ${task.title}`}
       onClick={(e) => {
         if (onToggleBulkSelect && (e.shiftKey || e.metaKey || e.ctrlKey)) {
@@ -57,14 +73,29 @@ export function TaskRow({
           onSelect(task);
         }
       }}
+      onContextMenu={(e) => {
+        if (!onContextMenuTask) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenuTask(task, { x: e.clientX, y: e.clientY });
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           onSelect(task);
         } else if (e.key === " ") {
           e.preventDefault();
           onToggleComplete(task.id);
+        } else if (e.key === "Tab" && onIndentTask) {
+          e.preventDefault();
+          e.stopPropagation();
+          onIndentTask(task.id, e.shiftKey ? "outdent" : "indent");
+        } else if (e.key === "F10" && e.shiftKey && onContextMenuTask) {
+          e.preventDefault();
+          e.stopPropagation();
+          onContextMenuTask(task, anchorFromRect(e.currentTarget as HTMLElement));
         }
       }}
+      style={depth > 1 ? { paddingLeft: `${14 + (depth - 1) * 18}px` } : undefined}
       className={cn(
         "group relative flex h-14 items-center justify-between gap-3 border-b border-[#E4E8F2]/60 last:border-b-0 px-3.5 transition-colors duration-150 cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-[#FD91CC] focus:ring-offset-1 dark:border-[#132E74]/50 dark:focus:ring-offset-[#051A4D]",
         isBulkSelected
