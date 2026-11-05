@@ -151,14 +151,31 @@ export function TagPickerPopover({
     // Optimistic UI update
     onTagsUpdated(nextNames, nextIds);
 
-    // Call API if task ID is real. Task tag attach/detach stays on REST:
-    // the sync tasks "update" op skips tagIds server-side (no task_tags
-    // sync path exists), so mutating tagIds would be silently dropped.
+    // Offline-first tag attach/detach via the tasks setTags sync op
+    // (whole-set LWW, patch { tagIds: nextIds }). REST remains the fallback
+    // when there is no userId or Dexie throws.
     if (tag.id && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
-      try {
-        await replaceTaskTags(taskId, nextIds);
-      } catch (err) {
-        console.error("Failed to replace task tags on backend:", err);
+      if (userId) {
+        try {
+          await mutate(userId, {
+            entity: "tasks",
+            op: "setTags",
+            entityId: taskId,
+            patch: { tagIds: nextIds },
+          });
+        } catch {
+          try {
+            await replaceTaskTags(taskId, nextIds);
+          } catch (err) {
+            console.error("Failed to replace task tags on backend:", err);
+          }
+        }
+      } else {
+        try {
+          await replaceTaskTags(taskId, nextIds);
+        } catch (err) {
+          console.error("Failed to replace task tags on backend:", err);
+        }
       }
     }
   };
@@ -224,11 +241,31 @@ export function TagPickerPopover({
 
       onTagsUpdated(nextNames, nextIds);
 
+      // Attach the created tag via setTags (whole-set replace with the full
+      // new id array). REST remains the fallback when there is no userId or
+      // Dexie throws.
       if (!taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
-        try {
-          await replaceTaskTags(taskId, nextIds);
-        } catch (replaceErr) {
-          console.error("Failed to assign created tag to task:", replaceErr);
+        if (userId) {
+          try {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "setTags",
+              entityId: taskId,
+              patch: { tagIds: nextIds },
+            });
+          } catch {
+            try {
+              await replaceTaskTags(taskId, nextIds);
+            } catch (replaceErr) {
+              console.error("Failed to assign created tag to task:", replaceErr);
+            }
+          }
+        } else {
+          try {
+            await replaceTaskTags(taskId, nextIds);
+          } catch (replaceErr) {
+            console.error("Failed to assign created tag to task:", replaceErr);
+          }
         }
       }
 

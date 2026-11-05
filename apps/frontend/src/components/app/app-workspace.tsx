@@ -2171,24 +2171,39 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   );
 
   const handleUpdateTags = useCallback(
-    // Task tag attach/detach stays on REST: the sync tasks "update" op
-    // skips tagIds server-side (no task_tags sync path), so a mutate
-    // update carrying tagIds would be silently dropped.
+    // Offline-first tag attach/detach via the tasks setTags sync op
+    // (whole-set LWW, patch { tagIds }). REST remains the fallback when
+    // there is no userId or Dexie throws. An empty array is a valid set
+    // (detach-all), so only the array's presence is required.
     (tagNames: string[], tagIds?: string[]) => {
       if (
         isAuthenticated &&
         selectedTaskId &&
         tagIds &&
-        tagIds.length > 0 &&
         !selectedTaskId.startsWith("temp-") &&
         !selectedTaskId.startsWith("task-")
       ) {
-        replaceTaskTags(selectedTaskId, tagIds).catch((err) => {
-          console.error("Failed to replace tags on backend:", err);
-        });
+        const taskId = selectedTaskId;
+        const nextIds = [...tagIds];
+        if (userId) {
+          mutate(userId, {
+            entity: "tasks",
+            op: "setTags",
+            entityId: taskId,
+            patch: { tagIds: nextIds },
+          }).catch(() => {
+            replaceTaskTags(taskId, nextIds).catch((err) => {
+              console.error("Failed to replace tags on backend:", err);
+            });
+          });
+        } else {
+          replaceTaskTags(taskId, nextIds).catch((err) => {
+            console.error("Failed to replace tags on backend:", err);
+          });
+        }
       }
     },
-    [isAuthenticated, selectedTaskId]
+    [isAuthenticated, selectedTaskId, userId]
   );
 
   const handleLoadMoreView = useCallback(async () => {

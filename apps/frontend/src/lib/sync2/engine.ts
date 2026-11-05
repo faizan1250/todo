@@ -2,7 +2,7 @@
 //
 // pushPhase: oldest-first outbox drain in batches of 100. srcOp is stripped
 // per the Day-1b note: create -> create, plain upsert -> update, domain ops
-// (complete/move/restore) -> their op with the stored patch.
+// (complete/move/restore/setTags) -> their op with the stored patch.
 //   applied|duplicate -> entry removed.
 //   rejected          -> entry removed AND local row deleted so the next pull
 //                        restores server truth; ConflictToast event fires.
@@ -68,6 +68,8 @@ function toPushOp(entry: LocalOutboxEntry): string {
       return "move";
     case "restore":
       return "restore";
+    case "setTags":
+      return "setTags";
     default:
       return "update";
   }
