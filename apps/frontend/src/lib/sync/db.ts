@@ -6,12 +6,15 @@ export interface SyncMeta {
 }
 
 export interface OutboxEntry {
-  id?: number;
+  id: string;
   entity: string;
-  operation: string;
-  payload: unknown;
+  op: string;
+  entityId: string;
+  patch?: any;
+  editedAt: number;
+  schemaVersion?: number;
   createdAt: number;
-  attempts?: number;
+  attempts: number;
 }
 
 const entityStores: Record<string, string> = {
@@ -45,14 +48,14 @@ export class TodoDB extends Dexie {
   savedFilters!: Table<any, string>;
   timeBlocks!: Table<any, string>;
   user!: Table<any, string>;
-  outbox!: Table<OutboxEntry, number>;
+  outbox!: Table<OutboxEntry, string>;
   meta!: Table<SyncMeta, string>;
 
   constructor() {
     super("TodoDB");
-    this.version(1).stores({
+    this.version(2).stores({
       ...entityStores,
-      outbox: "++id, entity, createdAt",
+      outbox: "id, entity, createdAt",
       meta: "key",
     });
   }
