@@ -19,6 +19,13 @@ export const metadata: Metadata = {
   title: "Todo Studio",
   description:
     "High-performance task orchestration interface paired with ElysiaJS backend",
+  manifest: "/manifest.webmanifest",
+  icons: [{ rel: "icon", url: "/icon.svg", type: "image/svg+xml" }],
+  appleWebApp: {
+    capable: true,
+    title: "Todo Studio",
+    statusBarStyle: "default",
+  },
 };
 
 export const viewport: Viewport = {
@@ -48,7 +55,7 @@ export default function RootLayout({
         >
           <AuthProvider>
             {children}
-            <Toaster richColors position="top-center" />
+            <Toaster richColors position="bottom-center" />
           </AuthProvider>
         </ThemeProvider>
       </body>

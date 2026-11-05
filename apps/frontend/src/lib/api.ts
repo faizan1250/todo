@@ -1561,3 +1561,37 @@ export async function scheduleTask(data: {
     body: JSON.stringify(data),
   });
 }
+
+// -------------------------------------------------------------
+// Sync conflicts API (/api/v1/sync/conflicts)
+// -------------------------------------------------------------
+
+export interface SyncConflict {
+  id: string;
+  entity: string;
+  entityId: string;
+  field: string;
+  losingValue: string;
+  winningValue: string;
+  at: number;
+  taskTitle: string | null;
+}
+
+export interface SyncConflictsResponse {
+  conflicts: SyncConflict[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export async function getSyncConflicts(params?: {
+  limit?: number;
+  cursor?: string;
+}): Promise<SyncConflictsResponse> {
+  const query = new URLSearchParams();
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.cursor) query.set("cursor", params.cursor);
+  const qs = query.toString();
+  return apiFetch<SyncConflictsResponse>(
+    `/api/v1/sync/conflicts${qs ? `?${qs}` : ""}`
+  );
+}

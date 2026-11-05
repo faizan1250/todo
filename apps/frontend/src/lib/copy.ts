@@ -1,4 +1,26 @@
 // User-facing copy. Plain words only — no technical jargon.
+
+// Friendly date for save times. Today and yesterday get names,
+// older days get a short date like "Mar 4, 5:00 PM".
+export const formatFriendlyDate = (timestamp: number | null): string | null => {
+  if (timestamp == null) return null;
+  const date = new Date(timestamp);
+  const time = date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const now = new Date();
+  const isSameDay = (a: Date, b: Date): boolean =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+  if (isSameDay(date, now)) return `Today, ${time}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameDay(date, yesterday)) return `Yesterday, ${time}`;
+  return `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+};
+
 export const copy = {
   auth: {
     signInTitle: "Welcome back",
@@ -89,6 +111,36 @@ export const copy = {
     dangerZone: "Danger zone",
     deleteAccount: "Delete account",
     deleteConfirm: "This cannot be undone. Type your email to confirm.",
+  },
+  // Save status wording. Short lines a young reader can follow.
+  sync: {
+    allSaved: "All changes saved",
+    saving: "Saving…",
+    savingCount: (n: number): string =>
+      n === 1 ? "Saving 1 change…" : `Saving ${n} changes…`,
+    offlineBanner:
+      "You're offline. Changes stay on this device and will send when you're back.",
+    backOnline: "Back online. Catching up…",
+    settingUp: "Getting things ready…",
+    refreshing: "Getting the latest changes…",
+    stuck: "Having trouble saving. We'll keep trying.",
+    newVersion: "A new version is ready. Refresh to get it.",
+    waitingCount: (n: number): string =>
+      n === 1 ? "1 change waiting" : `${n} changes waiting`,
+    conflictKept: (name: string): string => `Kept your copy of "${name}".`,
+    deletedElsewhere: "Removed on another device.",
+    rejectedReverted: "One change didn't work, so we put it back.",
+    updatedFromDevice: (deviceName: string): string =>
+      `Updated from ${deviceName}.`,
+    showNewVersion: "See what's new",
+    keepMine: "Keep mine",
+    saveNow: "Save now",
+    title: "Save details",
+    close: "Close",
+    lastUpdated: (ts: number | null): string | null => {
+      const friendly = formatFriendlyDate(ts);
+      return friendly === null ? null : `Last updated ${friendly}`;
+    },
   },
 } as const;
 

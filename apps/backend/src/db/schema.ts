@@ -457,12 +457,20 @@ export const processedMutations = sqliteTable(
   (t) => [primaryKey({ columns: [t.userId, t.id] })]
 );
 
-export const syncConflicts = sqliteTable("sync_conflicts", {
-  id: uuid(),
-  entity: text("entity").notNull(),
-  entityId: text("entity_id").notNull(),
-  field: text("field").notNull(),
-  losingValue: text("losing_value"),
-  winningValue: text("winning_value"),
-  at: ts("at"),
-});
+export const syncConflicts = sqliteTable(
+  "sync_conflicts",
+  {
+    id: uuid(),
+    entity: text("entity").notNull(),
+    entityId: text("entity_id").notNull(),
+    field: text("field").notNull(),
+    losingValue: text("losing_value"),
+    winningValue: text("winning_value"),
+    at: ts("at"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    deviceId: text("device_id"),
+  },
+  (t) => [index("sync_conflicts_user_at_idx").on(t.userId, t.at)]
+);

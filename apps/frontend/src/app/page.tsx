@@ -14,6 +14,7 @@ import {
   ErrorBoundary,
 } from "@/components/app";
 import { Sparkles, LayoutDashboard, Globe, HelpCircle } from "lucide-react";
+import { SyncEngineMount } from "@/components/sync/EngineMount";
 import { cn } from "@/lib/utils";
 
 export default function HomePage() {
@@ -123,6 +124,8 @@ export default function HomePage() {
       <div className="flex justify-center px-4 pt-2">
         <SyncStatus />
       </div>
+      {/* New engine (Phase 5 cutover 6a): runs alongside old engine for now */}
+      <SyncEngineMount />
 
       {/* Main View Area with Error Boundary */}
       <main className="flex-1 flex flex-col">

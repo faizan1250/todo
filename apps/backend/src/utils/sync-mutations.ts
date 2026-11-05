@@ -163,7 +163,55 @@ const DATE_FIELDS_BY_ENTITY: Record<string, Set<string>> = {
   user: new Set([]),
 };
 
-async function applySimpleMutation(tx: any, userId: string, m: Mutation, entity: string, now: Date, editedAt: number): Promise<MutationResult> {
+interface ConflictDraft {
+  entity: string;
+  entityId: string;
+  field: string;
+  losingValue: string | null;
+  winningValue: string | null;
+  userId: string;
+  deviceId: string | null;
+  at: Date;
+}
+
+function safeStringify(val: unknown): string | null {
+  if (val === undefined) return null;
+  try {
+    const s = JSON.stringify(val);
+    return s ?? null;
+  } catch {
+    try {
+      return String(val);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function draftConflict(
+  pending: ConflictDraft[],
+  entity: string,
+  entityId: string,
+  field: string,
+  losing: unknown,
+  winning: unknown,
+  userId: string,
+  deviceId: string | null,
+  at: Date
+): void {
+  pending.push({
+    entity,
+    entityId,
+    field,
+    losingValue: safeStringify(losing),
+    winningValue: safeStringify(winning),
+    userId,
+    deviceId,
+    at,
+  });
+}
+
+async function applySimpleMutation(tx: any, userId: string, deviceId: string | null, m: Mutation, entity: string, now: Date, editedAt: number, pending: ConflictDraft[]): Promise<MutationResult> {
   const table = ENTITY_TABLE[entity];
   const fieldMap = FIELD_MAP[entity];
   const dateFields = DATE_FIELDS_BY_ENTITY[entity];
@@ -308,7 +356,10 @@ async function applySimpleMutation(tx: any, userId: string, m: Mutation, entity:
         const canon = fieldMap[k];
         // LWW
         const ts = existing.fieldTs?.[canon] ?? 0;
-        if (ts > editedAt) continue;
+        if (ts > editedAt) {
+          draftConflict(pending, entity, m.entityId, canon, patch[k], existing[canon], userId, deviceId, now);
+          continue;
+        }
         updates[canon] = patch[k];
         newFieldTs[canon] = editedAt;
       }
@@ -450,9 +501,406 @@ async function applySimpleMutation(tx: any, userId: string, m: Mutation, entity:
 }
 
 
+const CONTAINER_TABLE: Record<string, any> = {
+  folders: schema.folders,
+  lists: schema.lists,
+  sections: schema.sections,
+  checklistItems: schema.checklistItems,
+  tags: schema.tags,
+};
+
+const CONTAINER_FIELDS: Record<string, Record<string, string>> = {
+  folders: { name: "name", color: "color", icon: "icon", position: "position" },
+  lists: {
+    name: "name", folderId: "folderId", folder_id: "folderId",
+    color: "color", icon: "icon",
+    viewType: "viewType", view_type: "viewType", position: "position",
+  },
+  sections: { name: "name", listId: "listId", list_id: "listId", position: "position" },
+  checklistItems: {
+    taskId: "taskId", task_id: "taskId",
+    text: "text", done: "done", position: "position",
+  },
+  tags: { name: "name", color: "color" },
+};
+
+const CONTAINER_ENTITIES = new Set([
+  "folders",
+  "lists",
+  "sections",
+  "checklistItems",
+  "tags",
+]);
+
+const LIST_VIEW_TYPES = new Set(["list", "board", "calendar"]);
+
+function validName(name: unknown, max = 100): string | null {
+  if (typeof name !== "string") return null;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > max) return null;
+  return trimmed;
+}
+
+async function findActiveFolder(tx: any, userId: string, folderId: string): Promise<any> {
+  return tx.select().from(schema.folders).where(
+    and(eq(schema.folders.id, folderId), eq(schema.folders.userId, userId), isNull(schema.folders.deletedAt))
+  ).get();
+}
+
+async function findActiveList(tx: any, userId: string, listId: string): Promise<any> {
+  return tx.select().from(schema.lists).where(
+    and(eq(schema.lists.id, listId), eq(schema.lists.userId, userId), isNull(schema.lists.deletedAt))
+  ).get();
+}
+
+async function findActiveTask(tx: any, userId: string, taskId: string): Promise<any> {
+  return tx.select().from(schema.tasks).where(
+    and(eq(schema.tasks.id, taskId), eq(schema.tasks.userId, userId), isNull(schema.tasks.deletedAt))
+  ).get();
+}
+
+async function tagNameTaken(tx: any, userId: string, name: string, excludeId?: string): Promise<boolean> {
+  const conds: any[] = [
+    eq(schema.tags.userId, userId),
+    sql`lower(${schema.tags.name}) = lower(${name})`,
+    isNull(schema.tags.deletedAt),
+  ];
+  if (excludeId) conds.push(ne(schema.tags.id, excludeId));
+  const row = tx.select().from(schema.tags).where(and(...conds)).get();
+  return !!row;
+}
+
+async function applyContainerMutation(tx: any, userId: string, deviceId: string | null, m: Mutation, entity: string, now: Date, editedAt: number, pending: ConflictDraft[]): Promise<MutationResult> {
+  const table = CONTAINER_TABLE[entity];
+  const fieldMap = CONTAINER_FIELDS[entity];
+
+  switch (m.op) {
+    case "create": {
+      const existing = tx.select().from(table).where(eq(table.id, m.entityId)).get();
+      if (existing) {
+        if (existing.userId !== userId) return { id: m.id, status: "rejected", reason: "not_found" };
+        return { id: m.id, status: "rejected", reason: "id_taken" };
+      }
+
+      const patch = m.patch ?? {};
+      const values: Record<string, any> = { id: m.entityId, userId };
+
+      if (entity === "folders") {
+        const name = validName(patch.name);
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        values.name = name;
+        values.color = patch.color ?? null;
+        values.icon = patch.icon ?? null;
+        values.position = patch.position ?? await positionBetween({ table, where: eq(table.userId, userId) });
+      } else if (entity === "lists") {
+        const name = validName(patch.name);
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        values.name = name;
+        const folderId = patch.folderId ?? patch.folder_id ?? null;
+        if (folderId) {
+          const folder = await findActiveFolder(tx, userId, folderId);
+          if (!folder) return { id: m.id, status: "rejected", reason: "not_found" };
+        }
+        values.folderId = folderId;
+        const viewType = patch.viewType ?? patch.view_type ?? "list";
+        if (!LIST_VIEW_TYPES.has(viewType)) return { id: m.id, status: "rejected", reason: "invalid_view_type" };
+        values.viewType = viewType;
+        values.color = patch.color ?? null;
+        values.icon = patch.icon ?? null;
+        values.isInbox = false;
+        values.archivedAt = null;
+        values.position = patch.position ?? await positionBetween({ table, where: eq(table.userId, userId) });
+      } else if (entity === "sections") {
+        const listId = patch.listId ?? patch.list_id;
+        if (!listId) return { id: m.id, status: "rejected", reason: "list_required" };
+        const list = await findActiveList(tx, userId, listId);
+        if (!list) return { id: m.id, status: "rejected", reason: "not_found" };
+        const name = validName(patch.name);
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        values.listId = listId;
+        values.name = name;
+        values.position = patch.position ?? await positionBetween({
+          table, where: and(eq(table.listId, listId), eq(table.userId, userId)),
+        });
+      } else if (entity === "checklistItems") {
+        const taskId = patch.taskId ?? patch.task_id;
+        if (!taskId) return { id: m.id, status: "rejected", reason: "task_required" };
+        const task = await findActiveTask(tx, userId, taskId);
+        if (!task) return { id: m.id, status: "rejected", reason: "not_found" };
+        const text = validName(patch.text, 500);
+        if (!text) return { id: m.id, status: "rejected", reason: "invalid_text" };
+        values.taskId = taskId;
+        values.text = text;
+        values.done = patch.done ?? false;
+        values.position = patch.position ?? await positionBetween({
+          table, where: and(eq(table.taskId, taskId), eq(table.userId, userId)),
+        });
+      } else if (entity === "tags") {
+        const name = validName(patch.name);
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        if (await tagNameTaken(tx, userId, name)) return { id: m.id, status: "rejected", reason: "tag_taken" };
+        values.name = name;
+        values.color = patch.color ?? null;
+      }
+
+      values.version = 1;
+      values.createdAt = now;
+      values.updatedAt = now;
+      values.deletedAt = null;
+      const fieldTs: Record<string, number> = {};
+      for (const k of Object.keys(patch)) {
+        const canon = fieldMap[k];
+        if (canon) fieldTs[canon] = editedAt;
+      }
+      values.fieldTs = fieldTs;
+
+      tx.insert(table).values(values).run();
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    case "update": {
+      const existing = tx.select().from(table).where(
+        and(eq(table.id, m.entityId), eq(table.userId, userId), isNull(table.deletedAt))
+      ).get();
+      if (!existing) {
+        const anyRow = tx.select().from(table).where(eq(table.id, m.entityId)).get();
+        if (anyRow && anyRow.userId !== userId) return { id: m.id, status: "rejected", reason: "not_found" };
+        return { id: m.id, status: "rejected", reason: "not_found" };
+      }
+
+      const patch = m.patch ?? {};
+      const updates: Record<string, any> = {};
+      const newFieldTs = { ...(existing.fieldTs ?? {}) };
+
+      for (const k of Object.keys(patch)) {
+        if (!(k in fieldMap)) continue;
+        const canon = fieldMap[k];
+        if (canon === "position") continue; // position changes go through move
+        // Parent-link changes are validated moves, not LWW field edits.
+        if (entity === "sections" && canon === "listId") continue;
+        if (entity === "checklistItems" && canon === "taskId") continue;
+        const ts = existing.fieldTs?.[canon] ?? 0;
+        if (ts > editedAt) {
+          draftConflict(pending, entity, m.entityId, canon, patch[k], existing[canon], userId, deviceId, now);
+          continue;
+        }
+        updates[canon] = patch[k];
+        newFieldTs[canon] = editedAt;
+      }
+
+      if (entity === "sections" && (patch.listId !== undefined || patch.list_id !== undefined)) {
+        const nextListId = patch.listId ?? patch.list_id;
+        if (nextListId !== existing.listId) {
+          return { id: m.id, status: "rejected", reason: "invalid_move" };
+        }
+      }
+      if (entity === "checklistItems" && (patch.taskId !== undefined || patch.task_id !== undefined)) {
+        const nextTaskId = patch.taskId ?? patch.task_id;
+        if (nextTaskId !== existing.taskId) {
+          return { id: m.id, status: "rejected", reason: "invalid_move" };
+        }
+      }
+
+      if (updates.name !== undefined && entity !== "checklistItems") {
+        const name = validName(updates.name);
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        updates.name = name;
+      }
+      if (entity === "checklistItems" && updates.text !== undefined) {
+        const text = validName(updates.text, 500);
+        if (!text) return { id: m.id, status: "rejected", reason: "invalid_text" };
+        updates.text = text;
+      }
+      if (entity === "lists") {
+        if (updates.folderId !== undefined) {
+          const folderId = updates.folderId ?? null;
+          if (folderId) {
+            const folder = await findActiveFolder(tx, userId, folderId);
+            if (!folder) return { id: m.id, status: "rejected", reason: "not_found" };
+          }
+          updates.folderId = folderId;
+        }
+        if (updates.viewType !== undefined && !LIST_VIEW_TYPES.has(updates.viewType)) {
+          return { id: m.id, status: "rejected", reason: "invalid_view_type" };
+        }
+      }
+      if (entity === "tags" && updates.name !== undefined) {
+        const name = validName(updates.name);
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        if (await tagNameTaken(tx, userId, name, m.entityId)) return { id: m.id, status: "rejected", reason: "tag_taken" };
+        updates.name = name;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        const version = readVersionGeneric(tx, table, m.entityId)!;
+        const seq = readSeqGeneric(tx, table, m.entityId)!;
+        return { id: m.id, status: "applied", version, seq };
+      }
+
+      updates.version = sql`${table.version} + 1`;
+      updates.updatedAt = now;
+      updates.fieldTs = newFieldTs;
+
+      tx.update(table).set(updates).where(
+        and(eq(table.id, m.entityId), eq(table.userId, userId))
+      ).run();
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    case "delete": {
+      const existing = tx.select().from(table).where(
+        and(eq(table.id, m.entityId), eq(table.userId, userId), isNull(table.deletedAt))
+      ).get();
+      if (!existing) return { id: m.id, status: "rejected", reason: "not_found" };
+
+      if (entity === "lists" && existing.isInbox) {
+        return { id: m.id, status: "rejected", reason: "inbox_protected" };
+      }
+
+      tx.update(table).set({ deletedAt: now, updatedAt: now, version: sql`${table.version} + 1` }).where(
+        and(eq(table.id, m.entityId), eq(table.userId, userId))
+      ).run();
+
+      if (entity === "folders") {
+        // Mirror REST: move child lists to root.
+        tx.update(schema.lists).set({
+          folderId: null, updatedAt: now, version: sql`${schema.lists.version} + 1`,
+        }).where(
+          and(eq(schema.lists.folderId, m.entityId), eq(schema.lists.userId, userId), isNull(schema.lists.deletedAt))
+        ).run();
+      } else if (entity === "lists") {
+        // Mirror REST: cascade soft-delete tasks in the list.
+        tx.update(schema.tasks).set({
+          deletedAt: now, updatedAt: now, version: sql`${schema.tasks.version} + 1`,
+        }).where(
+          and(eq(schema.tasks.listId, m.entityId), eq(schema.tasks.userId, userId), isNull(schema.tasks.deletedAt))
+        ).run();
+      } else if (entity === "sections") {
+        // Mirror REST: disassociate tasks from the section.
+        tx.update(schema.tasks).set({
+          sectionId: null, updatedAt: now, version: sql`${schema.tasks.version} + 1`,
+        }).where(
+          and(eq(schema.tasks.sectionId, m.entityId), eq(schema.tasks.userId, userId), isNull(schema.tasks.deletedAt))
+        ).run();
+      }
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    case "restore": {
+      const existing = tx.select().from(table).where(
+        and(eq(table.id, m.entityId), eq(table.userId, userId), sql`${table.deletedAt} IS NOT NULL`)
+      ).get();
+      if (!existing) return { id: m.id, status: "rejected", reason: "not_found" };
+
+      const sets: Record<string, any> = {
+        deletedAt: null, updatedAt: now, version: sql`${table.version} + 1`,
+      };
+
+      if (entity === "lists") {
+        // Mirror trash restore: reattach folder only if still active.
+        let targetFolderId = existing.folderId;
+        if (targetFolderId) {
+          const folder = await findActiveFolder(tx, userId, targetFolderId);
+          if (!folder) targetFolderId = null;
+        }
+        sets.folderId = targetFolderId;
+      } else if (entity === "sections") {
+        // Mirror trash restore: parent list must be active.
+        const list = await findActiveList(tx, userId, existing.listId);
+        if (!list) return { id: m.id, status: "rejected", reason: "deleted_list" };
+      } else if (entity === "checklistItems") {
+        const task = await findActiveTask(tx, userId, existing.taskId);
+        if (!task) return { id: m.id, status: "rejected", reason: "deleted_task" };
+      } else if (entity === "tags") {
+        if (await tagNameTaken(tx, userId, existing.name, m.entityId)) {
+          return { id: m.id, status: "rejected", reason: "tag_taken" };
+        }
+      }
+
+      tx.update(table).set(sets).where(
+        and(eq(table.id, m.entityId), eq(table.userId, userId))
+      ).run();
+
+      if (entity === "lists") {
+        // Mirror trash restore: revive tasks deleted in the same cascade.
+        const targetStamp = existing.deletedAt!.getTime();
+        sqlite.run(
+          `UPDATE tasks
+           SET deleted_at = NULL, updated_at = ?1, version = version + 1
+           WHERE list_id = ?2 AND user_id = ?3 AND deleted_at = ?4;`,
+          [now.getTime(), m.entityId, userId, targetStamp]
+        );
+      }
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    case "move": {
+      const existing = tx.select().from(table).where(
+        and(eq(table.id, m.entityId), eq(table.userId, userId), isNull(table.deletedAt))
+      ).get();
+      if (!existing) return { id: m.id, status: "rejected", reason: "not_found" };
+
+      if (entity === "tags") return { id: m.id, status: "rejected", reason: "unsupported_op" };
+
+      const patch = m.patch ?? {};
+      const sets: Record<string, any> = {
+        updatedAt: now, version: sql`${table.version} + 1`,
+      };
+
+      let scope: any;
+      if (entity === "folders") {
+        scope = { table, where: eq(table.userId, userId), excludeId: m.entityId };
+      } else if (entity === "lists") {
+        if (patch.folderId !== undefined || patch.folder_id !== undefined) {
+          const folderId = patch.folderId ?? patch.folder_id ?? null;
+          if (folderId) {
+            const folder = await findActiveFolder(tx, userId, folderId);
+            if (!folder) return { id: m.id, status: "rejected", reason: "not_found" };
+          }
+          sets.folderId = folderId;
+        }
+        scope = { table, where: eq(table.userId, userId), excludeId: m.entityId };
+      } else if (entity === "sections") {
+        scope = { table, where: and(eq(table.listId, existing.listId), eq(table.userId, userId)), excludeId: m.entityId };
+      } else {
+        scope = { table, where: and(eq(table.taskId, existing.taskId), eq(table.userId, userId)), excludeId: m.entityId };
+      }
+
+      sets.position = patch.position ?? await positionBetween(
+        scope, patch.afterId ?? null, patch.beforeId ?? null
+      );
+
+      tx.update(table).set(sets).where(
+        and(eq(table.id, m.entityId), eq(table.userId, userId))
+      ).run();
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    default:
+      return { id: m.id, status: "rejected", reason: "unknown_op" };
+  }
+}
+
+
 function normalizeEntity(e: string): string {
   if (e === "saved_filters") return "savedFilters";
   if (e === "time_blocks") return "timeBlocks";
+  if (e === "checklist_items" || e === "checklist") return "checklistItems";
   return e;
 }
 
@@ -466,17 +914,21 @@ const SIMPLE_ENTITIES = new Set([
   "user",
 ]);
 
-async function applyMutation(tx: any, userId: string, m: Mutation): Promise<MutationResult> {
+async function applyMutation(tx: any, userId: string, deviceId: string | null, m: Mutation, pending: ConflictDraft[]): Promise<MutationResult> {
   const entity = normalizeEntity(m.entity);
   const now = new Date();
   const editedAt = clampEditedAt(m.editedAt);
 
-  if (entity !== "tasks" && !SIMPLE_ENTITIES.has(entity)) {
+  if (entity !== "tasks" && !SIMPLE_ENTITIES.has(entity) && !CONTAINER_ENTITIES.has(entity)) {
     return { id: m.id, status: "rejected", reason: "unsupported_entity" };
   }
 
+  if (CONTAINER_ENTITIES.has(entity)) {
+    return await applyContainerMutation(tx, userId, deviceId, m, entity, now, editedAt, pending);
+  }
+
   if (entity !== "tasks") {
-    return await applySimpleMutation(tx, userId, m, entity, now, editedAt);
+    return await applySimpleMutation(tx, userId, deviceId, m, entity, now, editedAt, pending);
   }
 
   switch (m.op) {
@@ -666,6 +1118,8 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
           updates.parentId = nextParentId;
           updates.listId = nextListId;
           newFieldTs[fieldKey] = editedAt;
+        } else {
+          draftConflict(pending, entity, m.entityId, fieldKey, patch.parentId ?? null, existing.parentId, userId, deviceId, now);
         }
       }
 
@@ -688,6 +1142,8 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
             shouldUpdateDescendantList = true;
             updates.listId = nextListId;
             newFieldTs.listId = editedAt;
+          } else {
+            draftConflict(pending, entity, m.entityId, "listId", patch.listId, existing.listId, userId, deviceId, now);
           }
         }
       }
@@ -710,6 +1166,8 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
           }
           updates.sectionId = val;
           newFieldTs.sectionId = editedAt;
+        } else {
+          draftConflict(pending, entity, m.entityId, "sectionId", patch.sectionId, existing.sectionId, userId, deviceId, now);
         }
       }
 
@@ -718,7 +1176,10 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
       for (const [canon, val] of Object.entries(patch)) {
         if (skip.has(canon)) continue;
         const ts = (existing.fieldTs?.[canon] ?? 0);
-        if (ts > editedAt) continue;
+        if (ts > editedAt) {
+          draftConflict(pending, entity, m.entityId, canon, val, (existing as Record<string, unknown>)[canon], userId, deviceId, now);
+          continue;
+        }
         // validate place
         if (canon === "placeId" && val) {
           const place = tx.select().from(schema.places).where(and(eq(schema.places.id, val), eq(schema.places.userId, userId), isNull(schema.places.deletedAt))).get();
@@ -1078,7 +1539,24 @@ export async function processMutations(
     }
 
     const result = await db.transaction(async (tx) => {
-      const r = await applyMutation(tx, userId, mutation);
+      const pending: ConflictDraft[] = [];
+      const r = await applyMutation(tx, userId, deviceId, mutation, pending);
+      if (r.status === "applied") {
+        for (const c of pending) {
+          tx.insert(schema.syncConflicts)
+            .values({
+              entity: c.entity,
+              entityId: c.entityId,
+              field: c.field,
+              losingValue: c.losingValue,
+              winningValue: c.winningValue,
+              at: c.at,
+              userId: c.userId,
+              deviceId: c.deviceId,
+            })
+            .run();
+        }
+      }
       tx.insert(schema.processedMutations)
         .values({
           userId,

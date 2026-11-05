@@ -20,6 +20,8 @@ import { BulkActionToolbar } from "./bulk-action-toolbar";
 import { TrashModal } from "./trash-modal";
 import { TemplatesModal } from "./templates-modal";
 import { useAuth } from "@/components/auth";
+import { v7 as uuidv7 } from "uuid";
+import { mutate } from "@/lib/data/mutate";
 import {
   getLists,
   getFolders,
@@ -62,15 +64,55 @@ import {
   type BackendFolder,
   type BackendTask,
   type BackendViewCountsResponse,
+  type TaskCompletionResult,
 } from "@/lib/api";
 import {
   backendTaskToTaskItem,
   priorityUiToBackend,
   taskItemToBackendUpdateInput,
 } from "@/lib/adapters";
+import { getListTasks } from "@/lib/data/queries/list";
+import { dexieRowsToTaskItems } from "@/lib/data/adapters";
 import type { TaskItem, ListId, FolderId, Priority, ViewMode } from "./types";
 
 const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
+
+// Phase 5 cutover 6c: offline-first task writes via lib/data/mutate (Dexie +
+// outbox, position auto-appended on create). REST remains the fallback when
+// there is no userId or Dexie throws (e.g. no IndexedDB). Helpers below
+// resolve with the REST result on fallback, or with null when the local
+// write was accepted (callers then skip server-echo reconciliation; the
+// sync pull brings server truth back).
+async function persistTaskComplete(
+  userId: string | null,
+  id: string
+): Promise<TaskCompletionResult | null> {
+  if (!userId) return completeTask(id);
+  try {
+    await mutate(userId, { entity: "tasks", op: "complete", entityId: id, patch: {} });
+    return null;
+  } catch {
+    return completeTask(id);
+  }
+}
+
+async function persistTaskReopen(
+  userId: string | null,
+  id: string
+): Promise<BackendTask | null> {
+  if (!userId) return reopenTask(id);
+  try {
+    await mutate(userId, {
+      entity: "tasks",
+      op: "update",
+      entityId: id,
+      patch: { status: "todo", completedAt: null },
+    });
+    return null;
+  } catch {
+    return reopenTask(id);
+  }
+}
 
 const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
   {
@@ -294,7 +336,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const { toast, success } = useToast();
   const auth = useAuth();
   const { isAuthenticated, user } = auth;
-  void user;
+  const userId = user?.id ?? null;
 
   const [tasks, setTasks] = useState<TaskItem[]>(INITIAL_WORKSPACE_TASKS);
   const [userLists, setUserLists] = useState<BackendList[]>([]);
@@ -694,6 +736,10 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     void loadTasks();
   }, [isAuthenticated, activeList, activeListId, loadTasks]);
 
+  // Dexie-first list read (Phase 5 cutover 6b): when the per-user local DB
+  // already holds rows for this list, render from Dexie and skip REST.
+  // Empty local store (pre-first-sync) or any Dexie error falls back to the
+  // intact REST path below. Writes stay on REST (untouched).
   useEffect(() => {
     if (!isAuthenticated) return;
     let isMounted = true;
@@ -705,35 +751,61 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       queryParams.listId = activeListId;
     }
 
-    getTasks(queryParams)
-      .then((res) => {
-        if (!isMounted) return;
-        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
-        setTasks(mapped);
-        if (mapped.length > 0) {
-          setSelectedTaskId((prev) =>
-            prev && mapped.some((t) => t.id === prev) ? prev : mapped[0].id
-          );
-        } else {
-          setSelectedTaskId(null);
-        }
-        setIsLoadingTasks(false);
-      })
-      .catch((err) => {
-        if (!isMounted) return;
-        console.error("Failed to load tasks:", err);
-        toast({
-          title: "Failed to load tasks",
-          message: err instanceof Error ? err.message : "Network error",
-          type: "error",
+    const applyItems = (mapped: TaskItem[]) => {
+      if (!isMounted) return;
+      setTasks(mapped);
+      if (mapped.length > 0) {
+        setSelectedTaskId((prev) =>
+          prev && mapped.some((t) => t.id === prev) ? prev : mapped[0].id
+        );
+      } else {
+        setSelectedTaskId(null);
+      }
+      setIsLoadingTasks(false);
+    };
+
+    const loadViaRest = () => {
+      getTasks(queryParams)
+        .then((res) => {
+          if (!isMounted) return;
+          applyItems(res.items.map((t) => backendTaskToTaskItem(t)));
+        })
+        .catch((err) => {
+          if (!isMounted) return;
+          console.error("Failed to load tasks:", err);
+          toast({
+            title: "Failed to load tasks",
+            message: err instanceof Error ? err.message : "Network error",
+            type: "error",
+          });
+          setIsLoadingTasks(false);
         });
-        setIsLoadingTasks(false);
-      });
+    };
+
+    const run = async () => {
+      if (userId && activeListId) {
+        try {
+          const local = await getListTasks(userId, activeListId);
+          if (!isMounted) return;
+          if (local.length > 0) {
+            applyItems(await dexieRowsToTaskItems(userId, local));
+            return;
+          }
+          // No local rows yet (pre-first-sync): fall through to REST.
+        } catch (err) {
+          console.error("Dexie list read failed, falling back to REST:", err);
+        }
+        if (!isMounted) return;
+      }
+      loadViaRest();
+    };
+
+    void run();
 
     return () => {
       isMounted = false;
     };
-  }, [isAuthenticated, activeListId, toast]);
+  }, [isAuthenticated, activeListId, userId, toast]);
 
   // Bulk Selection Handlers
   const handleToggleSelectTask = useCallback(
@@ -1243,7 +1315,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             setStreakCount((s) => Math.max(1, s - 1));
 
             if (isAuthenticated && !id.startsWith("temp-")) {
-              reopenTask(id).catch((err) => {
+              persistTaskReopen(userId, id).catch((err) => {
                 console.error("Undo reopen task failed:", err);
                 setTasks((prev) =>
                   prev.map((t) => (t.id === id ? { ...t, completed: true } : t))
@@ -1267,7 +1339,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             );
 
             if (isAuthenticated && !id.startsWith("temp-")) {
-              completeTask(id).catch((err) => {
+              persistTaskComplete(userId, id).catch((err) => {
                 console.error("Undo complete task failed:", err);
                 setTasks((prev) =>
                   prev.map((t) => (t.id === id ? { ...t, completed: false } : t))
@@ -1284,9 +1356,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
 
       if (isAuthenticated && !id.startsWith("temp-")) {
-        const apiCall = willComplete ? completeTask(id) : reopenTask(id);
+        // Phase 5 cutover 6c: offline-first via mutate (REST fallback inside
+        // the persist helpers). A null echo means the local write was
+        // accepted; the optimistic state above stands until sync pull.
+        const apiCall: Promise<TaskCompletionResult | BackendTask | null> =
+          willComplete ? persistTaskComplete(userId, id) : persistTaskReopen(userId, id);
         apiCall
           .then((updated) => {
+            if (updated === null) return;
             setTasks((prev) => {
               const mapped = prev.map((t) =>
                 t.id === id
@@ -1326,7 +1403,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           });
       }
     },
-    [tasks, isAuthenticated, toast]
+    [tasks, isAuthenticated, userId, toast]
   );
 
   const handleSkipTask = useCallback(
@@ -1407,37 +1484,73 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       if (selectedTaskId === id) setSelectedTaskId(null);
 
       if (isAuthenticated && !id.startsWith("temp-")) {
-        deleteTask(id)
-          .then(() => {
-            toast({
-              title: "Task deleted",
-              message: `"${target.title}" moved to trash.`,
-              actionLabel: "Undo",
-              onAction: () => {
-                setTasks((prev) => [target, ...prev]);
-                setSelectedTaskId(target.id);
+        const doRestDelete = () => {
+          deleteTask(id)
+            .then(() => {
+              toast({
+                title: "Task deleted",
+                message: `"${target.title}" moved to trash.`,
+                actionLabel: "Undo",
+                onAction: () => {
+                  setTasks((prev) => [target, ...prev]);
+                  setSelectedTaskId(target.id);
 
-                restoreTrash("task", id).catch((err) => {
-                  console.error("Failed to restore task from trash:", err);
-                  setTasks((prev) => prev.filter((t) => t.id !== id));
-                  toast({
-                    title: "Undo failed",
-                    message: err instanceof Error ? err.message : "Failed to restore task from trash",
-                    type: "error",
+                  restoreTrash("task", id).catch((err) => {
+                    console.error("Failed to restore task from trash:", err);
+                    setTasks((prev) => prev.filter((t) => t.id !== id));
+                    toast({
+                      title: "Undo failed",
+                      message: err instanceof Error ? err.message : "Failed to restore task from trash",
+                      type: "error",
+                    });
                   });
-                });
-              },
+                },
+              });
+            })
+            .catch((err) => {
+              console.error("Failed to delete task:", err);
+              setTasks((prev) => [target, ...prev]);
+              toast({
+                title: "Delete failed",
+                message: err instanceof Error ? err.message : "Could not delete task",
+                type: "error",
+              });
             });
-          })
-          .catch((err) => {
-            console.error("Failed to delete task:", err);
-            setTasks((prev) => [target, ...prev]);
-            toast({
-              title: "Delete failed",
-              message: err instanceof Error ? err.message : "Could not delete task",
-              type: "error",
-            });
-          });
+        };
+        if (userId) {
+          // Phase 5 cutover 6c: offline-first delete; undo restores via the
+          // mutate restore op so it also works offline (REST fallback both).
+          mutate(userId, { entity: "tasks", op: "delete", entityId: id })
+            .then(() => {
+              toast({
+                title: "Task deleted",
+                message: `"${target.title}" moved to trash.`,
+                actionLabel: "Undo",
+                onAction: () => {
+                  setTasks((prev) => [target, ...prev]);
+                  setSelectedTaskId(target.id);
+
+                  const doRestore = mutate(userId, {
+                    entity: "tasks",
+                    op: "restore",
+                    entityId: id,
+                  }).catch(() => restoreTrash("task", id));
+                  doRestore.catch((err) => {
+                    console.error("Failed to restore task from trash:", err);
+                    setTasks((prev) => prev.filter((t) => t.id !== id));
+                    toast({
+                      title: "Undo failed",
+                      message: err instanceof Error ? err.message : "Failed to restore task from trash",
+                      type: "error",
+                    });
+                  });
+                },
+              });
+            })
+            .catch(() => doRestDelete());
+        } else {
+          doRestDelete();
+        }
       } else {
         toast({
           title: "Task deleted",
@@ -1449,7 +1562,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         });
       }
     },
-    [tasks, selectedTaskId, isAuthenticated, toast]
+    [tasks, selectedTaskId, isAuthenticated, userId, toast]
   );
 
   // Global Keyboard Shortcuts Listener
@@ -1628,37 +1741,62 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           }
         }
 
-        createTask({
-          title: data.title,
-          priority: priorityUiToBackend(data.priority),
-          listId: targetBackendListId,
-          sectionId: data.sectionId || undefined,
-          dueAt,
-        })
-          .then((createdBackendTask) => {
-            const mapped = backendTaskToTaskItem(createdBackendTask, {
-              listOverride: data.list,
-              folderOverride: data.folder,
-            });
-            setTasks((prev) => prev.map((t) => (t.id === tempId ? mapped : t)));
-            setSelectedTaskId((prev) => (prev === tempId ? mapped.id : prev));
-            success(`Created task "${data.title}"`);
+        const doRestCreate = () => {
+          createTask({
+            title: data.title,
+            priority: priorityUiToBackend(data.priority),
+            listId: targetBackendListId,
+            sectionId: data.sectionId || undefined,
+            dueAt,
           })
-          .catch((err) => {
-            console.error("Failed to create task on backend:", err);
-            setTasks((prev) => prev.filter((t) => t.id !== tempId));
-            setSelectedTaskId((prev) => (prev === tempId ? null : prev));
-            toast({
-              title: "Creation failed",
-              message: err instanceof Error ? err.message : "Could not create task",
-              type: "error",
+            .then((createdBackendTask) => {
+              const mapped = backendTaskToTaskItem(createdBackendTask, {
+                listOverride: data.list,
+                folderOverride: data.folder,
+              });
+              setTasks((prev) => prev.map((t) => (t.id === tempId ? mapped : t)));
+              setSelectedTaskId((prev) => (prev === tempId ? mapped.id : prev));
+              success(`Created task "${data.title}"`);
+            })
+            .catch((err) => {
+              console.error("Failed to create task on backend:", err);
+              setTasks((prev) => prev.filter((t) => t.id !== tempId));
+              setSelectedTaskId((prev) => (prev === tempId ? null : prev));
+              toast({
+                title: "Creation failed",
+                message: err instanceof Error ? err.message : "Could not create task",
+                type: "error",
+              });
             });
-          });
+        };
+        if (userId) {
+          // Phase 5 cutover 6c: offline-first create, client-generated id.
+          // mutate appends position at end internally. Falls back to REST.
+          const newId = uuidv7();
+          const createPatch: Record<string, unknown> = {
+            title: data.title,
+            priority: priorityUiToBackend(data.priority),
+            listId: targetBackendListId,
+            dueAt,
+          };
+          if (data.sectionId) createPatch["sectionId"] = data.sectionId;
+          mutate(userId, { entity: "tasks", op: "create", entityId: newId, patch: createPatch })
+            .then(() => {
+              setTasks((prev) =>
+                prev.map((t) => (t.id === tempId ? { ...t, id: newId } : t))
+              );
+              setSelectedTaskId((prev) => (prev === tempId ? newId : prev));
+              success(`Created task "${data.title}"`);
+            })
+            .catch(() => doRestCreate());
+        } else {
+          doRestCreate();
+        }
       } else {
         success(`Created task "${data.title}"`);
       }
     },
-    [activeListId, userLists, isAuthenticated, success, toast]
+    [activeListId, userLists, isAuthenticated, userId, success, toast]
   );
 
   const handleQuickAddTask = useCallback(
@@ -1705,20 +1843,35 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
 
       if (isAuthenticated && !updated.id.startsWith("temp-") && !updated.id.startsWith("task-")) {
-        updateTask(updated.id, taskItemToBackendUpdateInput(updated)).catch((err) => {
-          console.error("Failed to update task:", err);
-          if (prevTask) {
-            setTasks((prev) => prev.map((t) => (t.id === updated.id ? prevTask : t)));
-          }
-          toast({
-            title: "Update failed",
-            message: err instanceof Error ? err.message : "Could not save task updates",
-            type: "error",
+        const input = taskItemToBackendUpdateInput(updated);
+        const doRestUpdate = () => {
+          updateTask(updated.id, input).catch((err) => {
+            console.error("Failed to update task:", err);
+            if (prevTask) {
+              setTasks((prev) => prev.map((t) => (t.id === updated.id ? prevTask : t)));
+            }
+            toast({
+              title: "Update failed",
+              message: err instanceof Error ? err.message : "Could not save task updates",
+              type: "error",
+            });
           });
-        });
+        };
+        if (userId) {
+          // Phase 5 cutover 6c: offline-first update. The OCC version is a
+          // REST concurrency token, not a field — strip it so push uses LWW
+          // (editedAt) instead of tripping on a stale version.
+          const patch: Record<string, unknown> = { ...input };
+          delete patch["version"];
+          mutate(userId, { entity: "tasks", op: "update", entityId: updated.id, patch }).catch(() =>
+            doRestUpdate()
+          );
+        } else {
+          doRestUpdate();
+        }
       }
     },
-    [isAuthenticated, tasks, toast]
+    [isAuthenticated, tasks, userId, toast]
   );
 
   const handleDuplicateTask = useCallback(
