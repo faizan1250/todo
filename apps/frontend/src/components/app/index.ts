@@ -13,7 +13,6 @@ export * from "./task-skeleton";
 export * from "./empty-state";
 export * from "./keyboard-shortcuts-modal";
 export * from "./network-banner";
-export * from "./sync-status";
 export * from "./error-boundary";
 export * from "./list-dialog";
 export * from "./folder-dialog";
