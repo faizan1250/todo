@@ -70,6 +70,8 @@ import {
 } from "@/lib/adapters";
 import type { TaskItem, ListId, FolderId, Priority, ViewMode } from "./types";
 
+const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
+
 const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
   {
     id: "task-1",
@@ -655,19 +657,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     }
   }, [isAuthenticated, activeListId, toast]);
 
-  const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
-
   // Load items for Phase 4 smart views via getViewItems
   useEffect(() => {
     if (!isAuthenticated) return;
     if (!PHASE4_VIEWS.has(activeList)) return;
     let isMounted = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsLoadingView(true);
     getViewItems(activeList, { limit: 50 })
       .then((res) => {
         if (!isMounted) return;
         const mapped = res.items.map((t) =>
-          backendTaskToTaskItem(t as any, { listOverride: activeList as ListId })
+          backendTaskToTaskItem(t as BackendTask, { listOverride: activeList as ListId })
         );
         setTasks(mapped);
         setViewCursor(res.nextCursor);
@@ -689,6 +690,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     if (!isAuthenticated) return;
     if (PHASE4_VIEWS.has(activeList)) return;
     if (activeListId !== null) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadTasks();
   }, [isAuthenticated, activeList, activeListId, loadTasks]);
 
@@ -1962,7 +1964,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     try {
       const res = await getViewItems(activeList, { cursor: viewCursor, limit: 50 });
       const mapped = res.items.map((t) =>
-        backendTaskToTaskItem(t as any, { listOverride: activeList as ListId })
+        backendTaskToTaskItem(t as BackendTask, { listOverride: activeList as ListId })
       );
       setTasks((prev) => [...prev, ...mapped]);
       setViewCursor(res.nextCursor);

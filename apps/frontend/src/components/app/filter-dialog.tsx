@@ -72,7 +72,7 @@ function FilterDialogInner({ onClose, mode, filterToEdit, onSuccess }: Omit<Filt
       return;
     }
     try {
-      await previewFilter({ query, sort: sort as any });
+      await previewFilter({ query, sort: sort as Array<{ by: string; order: "asc" | "desc" }> | undefined });
       setPreviewOk(true);
     } catch (e) {
       setErrorMessage(e instanceof Error ? e.message : "Preview failed");
@@ -100,7 +100,7 @@ function FilterDialogInner({ onClose, mode, filterToEdit, onSuccess }: Omit<Filt
 
     // validate by preview first
     try {
-      await previewFilter({ query, sort: sort as any });
+      await previewFilter({ query, sort: sort as Array<{ by: string; order: "asc" | "desc" }> | undefined });
     } catch (e) {
       setErrorMessage("Validation failed: " + (e instanceof Error ? e.message : String(e)));
       return;
@@ -109,7 +109,7 @@ function FilterDialogInner({ onClose, mode, filterToEdit, onSuccess }: Omit<Filt
     setIsSubmitting(true);
     setErrorMessage(null);
     try {
-      const payload: any = {
+      const payload = {
         name: trimmed,
         icon,
         color,
@@ -120,8 +120,8 @@ function FilterDialogInner({ onClose, mode, filterToEdit, onSuccess }: Omit<Filt
       };
       const saved =
         mode === "edit" && filterToEdit
-          ? await updateFilter(filterToEdit.id, payload)
-          : await createFilter(payload);
+          ? await updateFilter(filterToEdit.id, payload as Parameters<typeof updateFilter>[1])
+          : await createFilter(payload as Parameters<typeof createFilter>[0]);
       onSuccess(saved);
       onClose();
     } catch (err) {

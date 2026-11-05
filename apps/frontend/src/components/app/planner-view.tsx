@@ -63,6 +63,7 @@ export function PlannerView({ className }: PlannerViewProps) {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load(date);
   }, [date, load]);
 

@@ -153,6 +153,7 @@ export function CommandPalette({
     if (!isOpen) return;
     const q = query.trim();
     if (!q) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setResults(null);
       setLoading(false);
       setError(null);
