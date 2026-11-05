@@ -9,12 +9,16 @@ import {
   Calendar,
   Flag,
   Folder,
+  FolderInput,
   ChevronDown,
   Repeat,
   Clock,
   MapPin,
   Bell,
   Plus,
+  Search,
+  ArrowLeft,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatEstimate, formatDateWithTime } from "@/lib/adapters";
@@ -22,12 +26,16 @@ import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
 import {
   getPlaces,
+  getSections,
+  moveTask,
   createTaskReminder,
   deleteTaskReminder,
   snoozeReminder,
   dismissReminder,
   type BackendFolder,
+  type BackendList,
   type BackendPlace,
+  type BackendSection,
 } from "@/lib/api";
 import type {
   TaskItem,
@@ -46,9 +54,11 @@ interface TaskDetailPanelProps {
   task: TaskItem | null;
   isOpen: boolean;
   folders?: BackendFolder[];
+  lists?: BackendList[];
   onClose: () => void;
   onUpdateTask: (updated: TaskItem) => void;
   onDeleteTask: (id: string) => void;
+  onMoveTask?: (taskId: string, listId: string, sectionId: string | null) => void;
   onDuplicateTask?: (id: string) => void;
   onArchiveTask?: (id: string) => void;
   onSkipTask?: (id: string) => void;
@@ -138,13 +148,34 @@ function getRecurrenceLabel(rrule?: string | null): string {
   return "Custom";
 }
 
+// TaskItem.createdAt is a pre-formatted display string ("Just now", "5m ago",
+// "Yesterday", "Oct 24") — not a raw date. Derive a friendly "Created …"
+// label from it without needing new props.
+function friendlyCreatedLabel(createdAt: string): string {
+  const c = (createdAt || "").trim();
+  if (!c) return "recently";
+  if (/yesterday/i.test(c)) return "yesterday";
+  if (/just now|ago|[AP]M/i.test(c)) return "today";
+  const parsed = new Date(`${c} ${new Date().getFullYear()}`);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+    });
+  }
+  return c;
+}
+
 export function TaskDetailPanel({
   task,
   isOpen,
   folders = [],
+  lists = [],
   onClose,
   onUpdateTask,
   onDeleteTask,
+  onMoveTask,
   onDuplicateTask,
   onArchiveTask,
   onSkipTask,
@@ -157,9 +188,18 @@ export function TaskDetailPanel({
 }: TaskDetailPanelProps) {
   const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
   const [openPicker, setOpenPicker] = useState<
-    "due" | "priority" | "folder" | "recurrence" | "estimate" | "location" | null
+    "due" | "priority" | "folder" | "move" | "recurrence" | "estimate" | "location" | null
   >(null);
   const [places, setPlaces] = useState<BackendPlace[]>([]);
+  // Move-to menu state (list search + per-list section step)
+  const [moveSearch, setMoveSearch] = useState("");
+  const [moveListId, setMoveListId] = useState<string | null>(null);
+  const [moveSections, setMoveSections] = useState<BackendSection[]>([]);
+  const [isMoveSectionsLoading, setIsMoveSectionsLoading] = useState(false);
+  // Quiet footer save indicator: stamped whenever the task's updatedAt flips
+  // (every panel edit persists immediately through onUpdateTask).
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const didMountRef = useRef(true);
   const [customRrule, setCustomRrule] = useState("");
   const [customMinutes, setCustomMinutes] = useState("");
   const [isAddingReminder, setIsAddingReminder] = useState(false);
@@ -183,6 +223,15 @@ export function TaskDetailPanel({
       getPlaces().then(setPlaces).catch(() => setPlaces([]));
     }
   }, [openPicker]);
+
+  const taskUpdatedAt = task?.updatedAt;
+  useEffect(() => {
+    if (didMountRef.current) {
+      didMountRef.current = false;
+      return;
+    }
+    setLastSavedAt(Date.now());
+  }, [taskUpdatedAt]);
 
   const currentFolderObj =
     !task?.folder || task.folder === "none"
@@ -214,6 +263,58 @@ export function TaskDetailPanel({
   const handleFolderChange = (folder: FolderId) => {
     onUpdateTask({ ...task, folder, updatedAt: "Just now" });
   };
+
+  // Move-to-list (+section) handler. Prefers the workspace callback so the
+  // list view stays in sync; falls back to a direct offline-first move with
+  // REST fallback (mirrors the bulk-bar move behavior).
+  const handleMoveSelect = async (listId: string, sectionId: string | null) => {
+    if (onMoveTask) {
+      onMoveTask(task.id, listId, sectionId);
+    } else {
+      onUpdateTask({ ...task, listId, sectionId, updatedAt: "Just now" });
+      const isBackendId = !task.id.startsWith("temp-") && !task.id.startsWith("task-");
+      if (isBackendId) {
+        const patch = { listId, sectionId };
+        const doRestMove = () => {
+          moveTask(task.id, patch).catch((err) => {
+            console.error("Failed to move task on backend:", err);
+          });
+        };
+        if (userId) {
+          try {
+            await mutate(userId, { entity: "tasks", op: "move", entityId: task.id, patch });
+          } catch {
+            doRestMove();
+          }
+        } else {
+          doRestMove();
+        }
+      }
+    }
+    setMoveSearch("");
+    setMoveListId(null);
+    setMoveSections([]);
+    setOpenPicker(null);
+  };
+
+  const handlePickMoveList = (listId: string) => {
+    setMoveListId(listId);
+    setIsMoveSectionsLoading(true);
+    getSections(listId)
+      .then((sections) => setMoveSections(sections))
+      .catch(() => setMoveSections([]))
+      .finally(() => setIsMoveSectionsLoading(false));
+  };
+
+  const moveFilteredLists = (() => {
+    const q = moveSearch.trim().toLowerCase();
+    const pool = q
+      ? lists.filter((l) => l.name.toLowerCase().includes(q))
+      : lists;
+    return pool;
+  })();
+
+  const movePickedList = moveListId ? lists.find((l) => l.id === moveListId) || null : null;
 
   const handleDueDateChange = (newDueDate?: string) => {
     let dueAt: string | null = null;
@@ -619,6 +720,7 @@ export function TaskDetailPanel({
         <div className="flex items-center gap-2">
           <button
             type="button"
+            aria-label={task.completed ? "Mark task as active" : "Mark task complete"}
             onClick={() =>
               onUpdateTask({
                 ...task,
@@ -665,15 +767,25 @@ export function TaskDetailPanel({
       <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-6">
         {/* Task Title (Editable) */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+          <label
+            htmlFor="task-detail-title-input"
+            className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]"
+          >
             Task Title
           </label>
           <input
+            id="task-detail-title-input"
             type="text"
             value={task.title}
+            maxLength={500}
             onChange={(e) => handleTitleChange(e.target.value)}
             className="mt-1 w-full rounded-lg border border-[#E4E8F2] bg-white px-3 py-2 text-sm font-semibold text-[#0B1220] placeholder:text-[#5B6478]/50 focus:border-[#09318D] focus:outline-none focus:ring-2 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
           />
+          {task.title.length > 450 && (
+            <div className="mt-1 text-right text-[11px] font-mono text-[#5B6478] dark:text-[#9BB0D3]">
+              {task.title.length} / 500
+            </div>
+          )}
         </div>
 
         {/* Horizontal Attribute Pills Bar */}
@@ -1237,6 +1349,127 @@ export function TaskDetailPanel({
               )}
             </div>
 
+            {/* 3b. Move-to Pill (list search + section step, mirrors bulk-bar move) */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setMoveSearch("");
+                  setMoveListId(null);
+                  setMoveSections([]);
+                  setOpenPicker(openPicker === "move" ? null : "move");
+                }}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
+                  "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                )}
+                title="Move to list"
+              >
+                <FolderInput className="h-3.5 w-3.5 text-[#5B6478] dark:text-[#9BB0D3]" />
+                <span>Move to…</span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {openPicker === "move" && (
+                <div className="absolute left-0 top-full mt-1.5 z-30 w-56 rounded-xl border border-[#E4E8F2] bg-white p-2 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D]">
+                  {!movePickedList ? (
+                    <>
+                      <div className="relative flex items-center">
+                        <Search className="absolute left-2.5 h-3.5 w-3.5 text-[#5B6478] dark:text-[#9BB0D3]" />
+                        <input
+                          type="text"
+                          value={moveSearch}
+                          onChange={(e) => setMoveSearch(e.target.value)}
+                          placeholder="Search lists..."
+                          className="w-full rounded-lg border border-[#E4E8F2] bg-[#F2F5FC]/50 py-1 pl-8 pr-2 text-xs text-[#0B1220] placeholder:text-[#5B6478]/50 focus:border-[#09318D] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                        />
+                      </div>
+                      <div className="mt-1.5 max-h-48 space-y-0.5 overflow-y-auto">
+                        {moveFilteredLists.length === 0 && (
+                          <div className="px-2 py-2 text-center text-[11px] italic text-[#5B6478]/70 dark:text-[#9BB0D3]/60">
+                            No lists found
+                          </div>
+                        )}
+                        {moveFilteredLists.map((l) => {
+                          const isCurrent = task.listId === l.id;
+                          return (
+                            <button
+                              key={l.id}
+                              type="button"
+                              onClick={() => handlePickMoveList(l.id)}
+                              className={cn(
+                                "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer",
+                                isCurrent
+                                  ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                                  : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                              )}
+                            >
+                              <span
+                                className="h-2 w-2 shrink-0 rounded-full"
+                                style={{ backgroundColor: l.color || "#09318D" }}
+                              />
+                              <span className="flex-1 truncate">{l.name}</span>
+                              {isCurrent && <Check className="h-3.5 w-3.5" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMoveListId(null);
+                          setMoveSections([]);
+                        }}
+                        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-semibold text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363] cursor-pointer"
+                      >
+                        <ArrowLeft className="h-3 w-3" />
+                        <span className="truncate">{movePickedList.name}</span>
+                      </button>
+                      <div className="mt-1 max-h-48 space-y-0.5 overflow-y-auto">
+                        <button
+                          type="button"
+                          onClick={() => handleMoveSelect(movePickedList.id, null)}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#5B6478] transition-colors hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363] cursor-pointer"
+                        >
+                          <span className="flex-1">No section</span>
+                          {(task.listId === movePickedList.id && !task.sectionId) && (
+                            <Check className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        {isMoveSectionsLoading && (
+                          <div className="flex items-center justify-center gap-1.5 py-2 text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            <span>Loading sections...</span>
+                          </div>
+                        )}
+                        {!isMoveSectionsLoading &&
+                          moveSections.map((s) => (
+                            <button
+                              key={s.id}
+                              type="button"
+                              onClick={() => handleMoveSelect(movePickedList.id, s.id)}
+                              className={cn(
+                                "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer",
+                                task.listId === movePickedList.id && task.sectionId === s.id
+                                  ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
+                                  : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                              )}
+                            >
+                              <span className="flex-1 truncate">{s.name}</span>
+                              {task.listId === movePickedList.id && task.sectionId === s.id && (
+                                <Check className="h-3.5 w-3.5" />
+                              )}
+                            </button>
+                          ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* 4. Tags Pill */}
             <TagPickerPopover
               taskId={task.id}
@@ -1458,8 +1691,22 @@ export function TaskDetailPanel({
         </div>
       </div>
 
-      {/* Detail Footer Delete */}
-      <div className="border-t border-[#E4E8F2] p-4 dark:border-[#132E74]">
+      {/* Detail Footer: save status + created stamp, then delete */}
+      <div className="border-t border-[#E4E8F2] p-4 dark:border-[#132E74] space-y-3">
+        <div className="flex items-center justify-between text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
+          <span className="inline-flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
+            <Check className="h-3 w-3 stroke-[3]" />
+            <span>
+              Saved
+              {lastSavedAt !== null &&
+                ` · ${new Date(lastSavedAt).toLocaleTimeString("en-US", {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}`}
+            </span>
+          </span>
+          <span>Created {friendlyCreatedLabel(task.createdAt)}</span>
+        </div>
         <button
           type="button"
           onClick={() => onDeleteTask(task.id)}

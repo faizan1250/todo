@@ -22,6 +22,7 @@ import {
 } from "../src/lib/api";
 import { TaskRow } from "../src/components/app/task-row";
 import { TaskDetailPanel } from "../src/components/app/task-detail-panel";
+import { ToastProvider } from "../src/components/app/toast-system";
 import type { TaskItem } from "../src/components/app/types";
 
 describe("Frontend Phase 3 Smart Scheduling & Quick Add Integration", () => {
@@ -348,13 +349,17 @@ describe("Frontend Phase 3 Smart Scheduling & Quick Add Integration", () => {
 
     it("renders scheduling attribute pills and reminders section", () => {
       const html = renderToString(
-        React.createElement(TaskDetailPanel, {
+        React.createElement(
+          ToastProvider,
+          null,
+          React.createElement(TaskDetailPanel, {
           task: scheduledTask,
           isOpen: true,
           onClose: () => {},
           onUpdateTask: () => {},
           onDeleteTask: () => {},
-        })
+          })
+        )
       );
 
       // Check dates pill

@@ -41,6 +41,7 @@ export function FirstSyncScreen({ progress, count, done, className }: FirstSyncS
 
       <div
         role="progressbar"
+        aria-label="Setting up your tasks"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(pct * 100)}

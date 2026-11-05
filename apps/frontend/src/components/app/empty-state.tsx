@@ -147,9 +147,9 @@ export function EmptyState({
       </div>
 
       {/* Primary Message */}
-      <h3 className="text-base font-bold tracking-tight text-[#0B1220] dark:text-white">
+      <p className="text-base font-bold tracking-tight text-[#0B1220] dark:text-white">
         {currentContent.title}
-      </h3>
+      </p>
 
       {/* Explanatory Friendly Copy */}
       <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-[#5B6478] dark:text-[#9BB0D3]">

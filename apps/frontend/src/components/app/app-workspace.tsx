@@ -8,6 +8,7 @@ import { CalendarView } from "./calendar-view";
 import { PlannerView } from "./planner-view";
 import { BoardView } from "./board-view";
 import { TaskDetailPanel } from "./task-detail-panel";
+import { CompleteSubtasksDialog } from "./complete-subtasks-dialog";
 import { StreakCelebration } from "./streak-celebration";
 import { CommandPalette } from "./command-palette";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
@@ -19,9 +20,13 @@ import { FilterDialog } from "./filter-dialog";
 import { BulkActionToolbar } from "./bulk-action-toolbar";
 import { TrashModal } from "./trash-modal";
 import { TemplatesModal } from "./templates-modal";
+import { TagsModal } from "./tags-modal";
 import { useAuth } from "@/components/auth";
+import { useLiveQuery } from "dexie-react-hooks";
+import { getDB } from "@/lib/db/schema";
 import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
+import { inverseOf, pushUndo, popUndo } from "@/lib/tasks/undo";
 import { restoreFromTrash } from "../sync/conflict-actions";
 import { subscribeRemoteChanged } from "../sync/remote-events";
 import {
@@ -34,6 +39,7 @@ import {
   getCalendar,
   getBoard,
   moveBoardTask,
+  moveTask,
   createTask,
   quickAddTask,
   parseNaturalLanguageText,
@@ -55,6 +61,7 @@ import {
   deleteList,
   archiveList,
   deleteFolder,
+  getTags,
   getFilters,
   createFilter,
   updateFilter,
@@ -66,6 +73,7 @@ import {
   type BackendList,
   type BackendFolder,
   type BackendTask,
+  type BackendTag,
   type BackendViewTask,
   type BackendViewCountsResponse,
   type TaskCompletionResult,
@@ -80,7 +88,7 @@ import {
 } from "@/lib/adapters";
 import { getListTasks } from "@/lib/data/queries/list";
 import { dexieRowsToTaskItems } from "@/lib/data/adapters";
-import type { TaskItem, ListId, FolderId, Priority, ViewMode } from "./types";
+import type { TaskItem, ListId, FolderId, Priority, ViewMode, HierarchicalSubtask } from "./types";
 
 const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
 
@@ -92,15 +100,42 @@ const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
 // sync pull brings server truth back).
 async function persistTaskComplete(
   userId: string | null,
-  id: string
+  id: string,
+  completeSubtasks = false
 ): Promise<TaskCompletionResult | null> {
-  if (!userId) return completeTask(id);
+  if (!userId) return completeTask(id, completeSubtasks ? true : undefined);
   try {
-    await mutate(userId, { entity: "tasks", op: "complete", entityId: id, patch: {} });
+    await mutate(userId, {
+      entity: "tasks",
+      op: "complete",
+      entityId: id,
+      patch: completeSubtasks ? { completeSubtasks: true } : {},
+    });
     return null;
   } catch {
-    return completeTask(id);
+    return completeTask(id, completeSubtasks ? true : undefined);
   }
+}
+
+// Count open (incomplete) subtasks recursively through the hierarchy tree.
+function countOpenSubtasks(subtasks: HierarchicalSubtask[]): number {
+  let count = 0;
+  for (const s of subtasks) {
+    if (!s.completed) count += 1;
+    if (s.subtasks && s.subtasks.length > 0) {
+      count += countOpenSubtasks(s.subtasks);
+    }
+  }
+  return count;
+}
+
+// Optimistically mark a subtask tree done (used when completing with subtasks).
+function markSubtasksDone(subtasks: HierarchicalSubtask[]): HierarchicalSubtask[] {
+  return subtasks.map((s) => ({
+    ...s,
+    completed: true,
+    subtasks: s.subtasks ? markSubtasksDone(s.subtasks) : [],
+  }));
 }
 
 async function persistTaskReopen(
@@ -432,9 +467,25 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set());
   const [isBulkSubmitting, setIsBulkSubmitting] = useState(false);
 
+  // Complete-with-open-subtasks confirm state (asked once per toggle action)
+  const [pendingSubtasksComplete, setPendingSubtasksComplete] = useState<{
+    id: string;
+    openCount: number;
+  } | null>(null);
+
   // Library Modals State
   const [isTrashOpen, setIsTrashOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+  const [isTagsOpen, setIsTagsOpen] = useState(false);
+
+  // Tags state: workspace-owned list (REST), tag-filtered view, and
+  // Dexie-first per-tag open-task counts for the sidebar + tags modal.
+  const [userTags, setUserTags] = useState<BackendTag[]>([]);
+  const [activeTag, setActiveTag] = useState<BackendTag | null>(null);
+  const [tagTasks, setTagTasks] = useState<TaskItem[]>([]);
+  const [tagCursor, setTagCursor] = useState<string | null>(null);
+  const [tagHasMore, setTagHasMore] = useState(false);
+  const [isLoadingTag, setIsLoadingTag] = useState(false);
 
   // Streak State
   const [streakCount, setStreakCount] = useState(5);
@@ -682,6 +733,52 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       isMounted = false;
     };
   }, [isAuthenticated]);
+
+  // Fetch tags for the sidebar section + tags modal (REST-owned list).
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let isMounted = true;
+    getTags()
+      .then((res) => {
+        if (isMounted) setUserTags(res);
+      })
+      .catch((err) => {
+        if (isMounted) console.error("Failed to load tags:", err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated]);
+
+  const reloadTags = useCallback(async () => {
+    try {
+      const res = await getTags();
+      setUserTags(res);
+    } catch (err) {
+      console.error("Failed to reload tags:", err);
+    }
+  }, []);
+
+  // Dexie-first per-tag open-task counts (alive, unarchived, not done).
+  // Degrades to {} when there is no userId or Dexie throws.
+  const tagCounts = useLiveQuery(async () => {
+    const counts: Record<string, number> = {};
+    if (!userId) return counts;
+    try {
+      const rows = await getDB(userId).tasks.toArray();
+      for (const r of rows) {
+        if (r["deleted"] === 1 || r["deletedAt"] != null) continue;
+        if (r["archivedAt"] != null) continue;
+        const status = r["status"];
+        if (status === "done" || status === "cancelled") continue;
+        const ids = (r["tagIds"] as string[] | undefined) ?? [];
+        for (const id of ids) counts[id] = (counts[id] ?? 0) + 1;
+      }
+    } catch {
+      return {};
+    }
+    return counts;
+  }, [userId]) ?? {};
 
   // Fetch smart view counts
   useEffect(() => {
@@ -1244,6 +1341,112 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     [activeFilterId, success, toast]
   );
 
+  // Single-task move from the detail panel (mirrors handleBulkMove for one
+  // task, plus an optional section). Offline-first mutate with REST fallback.
+  const handleMovePanelTask = useCallback(
+    async (taskId: string, listId: string, sectionId: string | null) => {
+      const targetList = userLists.find((l) => l.id === listId);
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, listId, sectionId, updatedAt: "Just now" } : t
+        )
+      );
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        const patch = { listId, sectionId };
+        const doRestMove = () => moveTask(taskId, patch);
+        try {
+          if (userId) {
+            await mutate(userId, { entity: "tasks", op: "move", entityId: taskId, patch });
+          } else {
+            await doRestMove();
+          }
+          success(`Moved to ${targetList?.name || "list"}`);
+        } catch (err) {
+          console.error("Failed to move task:", err);
+          try {
+            await doRestMove();
+            success(`Moved to ${targetList?.name || "list"}`);
+          } catch (restErr) {
+            console.error("Failed to move task on backend:", restErr);
+            toast({
+              title: "Move failed",
+              message: restErr instanceof Error ? restErr.message : "Could not move task",
+              type: "error",
+            });
+          }
+        }
+      }
+    },
+    [isAuthenticated, userLists, userId, success, toast]
+  );
+
+  // Drag-reorder drop from the task pane (dnd-kit). Optimistic splice in both
+  // the main list and the filter list (whichever holds the task), then an
+  // offline-first mutate "move" with afterId/beforeId — the server recomputes
+  // position authoritatively and repairs collisions. REST is the fallback.
+  // sectionId undefined = same-section reorder; null = move to unsectioned.
+  const handleReorderTask = useCallback(
+    async (
+      taskId: string,
+      target: { sectionId: string | null | undefined; afterId: string | null; beforeId: string | null }
+    ) => {
+      const spliceInto = (prev: TaskItem[]): TaskItem[] => {
+        const from = prev.findIndex((t) => t.id === taskId);
+        if (from < 0) return prev;
+        const moving = prev[from];
+        const moved: TaskItem = {
+          ...moving,
+          ...(target.sectionId !== undefined ? { sectionId: target.sectionId } : null),
+          updatedAt: "Just now",
+        };
+        const without = prev.filter((t) => t.id !== taskId);
+        let at: number;
+        if (target.beforeId) {
+          const i = without.findIndex((t) => t.id === target.beforeId);
+          at = i < 0 ? without.length : i;
+        } else if (target.afterId) {
+          const i = without.findIndex((t) => t.id === target.afterId);
+          at = i < 0 ? without.length : i + 1;
+        } else {
+          // Sole-member scope (e.g. dropped into an empty section): keep the
+          // row where the grouping puts it; the move still persists sectionId.
+          at = from < without.length ? from : without.length;
+        }
+        return [...without.slice(0, at), moved, ...without.slice(at)];
+      };
+      setTasks(spliceInto);
+      setFilterTasks(spliceInto);
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        const patch: Record<string, unknown> = {
+          afterId: target.afterId,
+          beforeId: target.beforeId,
+        };
+        if (target.sectionId !== undefined) patch["sectionId"] = target.sectionId;
+        const doRestMove = () => moveTask(taskId, patch);
+        try {
+          if (userId) {
+            await mutate(userId, { entity: "tasks", op: "move", entityId: taskId, patch });
+          } else {
+            await doRestMove();
+          }
+        } catch (err) {
+          console.error("Failed to reorder task:", err);
+          try {
+            await doRestMove();
+          } catch (restErr) {
+            console.error("Failed to reorder task on backend:", restErr);
+            toast({
+              title: "Move failed",
+              message: restErr instanceof Error ? restErr.message : "Could not move task",
+              type: "error",
+            });
+          }
+        }
+      }
+    },
+    [isAuthenticated, userId, toast]
+  );
+
   const handleMoveFilter = useCallback(
     async (id: string, dir: "up" | "down") => {
       const idx = savedFilters.findIndex((f) => f.id === id);
@@ -1276,6 +1479,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const handleSelectFilter = useCallback(
     async (id: string) => {
       setActiveFilterId(id);
+      setActiveTag(null);
+      setTagTasks([]);
       setIsLoadingFilter(true);
       try {
         const res = await getFilterTasks(id, { limit: 50 });
@@ -1308,6 +1513,59 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       setIsLoadingFilter(false);
     }
   }, [activeFilterId, filterCursor, filterHasMore]);
+
+  // Tag-filtered view: mirrors the saved-filter mechanism but sources tasks
+  // via getTasks({ tag }) (no saved-filter id exists for tags). Selecting the
+  // active tag again toggles back to the list view.
+  const handleSelectTag = useCallback(
+    async (tag: { id: string; name: string }) => {
+      if (activeTag?.id === tag.id) {
+        setActiveTag(null);
+        setTagTasks([]);
+        setTagCursor(null);
+        setTagHasMore(false);
+        return;
+      }
+      setActiveFilterId(null);
+      setFilterTasks([]);
+      setActiveTag({ id: tag.id, name: tag.name } as BackendTag);
+      setIsLoadingTag(true);
+      try {
+        const res = await getTasks({ tag: tag.name, include: "subtasks,checklist,tags", limit: 50 });
+        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+        setTagTasks(mapped);
+        setTagCursor(res.nextCursor);
+        setTagHasMore(res.hasMore);
+      } catch (err) {
+        console.error("Failed to load tag tasks:", err);
+        setTagTasks([]);
+        toast({
+          title: "Failed to load tag",
+          message: err instanceof Error ? err.message : "Network error",
+          type: "error",
+        });
+      } finally {
+        setIsLoadingTag(false);
+      }
+    },
+    [activeTag, toast]
+  );
+
+  const handleLoadMoreTag = useCallback(async () => {
+    if (!activeTag || !tagCursor || !tagHasMore) return;
+    setIsLoadingTag(true);
+    try {
+      const res = await getTasks({ tag: activeTag.name, include: "subtasks,checklist,tags", cursor: tagCursor, limit: 50 });
+      const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+      setTagTasks((prev) => [...prev, ...mapped]);
+      setTagCursor(res.nextCursor);
+      setTagHasMore(res.hasMore);
+    } catch (err) {
+      console.error("Failed to load more tag tasks:", err);
+    } finally {
+      setIsLoadingTag(false);
+    }
+  }, [activeTag, tagCursor, tagHasMore]);
 
   const handleFilterSuccess = useCallback(
     (saved: BackendSavedFilter) => {
@@ -1427,15 +1685,26 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   }, [tasks, activeList, activeListId, activeFolder]);
 
   // Task Handlers
-  const handleToggleComplete = useCallback(
-    (id: string) => {
+  // runToggleComplete performs the actual toggle; handleToggleComplete below
+  // gates completion of a parent with open subtasks behind a one-time confirm.
+  const runToggleComplete = useCallback(
+    (id: string, withSubtasks: boolean) => {
       const target = tasks.find((t) => t.id === id);
       if (!target) return;
 
       const willComplete = !target.completed;
 
       setTasks((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, completed: willComplete, updatedAt: "Just now" } : t))
+        prev.map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                completed: willComplete,
+                subtasks: willComplete && withSubtasks ? markSubtasksDone(t.subtasks) : t.subtasks,
+                updatedAt: "Just now",
+              }
+            : t
+        )
       );
 
       if (willComplete) {
@@ -1443,11 +1712,22 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         setStreakTaskTitle(target.title);
         setIsStreakActive(true);
 
+        // Phase 2 premium 1b (pilot): capture the before-image and push the
+        // inverse so Undo replays it via mutate(). Falls back to
+        // persistTaskReopen below when the stack misses.
+        pushUndo(
+          inverseOf(
+            { entity: "tasks", op: "complete", entityId: id },
+            { beforeStatus: target.rawStatus ?? "todo" }
+          )
+        );
+
         toast({
           title: "Task completed",
           message: `"${target.title}" marked done.`,
           type: "success",
           actionLabel: "Undo",
+          durationMs: 8000,
           onAction: () => {
             setTasks((prev) =>
               prev.map((t) => (t.id === id ? { ...t, completed: false, updatedAt: "Undone" } : t))
@@ -1455,7 +1735,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             setStreakCount((s) => Math.max(1, s - 1));
 
             if (isAuthenticated && !id.startsWith("temp-")) {
-              persistTaskReopen(userId, id).catch((err) => {
+              const next = popUndo();
+              const inverse = next && next.entityId === id ? next : undefined;
+              if (next && !inverse) pushUndo(next); // belongs to another toast; leave it
+              const undoWrite =
+                inverse && userId
+                  ? mutate(userId, inverse)
+                  : persistTaskReopen(userId, id);
+              undoWrite.catch((err) => {
                 console.error("Undo reopen task failed:", err);
                 setTasks((prev) =>
                   prev.map((t) => (t.id === id ? { ...t, completed: true } : t))
@@ -1500,7 +1787,9 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         // the persist helpers). A null echo means the local write was
         // accepted; the optimistic state above stands until sync pull.
         const apiCall: Promise<TaskCompletionResult | BackendTask | null> =
-          willComplete ? persistTaskComplete(userId, id) : persistTaskReopen(userId, id);
+          willComplete
+            ? persistTaskComplete(userId, id, withSubtasks)
+            : persistTaskReopen(userId, id);
         apiCall
           .then((updated) => {
             if (updated === null) return;
@@ -1544,6 +1833,25 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
     },
     [tasks, isAuthenticated, userId, toast]
+  );
+
+  // Gate: completing a parent with open subtasks asks once whether to
+  // complete the sub-tasks too. Reopening never prompts. Row keyboard
+  // (Space) funnels through here as well, so one gate covers every path.
+  const handleToggleComplete = useCallback(
+    (id: string) => {
+      const target = tasks.find((t) => t.id === id);
+      if (!target) return;
+      if (!target.completed) {
+        const openCount = countOpenSubtasks(target.subtasks);
+        if (openCount > 0) {
+          setPendingSubtasksComplete({ id, openCount });
+          return;
+        }
+      }
+      runToggleComplete(id, false);
+    },
+    [tasks, runToggleComplete]
   );
 
   const handleSkipTask = useCallback(
@@ -1758,8 +2066,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         return;
       }
 
-      // N -> Quick-focus task creation
-      if (e.key.toLowerCase() === "n" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // N / Q -> Quick-focus task creation
+      if (
+        (e.key.toLowerCase() === "n" || e.key.toLowerCase() === "q") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
         e.preventDefault();
         const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
         input?.focus();
@@ -2729,6 +3042,11 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onEditFilter={handleEditFilter}
         onDeleteFilter={handleDeleteFilter}
         onMoveFilter={handleMoveFilter}
+        tags={userTags}
+        tagCounts={tagCounts}
+        activeTagId={activeTag?.id ?? null}
+        onSelectTag={handleSelectTag}
+        onOpenTags={() => setIsTagsOpen(true)}
         className="hidden md:flex"
       />
 
@@ -2788,10 +3106,10 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           />
         ) : (
           <TaskPane
-            tasks={activeFilterId ? filterTasks : tasks}
+            tasks={activeFilterId ? filterTasks : activeTag ? tagTasks : tasks}
             activeList={activeList}
             activeListId={activeListId}
-            activeListName={activeFilterId ? (savedFilters.find((f) => f.id === activeFilterId)?.name) : activeListName}
+            activeListName={activeFilterId ? (savedFilters.find((f) => f.id === activeFilterId)?.name) : activeTag ? `# ${activeTag.name}` : activeListName}
             activeFolder={activeFolder}
             folders={userFolders}
             selectedTaskId={selectedTaskId}
@@ -2802,10 +3120,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             onDeleteTask={handleDeleteTask}
             onAddTask={handleAddTask}
             onQuickAddTask={handleQuickAddTask}
-            isLoading={activeFilterId ? isLoadingFilter : (isLoadingTasks || isLoadingView)}
-            hasMore={activeFilterId ? filterHasMore : viewHasMore}
-            isLoadingMore={activeFilterId ? isLoadingFilter : isLoadingView}
-            onLoadMore={activeFilterId ? handleLoadMoreFilter : handleLoadMoreView}
+            onOpenTemplates={() => setIsTemplatesOpen(true)}
+            userId={userId}
+            onUpdateTask={handleUpdateTask}
+            onDuplicateTask={handleDuplicateTask}
+            onArchiveTask={handleArchiveTask}
+            onMoveTask={handleMovePanelTask}
+            onReorderTask={handleReorderTask}
+            isLoading={activeFilterId ? isLoadingFilter : activeTag ? isLoadingTag : (isLoadingTasks || isLoadingView)}
+            showListName={PHASE4_VIEWS.has(activeList) || activeFilterId !== null || activeTag !== null}
+            hasMore={activeFilterId ? filterHasMore : activeTag ? tagHasMore : viewHasMore}
+            isLoadingMore={activeFilterId ? isLoadingFilter : activeTag ? isLoadingTag : isLoadingView}
+            onLoadMore={activeFilterId ? handleLoadMoreFilter : activeTag ? handleLoadMoreTag : handleLoadMoreView}
           />
         )}
       </div>
@@ -2816,9 +3142,11 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           task={selectedTask}
           isOpen={!!selectedTask}
           folders={userFolders}
+          lists={userLists}
           onClose={() => setSelectedTaskId(null)}
           onUpdateTask={handleUpdateTask}
           onDeleteTask={handleDeleteTask}
+          onMoveTask={handleMovePanelTask}
           onDuplicateTask={handleDuplicateTask}
           onArchiveTask={handleArchiveTask}
           onSkipTask={handleSkipTask}
@@ -2933,6 +3261,23 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         userId={userId}
       />
 
+      {/* Complete-with-subtasks confirm (asked once per toggle action) */}
+      <CompleteSubtasksDialog
+        isOpen={pendingSubtasksComplete !== null}
+        openCount={pendingSubtasksComplete?.openCount ?? 0}
+        onConfirmAll={() => {
+          const pending = pendingSubtasksComplete;
+          setPendingSubtasksComplete(null);
+          if (pending) runToggleComplete(pending.id, true);
+        }}
+        onConfirmSingle={() => {
+          const pending = pendingSubtasksComplete;
+          setPendingSubtasksComplete(null);
+          if (pending) runToggleComplete(pending.id, false);
+        }}
+        onClose={() => setPendingSubtasksComplete(null)}
+      />
+
       {/* Templates Modal */}
       <TemplatesModal
         isOpen={isTemplatesOpen}
@@ -2940,6 +3285,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         lists={userLists}
         defaultListId={activeListId}
         onTemplateInstantiated={handleTemplateInstantiated}
+      />
+
+      {/* Tags Modal */}
+      <TagsModal
+        isOpen={isTagsOpen}
+        onClose={() => setIsTagsOpen(false)}
+        tags={userTags}
+        tagCounts={tagCounts}
+        userId={userId}
+        activeTagId={activeTag?.id ?? null}
+        onSelectTag={handleSelectTag}
+        onTagsChanged={reloadTags}
       />
     </div>
   );

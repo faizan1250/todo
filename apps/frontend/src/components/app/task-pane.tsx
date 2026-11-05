@@ -21,24 +21,150 @@ import {
   Tag,
   Repeat,
   Clock,
+  Bookmark,
+  MoreHorizontal,
 } from "lucide-react";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { InsertionLine, SortableTaskRow, TaskRow } from "./task-row";
+import { isNoopMove, moveNeighbors } from "@/lib/tasks/reorder";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { v7 as uuidv7 } from "uuid";
+import { mutate } from "@/lib/data/mutate";
+import { copy } from "@/lib/copy";
+import { depthOfTask, planIndent, planOutdent } from "@/lib/tasks/indent";
+import { useToast } from "./toast-system";
+import { TaskContextMenu } from "./task-context-menu";
 import {
   getSections,
   createSection,
   updateSection,
   deleteSection,
+  restoreTrash,
   parseNaturalLanguageText,
   type BackendSection,
   type BackendFolder,
   type ParsedTaskResult,
 } from "@/lib/api";
 import { formatEstimate, formatDueDate } from "@/lib/adapters";
-import { TaskRow } from "./task-row";
 import { TaskRowSkeletonList } from "./task-skeleton";
 import { EmptyState } from "./empty-state";
 import type { TaskItem, ListId, FolderId, Priority } from "./types";
+
+/** Target of a drag-reorder drop. sectionId undefined = keep current section. */
+export interface ReorderTarget {
+  sectionId: string | null | undefined;
+  afterId: string | null;
+  beforeId: string | null;
+}
+
+// Rows are h-14 (56px); lists longer than this virtualize (flat only).
+const VIRTUALIZE_AFTER = 200;
+const VIRTUAL_ROW_PX = 56;
+
+// dnd-kit container ids. "flat" = ungrouped list (no sections exist);
+// "unsectioned" = the no-section group when sections exist.
+const FLAT_CONTAINER = "flat";
+const UNSECTIONED_CONTAINER = "unsectioned";
+const sectionContainerId = (sectionId: string) => `section:${sectionId}`;
+const containerSectionId = (containerId: string): string | null | undefined => {
+  if (containerId === FLAT_CONTAINER) return undefined;
+  if (containerId === UNSECTIONED_CONTAINER) return null;
+  return containerId.startsWith("section:") ? containerId.slice("section:".length) : undefined;
+};
+
+// Whole-group end-drop zones (drop anywhere on card padding/header → end of
+// that group). One droppable per group, so ids never collide.
+const endDropId = (containerId: string) => `drop::${containerId}::end`;
+const parseEndDropId = (id: string): string | null => {
+  const prefix = "drop::";
+  const suffix = "::end";
+  if (!id.startsWith(prefix) || !id.endsWith(suffix)) return null;
+  return id.slice(prefix.length, -suffix.length);
+};
+
+interface ResolvedDrop {
+  containerId: string;
+  /** Final order of the target container with the dragged id placed. */
+  resultIds: string[];
+  /** Row under the cursor (null = group end zone). */
+  overTaskId: string | null;
+  placeBefore: boolean;
+}
+
+/** Pure drop resolution shared by onDragOver (insertion line) and onDragEnd. */
+function resolveDrop(
+  containers: Map<string, TaskItem[]>,
+  taskContainer: Map<string, string>,
+  activeId: string,
+  overId: string
+): ResolvedDrop | null {
+  const endTarget = parseEndDropId(overId);
+  if (endTarget) {
+    const ids = (containers.get(endTarget) ?? []).map((t) => t.id).filter((id) => id !== activeId);
+    return { containerId: endTarget, resultIds: [...ids, activeId], overTaskId: null, placeBefore: false };
+  }
+  const targetContainer = taskContainer.get(overId);
+  if (!targetContainer) return null;
+  const ids = (containers.get(targetContainer) ?? []).map((t) => t.id);
+  if (taskContainer.get(activeId) === targetContainer) {
+    const from = ids.indexOf(activeId);
+    const to = ids.indexOf(overId);
+    if (from < 0 || to < 0 || from === to) return null;
+    const next = [...ids];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return { containerId: targetContainer, resultIds: next, overTaskId: overId, placeBefore: to < from };
+  }
+  const without = ids.filter((id) => id !== activeId);
+  const at = Math.max(0, ids.indexOf(overId));
+  return {
+    containerId: targetContainer,
+    resultIds: [...without.slice(0, at), activeId, ...without.slice(at)],
+    overTaskId: overId,
+    placeBefore: true,
+  };
+}
+
+/** Group card wrapper that accepts drops onto its padding/header (→ end of group). */
+function EndDropZone({
+  containerId,
+  className,
+  children,
+}: {
+  containerId: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: endDropId(containerId) });
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(className, isOver && "ring-2 ring-[#FD91CC]/50")}
+    >
+      {children}
+    </div>
+  );
+}
 
 interface TaskPaneProps {
   tasks: TaskItem[];
@@ -60,12 +186,21 @@ interface TaskPaneProps {
     dueDate?: string | null;
   }) => void;
   onQuickAddTask?: (text: string) => Promise<void> | void;
+  userId?: string | null;
+  onUpdateTask?: (task: TaskItem) => void;
+  onDuplicateTask?: (id: string) => void;
+  onArchiveTask?: (id: string) => void;
+  onMoveTask?: (taskId: string, listId: string, sectionId: string | null) => void;
+  /** Drag-reorder drop. sectionId undefined = same section, null = unsectioned. */
+  onReorderTask?: (taskId: string, target: ReorderTarget) => void;
   isLoading?: boolean;
+  showListName?: boolean;
   selectedTaskIds?: Set<string>;
   onToggleSelectTask?: (id: string, shiftKey?: boolean, visibleTaskIds?: string[]) => void;
   hasMore?: boolean;
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
+  onOpenTemplates?: () => void;
 }
 
 export function TaskPane({
@@ -81,12 +216,20 @@ export function TaskPane({
   onDeleteTask,
   onAddTask,
   onQuickAddTask,
+  userId = null,
+  onUpdateTask,
+  onDuplicateTask,
+  onArchiveTask,
+  onMoveTask,
+  onReorderTask,
   isLoading = false,
+  showListName = false,
   selectedTaskIds,
   onToggleSelectTask,
   hasMore = false,
   isLoadingMore = false,
   onLoadMore,
+  onOpenTemplates,
 }: TaskPaneProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "completed">("all");
@@ -103,6 +246,12 @@ export function TaskPane({
   const [isAddingSection, setIsAddingSection] = useState(false);
   const [newSectionName, setNewSectionName] = useState("");
   const [isSectionSubmitting, setIsSectionSubmitting] = useState(false);
+  const [openSectionMenuId, setOpenSectionMenuId] = useState<string | null>(null);
+
+  // Right-click / Shift+F10 context menu anchor (taskId + viewport position)
+  const [menuState, setMenuState] = useState<{ taskId: string; x: number; y: number } | null>(null);
+
+  const { toast, success } = useToast();
 
   // Section-targeted quick add state
   const [activeSectionForNewTask, setActiveSectionForNewTask] = useState<string | null>(null);
@@ -117,9 +266,20 @@ export function TaskPane({
   const [isQuickAddFocused, setIsQuickAddFocused] = useState(false);
   const [openPicker, setOpenPicker] = useState<"due" | "priority" | "folder" | null>(null);
 
+  // Done group: completed tasks collapse under a "Done (n)" header (collapsed by default)
+  // View key resets the group back to collapsed when the viewed list/folder changes
+  // (state adjusted during render — the recommended pattern over a reset effect).
+  const doneGroupViewKey = `${activeListId ?? activeList}|${activeFolder ?? ""}`;
+  const [doneGroupView, setDoneGroupView] = useState(doneGroupViewKey);
+  const [isDoneExpanded, setIsDoneExpanded] = useState(false);
+  if (doneGroupView !== doneGroupViewKey) {
+    setDoneGroupView(doneGroupViewKey);
+    setIsDoneExpanded(false);
+  }
+
   const quickAddContainerRef = useRef<HTMLDivElement>(null);
   const quickAddInputRef = useRef<HTMLInputElement>(null);
-  const newSectionInputRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);  const newSectionInputRef = useRef<HTMLInputElement>(null);
   const editSectionInputRef = useRef<HTMLInputElement>(null);
   const sectionTaskInputRef = useRef<HTMLInputElement>(null);
 
@@ -318,9 +478,18 @@ export function TaskPane({
   }, [tasks, activeList, activeListId, activeFolder, statusFilter, priorityFilter, searchQuery]);
 
   // Group tasks into unsectioned vs sectioned
+  // When showing "all", completed tasks live in the collapsed Done group below,
+  // so section/flat lists only render active tasks (status tabs keep working).
+  const doneTasks = useMemo(() => filteredTasks.filter((t) => t.completed), [filteredTasks]);
+  const tasksForGrouping = useMemo(
+    () => (statusFilter === "all" ? filteredTasks.filter((t) => !t.completed) : filteredTasks),
+    [filteredTasks, statusFilter]
+  );
+  const showDoneGroup = statusFilter === "all" && doneTasks.length > 0;
+
   const { unsectionedTasks, sectionTasksMap } = useMemo(() => {
     if (effectiveSections.length === 0) {
-      return { unsectionedTasks: filteredTasks, sectionTasksMap: new Map<string, TaskItem[]>() };
+      return { unsectionedTasks: tasksForGrouping, sectionTasksMap: new Map<string, TaskItem[]>() };
     }
 
     const map = new Map<string, TaskItem[]>();
@@ -330,7 +499,7 @@ export function TaskPane({
 
     const unsectioned: TaskItem[] = [];
 
-    for (const task of filteredTasks) {
+    for (const task of tasksForGrouping) {
       if (task.sectionId && map.has(task.sectionId)) {
         map.get(task.sectionId)!.push(task);
       } else {
@@ -339,7 +508,134 @@ export function TaskPane({
     }
 
     return { unsectionedTasks: unsectioned, sectionTasksMap: map };
-  }, [filteredTasks, effectiveSections]);
+  }, [tasksForGrouping, effectiveSections]);
+
+  // ---- Drag-reorder (dnd-kit) ----
+  // One sortable container per group: "flat" when no sections exist, otherwise
+  // "unsectioned" + one per section. Cross-group drops move sectionId too.
+  const containers = useMemo(() => {
+    const map = new Map<string, TaskItem[]>();
+    if (effectiveSections.length === 0) {
+      map.set(FLAT_CONTAINER, tasksForGrouping);
+    } else {
+      map.set(UNSECTIONED_CONTAINER, unsectionedTasks);
+      for (const s of effectiveSections) {
+        map.set(sectionContainerId(s.id), sectionTasksMap.get(s.id) ?? []);
+      }
+    }
+    return map;
+  }, [effectiveSections, tasksForGrouping, unsectionedTasks, sectionTasksMap]);
+
+  const taskContainer = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [cid, list] of containers) {
+      for (const t of list) map.set(t.id, cid);
+    }
+    return map;
+  }, [containers]);
+
+  const dndSensors = useSensors(
+    // Desktop: small distance gate so row clicks never start a drag.
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    // Touch: 250ms press-and-hold so scroll never fights the drag.
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [dropMark, setDropMark] = useState<ResolvedDrop | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const keyboardDrag = useRef(false);
+
+  // Virtualize long flat lists (fixed 56px rows). Grouped lists keep a normal
+  // render — headers stay sticky-friendly and section drops stay measurable.
+  const shouldVirtualize =
+    effectiveSections.length === 0 && tasksForGrouping.length > VIRTUALIZE_AFTER;
+  const rowVirtualizer = useVirtualizer({
+    count: tasksForGrouping.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => VIRTUAL_ROW_PX,
+    overscan: 8,
+  });
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const id = String(event.active.id);
+    setActiveId(id);
+    const isKeyboard = event.activatorEvent instanceof KeyboardEvent;
+    keyboardDrag.current = isKeyboard;
+    const cid = taskContainer.get(id);
+    const list = cid ? containers.get(cid) ?? [] : [];
+    const pos = list.findIndex((t) => t.id === id) + 1;
+    const title = tasks.find((t) => t.id === id)?.title ?? "task";
+    setAnnouncement(
+      isKeyboard
+        ? `Picked up '${title}', position ${pos} of ${list.length}. Arrow keys to reorder, Space to drop, Escape to cancel.`
+        : `Picked up '${title}', position ${pos} of ${list.length}.`
+    );
+  };
+
+  const handleDragOver = (event: DragOverEvent) => {
+    const id = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId || overId === id) {
+      setDropMark(null);
+      return;
+    }
+    const res = resolveDrop(containers, taskContainer, id, overId);
+    setDropMark(res);
+    if (res && keyboardDrag.current) {
+      const { toIndex } = moveNeighbors(res.resultIds, id);
+      const title = tasks.find((t) => t.id === id)?.title ?? "task";
+      setAnnouncement(
+        `Moved '${title}' to position ${toIndex + 1} of ${res.resultIds.length}. Space to drop, Escape to cancel.`
+      );
+    }
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const id = String(event.active.id);
+    setActiveId(null);
+    setDropMark(null);
+    keyboardDrag.current = false;
+    if (!onReorderTask) return;
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId) {
+      setAnnouncement("Reorder cancelled.");
+      return;
+    }
+    if (overId === id) return; // dropped back on itself: silent no-op
+    const res = resolveDrop(containers, taskContainer, id, overId);
+    if (!res) {
+      setAnnouncement("Reorder cancelled.");
+      return;
+    }
+    const sourceContainer = taskContainer.get(id);
+    const sourceIds = sourceContainer
+      ? (containers.get(sourceContainer) ?? []).map((t) => t.id)
+      : [];
+    if (sourceContainer === res.containerId && isNoopMove(sourceIds, res.resultIds)) return;
+    const { afterId, beforeId, toIndex } = moveNeighbors(res.resultIds, id);
+    const sectionId =
+      sourceContainer === res.containerId ? undefined : containerSectionId(res.containerId);
+    onReorderTask(id, { sectionId, afterId, beforeId });
+    const title = tasks.find((t) => t.id === id)?.title ?? "task";
+    const sectionName =
+      res.containerId.startsWith("section:")
+        ? effectiveSections.find((s) => sectionContainerId(s.id) === res.containerId)?.name
+        : null;
+    setAnnouncement(
+      `Moved '${title}' to position ${toIndex + 1} of ${res.resultIds.length}${
+        sectionName ? ` in ${sectionName}` : ""
+      }.`
+    );
+  };
+
+  const handleDragCancel = () => {
+    setActiveId(null);
+    setDropMark(null);
+    keyboardDrag.current = false;
+    setAnnouncement("Reorder cancelled.");
+  };
 
   // Main task creation handler (rapid keyboard entry supported)
   const handleCreateTask = async (e?: React.FormEvent) => {
@@ -422,67 +718,329 @@ export function TaskPane({
     });
   };
 
-  // Add Section Submit
+  // Add Section Submit (offline-first: mutate create, REST fallback)
   const handleAddSectionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeListId) return;
     const trimmed = newSectionName.trim();
     if (!trimmed) return;
 
+    const optimistic: BackendSection = {
+      id: uuidv7(),
+      userId: userId ?? "",
+      listId: activeListId,
+      name: trimmed,
+      position: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      version: 0,
+    };
+
     setIsSectionSubmitting(true);
+    setSections((prev) => [...prev, optimistic]);
+    setNewSectionName("");
+    setIsAddingSection(false);
     try {
-      const created = await createSection(activeListId, trimmed);
-      setSections((prev) => [...prev, created]);
-      setNewSectionName("");
-      setIsAddingSection(false);
-    } catch (err) {
-      console.error("Failed to create section:", err);
+      if (userId) {
+        await mutate(userId, {
+          entity: "sections",
+          op: "create",
+          entityId: optimistic.id,
+          patch: { name: trimmed, listId: activeListId },
+        });
+      } else {
+        const created = await createSection(activeListId, trimmed);
+        setSections((prev) => prev.map((s) => (s.id === optimistic.id ? created : s)));
+      }
+      success(`Created section "${trimmed}"`);
+    } catch {
+      // mutate failed (unknown local row, etc.) — REST is the fallback
+      try {
+        const created = await createSection(activeListId, trimmed);
+        setSections((prev) => prev.map((s) => (s.id === optimistic.id ? created : s)));
+        success(`Created section "${trimmed}"`);
+      } catch (restErr) {
+        console.error("Failed to create section:", restErr);
+        setSections((prev) => prev.filter((s) => s.id !== optimistic.id));
+        toast({
+          title: "Could not create section",
+          message: restErr instanceof Error ? restErr.message : "Please try again",
+          type: "error",
+        });
+      }
     } finally {
       setIsSectionSubmitting(false);
     }
   };
 
-  // Rename Section Submit
+  // Rename Section Submit (offline-first: mutate update, REST fallback)
   const handleRenameSectionSubmit = async (sectionId: string, e?: React.FormEvent) => {
     e?.preventDefault();
     const trimmed = editSectionName.trim();
+    const previous = sections.find((s) => s.id === sectionId);
     if (!trimmed) {
       setEditingSectionId(null);
       return;
     }
+    if (!previous || previous.name === trimmed) {
+      setEditingSectionId(null);
+      return;
+    }
 
     setIsSectionSubmitting(true);
+    setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, name: trimmed } : s)));
+    setEditingSectionId(null);
     try {
-      const updated = await updateSection(sectionId, trimmed);
-      setSections((prev) => prev.map((s) => (s.id === sectionId ? updated : s)));
-      setEditingSectionId(null);
-    } catch (err) {
-      console.error("Failed to rename section:", err);
+      if (userId) {
+        await mutate(userId, {
+          entity: "sections",
+          op: "update",
+          entityId: sectionId,
+          patch: { name: trimmed },
+        });
+      } else {
+        const updated = await updateSection(sectionId, trimmed);
+        setSections((prev) => prev.map((s) => (s.id === sectionId ? updated : s)));
+      }
+    } catch {
+      try {
+        const updated = await updateSection(sectionId, trimmed);
+        setSections((prev) => prev.map((s) => (s.id === sectionId ? updated : s)));
+      } catch (restErr) {
+        console.error("Failed to rename section:", restErr);
+        setSections((prev) =>
+          prev.map((s) => (s.id === sectionId ? { ...s, name: previous.name } : s))
+        );
+        toast({
+          title: "Could not rename section",
+          message: restErr instanceof Error ? restErr.message : "Please try again",
+          type: "error",
+        });
+      }
     } finally {
       setIsSectionSubmitting(false);
     }
   };
 
-  // Delete Section Handler
+  // Delete Section (no confirm — Undo toast restores via mutate/REST)
   const handleDeleteSection = async (section: BackendSection) => {
-    if (
-      !window.confirm(
-        `Delete section "${section.name}"? Tasks inside will become unsectioned.`
-      )
-    ) {
-      return;
+    const snapshot = sections;
+    setSections((prev) => prev.filter((s) => s.id !== section.id));
+    setOpenSectionMenuId(null);
+
+    const doRestDelete = async () => {
+      await deleteSection(section.id);
+    };
+    try {
+      if (userId) {
+        await mutate(userId, { entity: "sections", op: "delete", entityId: section.id });
+      } else {
+        await doRestDelete();
+      }
+    } catch {
+      try {
+        await doRestDelete();
+      } catch (restErr) {
+        console.error("Failed to delete section:", restErr);
+        setSections(snapshot);
+        toast({
+          title: "Could not delete section",
+          message: restErr instanceof Error ? restErr.message : "Please try again",
+          type: "error",
+        });
+        return;
+      }
     }
 
-    try {
-      await deleteSection(section.id);
-      setSections((prev) => prev.filter((s) => s.id !== section.id));
-    } catch (err) {
-      console.error("Failed to delete section:", err);
+    const restore = async () => {
+      setSections(snapshot);
+      try {
+        if (userId) {
+          await mutate(userId, { entity: "sections", op: "restore", entityId: section.id, patch: {} });
+        } else {
+          await restoreTrash("section", section.id);
+        }
+      } catch (err) {
+        console.error("Failed to restore section:", err);
+        try {
+          await restoreTrash("section", section.id);
+          setSections(snapshot);
+        } catch {
+          // Leave the optimistic state; the list refetches on next view change.
+        }
+      }
+    };
+    toast({
+      title: "Section deleted",
+      message: `"${section.name}" removed. Its tasks are now unsectioned.`,
+      actionLabel: "Undo",
+      onAction: () => {
+        restore().catch((err) => console.error("Failed to restore section:", err));
+      },
+    });
+  };
+
+  // Nesting depth per task (for the subtle row indent + Tab planning).
+  const taskDepthMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const t of tasks) map.set(t.id, depthOfTask(tasks, t.id));
+    return map;
+  }, [tasks]);
+
+  // Tab / Shift+Tab on a focused row: indent under the row above, or lift
+  // back up. Persists through the shared update path (offline-first mutate
+  // + REST fallback inside the workspace handler).
+  const handleIndentTask = (id: string, direction: "indent" | "outdent", ordered: TaskItem[]) => {
+    const task = tasks.find((t) => t.id === id);
+    if (!task || !onUpdateTask) return;
+    if (direction === "indent") {
+      const plan = planIndent(ordered, tasks, id);
+      if (!plan.ok) {
+        if (plan.reason === "depth") {
+          toast({ title: "Cannot indent further", message: copy.tasks.subtaskDepthLimit, type: "error" });
+        }
+        return;
+      }
+      onUpdateTask({ ...task, parentId: plan.parentId, updatedAt: "Just now" });
+    } else {
+      const plan = planOutdent(tasks, id);
+      if (!plan.ok) return;
+      onUpdateTask({ ...task, parentId: plan.parentId, updatedAt: "Just now" });
+    }
+    // Keep keyboard focus on the row across the re-render.
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(id)}"]`)?.focus();
+    });
+  };
+
+  // Context-menu "Move to…" between sections of the current list.
+  const handleMoveToSection = (taskId: string, sectionId: string | null) => {
+    if (!activeListId) return;
+    if (onMoveTask) {
+      onMoveTask(taskId, activeListId, sectionId);
+      return;
+    }
+    const task = tasks.find((t) => t.id === taskId);
+    if (task && onUpdateTask) {
+      onUpdateTask({ ...task, sectionId, updatedAt: "Just now" });
     }
   };
 
+  const handleContextMenuTask = (task: TaskItem, anchor: { x: number; y: number }) => {
+    setMenuState({ taskId: task.id, x: anchor.x, y: anchor.y });
+  };
+
+  // Shared row renderer. Sortable when the workspace provided onReorderTask
+  // (done-group rows stay plain — completed items don't reorder).
+  const renderTaskRow = (
+    task: TaskItem,
+    ordered: TaskItem[],
+    containerId?: string,
+    wrapperStyle?: React.CSSProperties
+  ) => {
+    const row = (
+      <TaskRow
+        key={task.id}
+        task={task}
+        depth={taskDepthMap.get(task.id) ?? 1}
+        isSelected={selectedTaskId === task.id}
+        isBulkSelected={selectedTaskIds?.has(task.id)}
+        hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+        showListName={showListName}
+        onSelect={onSelectTask}
+        onToggleComplete={onToggleComplete}
+        onDelete={onDeleteTask}
+        onContextMenuTask={handleContextMenuTask}
+        onIndentTask={onUpdateTask ? (id, dir) => handleIndentTask(id, dir, ordered) : undefined}
+        onToggleBulkSelect={
+          onToggleSelectTask
+            ? (id, shiftKey) =>
+                onToggleSelectTask(
+                  id,
+                  shiftKey,
+                  filteredTasks.map((t) => t.id)
+                )
+            : undefined
+        }
+      />
+    );
+    if (!onReorderTask || !containerId) return row;
+    const mark =
+      dropMark && dropMark.containerId === containerId && dropMark.overTaskId === task.id
+        ? dropMark.placeBefore
+          ? ("before" as const)
+          : ("after" as const)
+        : null;
+    return (
+      <SortableTaskRow
+        key={task.id}
+        task={task}
+        depth={taskDepthMap.get(task.id) ?? 1}
+        isSelected={selectedTaskId === task.id}
+        isBulkSelected={selectedTaskIds?.has(task.id)}
+        hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+        showListName={showListName}
+        onSelect={onSelectTask}
+        onToggleComplete={onToggleComplete}
+        onDelete={onDeleteTask}
+        onContextMenuTask={handleContextMenuTask}
+        onIndentTask={onUpdateTask ? (id, dir) => handleIndentTask(id, dir, ordered) : undefined}
+        onToggleBulkSelect={
+          onToggleSelectTask
+            ? (id, shiftKey) =>
+                onToggleSelectTask(
+                  id,
+                  shiftKey,
+                  filteredTasks.map((t) => t.id)
+                )
+            : undefined
+        }
+        insertion={mark}
+        wrapperStyle={wrapperStyle}
+      />
+    );
+  };
+
+  const activeTask = activeId ? tasks.find((t) => t.id === activeId) ?? null : null;
+
+  const menuTask = menuState ? tasks.find((t) => t.id === menuState.taskId) ?? null : null;
+
+  // Collapsed-by-default "Done (n)" group for completed tasks in the current view.
+  // Expand animates only when motion is allowed (motion-safe:* = instant otherwise).
+  const renderDoneGroup = () => {
+    if (!showDoneGroup) return null;
+    return (
+      <div className="overflow-hidden rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50">
+        <button
+          type="button"
+          onClick={() => setIsDoneExpanded((v) => !v)}
+          aria-expanded={isDoneExpanded}
+          aria-label={isDoneExpanded ? `Collapse ${doneTasks.length} completed tasks` : `Expand ${doneTasks.length} completed tasks`}
+          className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-[#F2F5FC]/70 dark:hover:bg-[#051A4D]/60"
+        >
+          {isDoneExpanded ? (
+            <ChevronDown className="h-4 w-4 shrink-0 text-[#5B6478] dark:text-[#9BB0D3]" />
+          ) : (
+            <ChevronRight className="h-4 w-4 shrink-0 text-[#5B6478] dark:text-[#9BB0D3]" />
+          )}
+          <span className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+            Done
+          </span>
+          <span className="rounded-full bg-[#F2F5FC] px-2 py-0.5 font-mono text-[10px] font-semibold text-[#5B6478] dark:bg-[#051A4D] dark:text-[#9BB0D3]">
+            {doneTasks.length} {doneTasks.length === 1 ? "task" : "tasks"}
+          </span>
+        </button>
+        {isDoneExpanded && (
+          <div className="border-t border-[#E4E8F2] motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-top-1 motion-safe:duration-200 dark:border-[#132E74]">
+            {doneTasks.map((task) => renderTaskRow(task, doneTasks))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
-    <div className="flex flex-1 flex-col overflow-y-auto bg-[#F2F5FC]/40 dark:bg-[#051A4D]/40">
+    <div ref={scrollRef} className="flex flex-1 flex-col overflow-y-auto bg-[#F2F5FC]/40 dark:bg-[#051A4D]/40">
       {/* Workspace Header Toolbar */}
       <div className="border-b border-[#E4E8F2] bg-white px-4 py-4 sm:px-6 dark:border-[#132E74] dark:bg-[#051A4D]">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -623,6 +1181,18 @@ export function TaskPane({
               <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-[#E4E8F2] bg-[#F2F5FC] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#5B6478] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3]">
                 ↵ Enter
               </kbd>
+            )}
+            {onOpenTemplates && (
+              <button
+                type="button"
+                onClick={onOpenTemplates}
+                title="New from template"
+                aria-label="New from template"
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#E4E8F2] bg-[#F2F5FC]/60 px-2 py-1 text-[11px] font-semibold text-[#5B6478] transition-colors hover:border-[#09318D]/40 hover:text-[#09318D] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC]/50 dark:hover:text-[#FFA8D7] cursor-pointer"
+              >
+                <Bookmark className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Template</span>
+              </button>
             )}
           </div>
 
@@ -899,6 +1469,14 @@ export function TaskPane({
         )}
 
         {/* Task Rows List with Optional Section Grouping */}
+        <DndContext
+          sensors={dndSensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
+        >
         {isLoading ? (
           <TaskRowSkeletonList count={5} />
         ) : filteredTasks.length === 0 ? (
@@ -948,29 +1526,52 @@ export function TaskPane({
           )
         ) : effectiveSections.length === 0 ? (
           /* Render Flat Task List when no sections exist */
-          <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-            {filteredTasks.map((task) => (
-              <TaskRow
-                key={task.id}
-                task={task}
-                isSelected={selectedTaskId === task.id}
-                isBulkSelected={selectedTaskIds?.has(task.id)}
-                hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-                onSelect={onSelectTask}
-                onToggleComplete={onToggleComplete}
-                onDelete={onDeleteTask}
-                onToggleBulkSelect={
-                  onToggleSelectTask
-                    ? (id, shiftKey) =>
-                        onToggleSelectTask(
-                          id,
-                          shiftKey,
-                          filteredTasks.map((t) => t.id)
-                        )
-                    : undefined
-                }
-              />
-            ))}
+          <div className="space-y-3">
+            {tasksForGrouping.length > 0 && (
+              <EndDropZone
+                containerId={FLAT_CONTAINER}
+                className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden"
+              >
+                <SortableContext
+                  items={tasksForGrouping.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {shouldVirtualize ? (
+                    <div
+                      style={{
+                        height: rowVirtualizer.getTotalSize(),
+                        position: "relative",
+                      }}
+                    >
+                      {rowVirtualizer.getVirtualItems().map((vi) => {
+                        const task = tasksForGrouping[vi.index];
+                        if (!task) return null;
+                        return renderTaskRow(task, tasksForGrouping, FLAT_CONTAINER, {
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          transform: `translateY(${vi.start}px)`,
+                        });
+                      })}
+                      {dropMark?.containerId === FLAT_CONTAINER && !dropMark.overTaskId && (
+                        <InsertionLine />
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      {tasksForGrouping.map((task) =>
+                        renderTaskRow(task, tasksForGrouping, FLAT_CONTAINER)
+                      )}
+                      {dropMark?.containerId === FLAT_CONTAINER && !dropMark.overTaskId && (
+                        <InsertionLine />
+                      )}
+                    </>
+                  )}
+                </SortableContext>
+              </EndDropZone>
+            )}
+            {renderDoneGroup()}
           </div>
         ) : (
           /* Render Collapsible Sections Grouping */
@@ -984,30 +1585,22 @@ export function TaskPane({
                     {unsectionedTasks.length}
                   </span>
                 </div>
-                <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-                  {unsectionedTasks.map((task) => (
-                    <TaskRow
-                      key={task.id}
-                      task={task}
-                      isSelected={selectedTaskId === task.id}
-                      isBulkSelected={selectedTaskIds?.has(task.id)}
-                      hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-                      onSelect={onSelectTask}
-                      onToggleComplete={onToggleComplete}
-                      onDelete={onDeleteTask}
-                      onToggleBulkSelect={
-                        onToggleSelectTask
-                          ? (id, shiftKey) =>
-                              onToggleSelectTask(
-                                id,
-                                shiftKey,
-                                filteredTasks.map((t) => t.id)
-                              )
-                          : undefined
-                      }
-                    />
-                  ))}
-                </div>
+                <EndDropZone
+                  containerId={UNSECTIONED_CONTAINER}
+                  className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden"
+                >
+                  <SortableContext
+                    items={unsectionedTasks.map((t) => t.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    {unsectionedTasks.map((task) =>
+                      renderTaskRow(task, unsectionedTasks, UNSECTIONED_CONTAINER)
+                    )}
+                    {dropMark?.containerId === UNSECTIONED_CONTAINER && !dropMark.overTaskId && (
+                      <InsertionLine />
+                    )}
+                  </SortableContext>
+                </EndDropZone>
               </div>
             )}
 
@@ -1019,9 +1612,10 @@ export function TaskPane({
               const isAddingTaskHere = activeSectionForNewTask === section.id;
 
               return (
-                <div
+                <EndDropZone
                   key={section.id}
-                  className="rounded-xl border border-[#E4E8F2] bg-white/70 p-3 shadow-xs dark:border-[#132E74] dark:bg-[#082363]/60 transition-all"
+                  containerId={sectionContainerId(section.id)}
+                  className="rounded-xl border border-[#E4E8F2] bg-white/70 p-3 shadow-xs dark:border-[#132E74] dark:bg-[#082363]/60 transition-all motion-reduce:transition-none"
                 >
                   {/* Collapsible Section Header */}
                   <div className="flex items-center justify-between gap-2 pb-2">
@@ -1111,30 +1705,61 @@ export function TaskPane({
                         <span className="hidden sm:inline">Add task</span>
                       </button>
 
-                      {/* Rename Section Button */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingSectionId(section.id);
-                          setEditSectionName(section.name);
-                        }}
-                        className="flex h-7 w-7 items-center justify-center rounded-md text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] transition-colors dark:text-[#9BB0D3] dark:hover:bg-[#051A4D] cursor-pointer"
-                        title="Rename section"
-                        aria-label={`Rename section ${section.name}`}
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </button>
-
-                      {/* Delete Section Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteSection(section)}
-                        className="flex h-7 w-7 items-center justify-center rounded-md text-red-500 hover:bg-red-50 transition-colors dark:hover:bg-red-950/40 cursor-pointer"
-                        title="Delete section"
-                        aria-label={`Delete section ${section.name}`}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
+                      {/* Section Options Menu (rename / delete) */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setOpenSectionMenuId(openSectionMenuId === section.id ? null : section.id)
+                          }
+                          aria-label={`Section options for ${section.name}`}
+                          aria-expanded={openSectionMenuId === section.id}
+                          aria-haspopup="menu"
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] transition-colors dark:text-[#9BB0D3] dark:hover:bg-[#051A4D] cursor-pointer"
+                        >
+                          <MoreHorizontal className="h-3.5 w-3.5" />
+                        </button>
+                        {openSectionMenuId === section.id && (
+                          <>
+                            <button
+                              type="button"
+                              aria-hidden="true"
+                              tabIndex={-1}
+                              onClick={() => setOpenSectionMenuId(null)}
+                              className="fixed inset-0 z-40 cursor-default"
+                            />
+                            <div
+                              role="menu"
+                              aria-label={`Section options for ${section.name}`}
+                              className="absolute right-0 top-full z-50 mt-1 w-44 rounded-xl border border-[#E4E8F2] bg-white p-1 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] animate-in fade-in zoom-in-95 duration-100"
+                            >
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setOpenSectionMenuId(null);
+                                  setEditingSectionId(section.id);
+                                  setEditSectionName(section.name);
+                                }}
+                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[#0B1220] hover:bg-[#F2F5FC] transition-colors cursor-pointer dark:text-[#E4E8F2] dark:hover:bg-[#082363]"
+                              >
+                                <Pencil className="h-3.5 w-3.5 text-[#5B6478] dark:text-[#9BB0D3]" />
+                                <span>Rename section</span>
+                              </button>
+                              <hr className="my-1 border-[#E4E8F2] dark:border-[#132E74]" />
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => handleDeleteSection(section)}
+                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer dark:text-rose-400 dark:hover:bg-rose-950/40"
+                              >
+                                <Trash2 className="h-3.5 w-3.5 text-rose-500" />
+                                <span>Delete section</span>
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -1202,40 +1827,52 @@ export function TaskPane({
                       {sectionTasks.length === 0 ? (
                         <div className="py-3 text-center text-xs text-[#5B6478]/70 dark:text-[#9BB0D3]/60 italic">
                           No tasks in this section yet. Click &quot;Add task&quot; to create one.
+                          {dropMark?.containerId === sectionContainerId(section.id) && (
+                            <InsertionLine />
+                          )}
                         </div>
                       ) : (
                         <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-                          {sectionTasks.map((task) => (
-                            <TaskRow
-                              key={task.id}
-                              task={task}
-                              isSelected={selectedTaskId === task.id}
-                              isBulkSelected={selectedTaskIds?.has(task.id)}
-                              hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-                              onSelect={onSelectTask}
-                              onToggleComplete={onToggleComplete}
-                              onDelete={onDeleteTask}
-                              onToggleBulkSelect={
-                                onToggleSelectTask
-                                  ? (id, shiftKey) =>
-                                      onToggleSelectTask(
-                                        id,
-                                        shiftKey,
-                                        filteredTasks.map((t) => t.id)
-                                      )
-                                  : undefined
-                              }
-                            />
-                          ))}
+                          <SortableContext
+                            items={sectionTasks.map((t) => t.id)}
+                            strategy={verticalListSortingStrategy}
+                          >
+                            {sectionTasks.map((task) =>
+                              renderTaskRow(task, sectionTasks, sectionContainerId(section.id))
+                            )}
+                            {dropMark?.containerId === sectionContainerId(section.id) &&
+                              !dropMark.overTaskId && <InsertionLine />}
+                          </SortableContext>
                         </div>
                       )}
                     </div>
                   )}
-                </div>
+                </EndDropZone>
               );
             })}
+            {renderDoneGroup()}
           </div>
         )}
+          <DragOverlay dropAnimation={null}>
+            {activeTask && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none rounded-xl bg-white shadow-[0_8px_24px_rgba(9,49,141,0.28)] ring-1 ring-[#09318D]/30 motion-safe:transition-shadow motion-safe:duration-150 motion-reduce:transition-none dark:bg-[#082363] dark:ring-[#FD91CC]/40"
+              >
+                <TaskRow
+                  task={activeTask}
+                  depth={taskDepthMap.get(activeTask.id) ?? 1}
+                  onSelect={() => {}}
+                  onToggleComplete={() => {}}
+                  onDelete={() => {}}
+                />
+              </div>
+            )}
+          </DragOverlay>
+          <div role="status" aria-live="polite" className="sr-only">
+            {announcement}
+          </div>
+        </DndContext>
 
         {/* Bottom [+ Add Section] Button (When viewing a specific backend list) */}
         {activeListId && !isAddingSection && (
@@ -1264,6 +1901,25 @@ export function TaskPane({
           </div>
         )}
       </div>
+
+      {/* Right-click / Shift+F10 task context menu */}
+      {menuTask && menuState && (
+        <TaskContextMenu
+          task={menuTask}
+          anchor={{ x: menuState.x, y: menuState.y }}
+          sections={effectiveSections}
+          userId={userId}
+          onClose={() => setMenuState(null)}
+          onOpen={(t) => onSelectTask(t)}
+          onDuplicate={onDuplicateTask}
+          onArchive={onArchiveTask}
+          onDelete={onDeleteTask}
+          onUpdateTask={onUpdateTask}
+          onMoveToSection={
+            activeListId ? (taskId, sectionId) => handleMoveToSection(taskId, sectionId) : undefined
+          }
+        />
+      )}
     </div>
   );
 }

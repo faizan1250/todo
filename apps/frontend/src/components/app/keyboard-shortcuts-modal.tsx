@@ -17,7 +17,7 @@ export const SHORTCUTS_DATA: ShortcutItem[] = [
   { keys: ["Esc"], description: "Close modal, drawer, or deselect", category: "Navigation" },
 
   // Task Actions
-  { keys: ["N"], description: "Quick focus task creation input", category: "Task Actions" },
+  { keys: ["N", "Q"], description: "Quick focus task creation input", category: "Task Actions" },
   { keys: ["Space", "X"], description: "Toggle complete on selected task", category: "Task Actions" },
   { keys: ["D", "⌫"], description: "Delete selected task (with undo toast)", category: "Task Actions" },
   { keys: ["Enter"], description: "Expand selected task detail", category: "Task Actions" },

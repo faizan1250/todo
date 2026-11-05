@@ -25,6 +25,8 @@ import {
   Archive,
   FolderPlus,
   Bookmark,
+  Tag as TagIcon,
+  Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BackendList, BackendFolder } from "@/lib/api";
@@ -68,6 +70,13 @@ interface SidebarProps {
   onOpenTemplates?: () => void;
   trashCount?: number;
   templateCount?: number;
+
+  // Tags
+  tags?: Array<{ id: string; name: string; color?: string | null }>;
+  tagCounts?: Record<string, number>;
+  activeTagId?: string | null;
+  onSelectTag?: (tag: { id: string; name: string; color?: string | null }) => void;
+  onOpenTags?: () => void;
 
   // Saved Filters
   savedFilters?: Array<{ id: string; name: string; icon?: string | null; color?: string | null; pinned: boolean }>;
@@ -128,6 +137,11 @@ export function Sidebar({
   onOpenTemplates,
   trashCount,
   templateCount,
+  tags = [],
+  tagCounts = {},
+  activeTagId = null,
+  onSelectTag,
+  onOpenTags,
   savedFilters = [],
   activeFilterId = null,
   onSelectFilter,
@@ -898,6 +912,79 @@ export function Sidebar({
                 </div>
               );
             })}
+          </nav>
+        </div>
+
+        {/* Tags Section */}
+        <div>
+          {!isCollapsed && (
+            <div className="flex items-center justify-between px-2 pb-2 text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]/80">
+              <span>Tags</span>
+              {onOpenTags && (
+                <button
+                  type="button"
+                  onClick={onOpenTags}
+                  className="flex h-5 w-5 items-center justify-center rounded text-[#5B6478] hover:bg-[#E4E8F2] hover:text-[#09318D] transition-colors focus-ring-pink dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-[#FFA8D7] cursor-pointer"
+                  title="Manage Tags"
+                  aria-label="Manage Tags"
+                >
+                  <Settings2 className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+          <nav className="space-y-1" aria-label="Tags">
+            {tags.length === 0 && !isCollapsed && (
+              <div className="px-2 py-1 text-[11px] text-[#5B6478]/70 dark:text-[#9BB0D3]/60 italic">
+                No tags yet
+              </div>
+            )}
+            {isCollapsed && onOpenTags && (
+              <button
+                type="button"
+                onClick={onOpenTags}
+                title="Manage Tags"
+                aria-label="Manage Tags"
+                className="flex w-full items-center justify-center rounded-lg px-0 py-2 text-xs font-medium text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-white transition-all duration-150 cursor-pointer focus-ring-pink"
+              >
+                <TagIcon className="h-4 w-4 shrink-0 text-[#09318D] dark:text-[#FD91CC]" />
+              </button>
+            )}
+            {!isCollapsed &&
+              tags.map((tag) => {
+                const isActive = activeTagId === tag.id;
+                const count = tagCounts[tag.id] ?? 0;
+                return (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    onClick={() => onSelectTag?.(tag)}
+                    title={`${tag.name} (${count})`}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium transition-all duration-150 cursor-pointer focus-ring-pink",
+                      isActive
+                        ? "bg-[#09318D] text-white shadow-xs dark:bg-[#0D41B4] dark:text-white"
+                        : "text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-white"
+                    )}
+                  >
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: tag.color || "#09318D" }}
+                    />
+                    <span className="flex-1 text-left truncate">{tag.name}</span>
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-[10px] font-mono font-semibold",
+                        isActive
+                          ? "bg-white/20 text-white"
+                          : "bg-[#F2F5FC] text-[#5B6478] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                      )}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
           </nav>
         </div>
 

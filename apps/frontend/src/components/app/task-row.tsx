@@ -1,20 +1,39 @@
 "use client";
 
 import * as React from "react";
-import { Check, Trash2, Calendar, Tag, CheckSquare, Repeat, Clock, MapPin } from "lucide-react";
+import { Check, Trash2, Calendar, Tag, CheckSquare, Repeat, Clock, MapPin, Flag, FileText, ListChecks, GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatEstimate } from "@/lib/adapters";
+import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
+import { useSortable } from "@dnd-kit/sortable";
 import type { TaskItem } from "./types";
+
+/** dnd-kit activator props for the row's drag handle (listeners stay on the handle only). */
+export interface TaskRowDragHandle {
+  attributes: DraggableAttributes;
+  listeners: DraggableSyntheticListeners;
+}
 
 interface TaskRowProps {
   task: TaskItem;
   isSelected?: boolean;
   isBulkSelected?: boolean;
   hasBulkSelection?: boolean;
+  showListName?: boolean;
+  /** Nesting depth (1 = top level). Deeper rows get a subtle indent. */
+  depth?: number;
   onToggleComplete: (id: string) => void;
   onSelect: (task: TaskItem) => void;
   onDelete: (id: string) => void;
   onToggleBulkSelect?: (id: string, shiftKey: boolean) => void;
+  /** Right-click / Shift+F10 origin. The pane renders the shared menu. */
+  onContextMenuTask?: (task: TaskItem, anchor: { x: number; y: number }) => void;
+  /** Tab (indent) / Shift+Tab (outdent). The pane owns the move. */
+  onIndentTask?: (id: string, direction: "indent" | "outdent") => void;
+  /** dnd-kit grip handle. When present a reorder grip renders; row clicks are unaffected. */
+  dragHandle?: TaskRowDragHandle | null;
+  /** True while this row is the active drag source (dims the resting row). */
+  isDragging?: boolean;
 }
 
 export function TaskRow({
@@ -22,10 +41,16 @@ export function TaskRow({
   isSelected = false,
   isBulkSelected = false,
   hasBulkSelection = false,
+  showListName = false,
+  depth = 1,
   onToggleComplete,
   onSelect,
   onDelete,
   onToggleBulkSelect,
+  onContextMenuTask,
+  onIndentTask,
+  dragHandle = null,
+  isDragging = false,
 }: TaskRowProps) {
   const isSelectionMode = Boolean(hasBulkSelection || isBulkSelected);
 
@@ -35,10 +60,24 @@ export function TaskRow({
   const completedSubtasks = task.subtasks.filter((s) => s.completed).length;
   const totalSubtasks = task.subtasks.length;
 
+  const priorityWord =
+    task.numericPriority !== undefined && task.numericPriority >= 4 ? "Urgent" : "High";
+
+  const completedChecklist = task.checklist.filter((c) => c.done).length;
+  const totalChecklist = task.checklist.length;
+  const hasNotes = Boolean(task.notes?.trim());
+
+  const anchorFromRect = (el: HTMLElement | null): { x: number; y: number } => {
+    if (!el) return { x: 0, y: 0 };
+    const rect = el.getBoundingClientRect();
+    return { x: Math.min(rect.left + 120, window.innerWidth - 240), y: rect.bottom + 4 };
+  };
+
   return (
     <div
       role="button"
       tabIndex={0}
+      data-task-id={task.id}
       aria-label={`Task: ${task.title}`}
       onClick={(e) => {
         if (onToggleBulkSelect && (e.shiftKey || e.metaKey || e.ctrlKey)) {
@@ -48,25 +87,56 @@ export function TaskRow({
           onSelect(task);
         }
       }}
+      onContextMenu={(e) => {
+        if (!onContextMenuTask) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenuTask(task, { x: e.clientX, y: e.clientY });
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           onSelect(task);
         } else if (e.key === " ") {
           e.preventDefault();
           onToggleComplete(task.id);
+        } else if (e.key === "Tab" && onIndentTask) {
+          e.preventDefault();
+          e.stopPropagation();
+          onIndentTask(task.id, e.shiftKey ? "outdent" : "indent");
+        } else if (e.key === "F10" && e.shiftKey && onContextMenuTask) {
+          e.preventDefault();
+          e.stopPropagation();
+          onContextMenuTask(task, anchorFromRect(e.currentTarget as HTMLElement));
         }
       }}
+      style={depth > 1 ? { paddingLeft: `${14 + (depth - 1) * 18}px` } : undefined}
       className={cn(
-        "group relative flex items-center justify-between gap-3 border-b border-[#E4E8F2]/60 last:border-b-0 py-3 px-3.5 transition-colors duration-150 cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-[#FD91CC] focus:ring-offset-1 dark:border-[#132E74]/50 dark:focus:ring-offset-[#051A4D]",
+        "group relative flex h-14 items-center justify-between gap-3 border-b border-[#E4E8F2]/60 last:border-b-0 px-3.5 transition-colors duration-150 cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-[#FD91CC] focus:ring-offset-1 dark:border-[#132E74]/50 dark:focus:ring-offset-[#051A4D]",
         isBulkSelected
           ? "bg-[#F2F5FC] ring-1 ring-[#09318D]/40 dark:bg-[#082363] dark:ring-[#FD91CC]/30"
           : isSelected
           ? "bg-[#F2F5FC] dark:bg-[#082363]"
           : "hover:bg-[#F2F5FC]/60 dark:hover:bg-[#082363]/40",
-        task.completed && "opacity-70"
+        task.completed && "opacity-70",
+        isDragging && "opacity-40"
       )}
     >
       <div className="flex items-center gap-3 min-w-0 flex-1">
+        {/* Reorder grip — the ONLY drag activator, so row click/select never fights dragging.
+            Hover-revealed on desktop, always visible on touch (hover:none). */}
+        {dragHandle && (
+          <button
+            type="button"
+            aria-label={`Reorder task ${task.title}. Press Space to lift, arrow keys to move, Space to drop, Escape to cancel.`}
+            title="Drag to reorder"
+            onClick={(e) => e.stopPropagation()}
+            {...dragHandle.attributes}
+            {...dragHandle.listeners}
+            className="flex h-7 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded text-[#CAD5E8] transition-colors duration-150 hover:bg-[#F2F5FC] hover:text-[#09318D] focus-visible:text-[#09318D] active:cursor-grabbing dark:text-[#1F459E] dark:hover:bg-[#051A4D] dark:hover:text-[#FD91CC] dark:focus-visible:text-[#FD91CC] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-70 motion-reduce:transition-none"
+          >
+            <GripVertical className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
         {/* Multi-Select Checkbox Column - ONLY rendered when selection mode is active */}
         {isSelectionMode && onToggleBulkSelect && (
           <div className="flex items-center justify-center shrink-0">
@@ -83,16 +153,20 @@ export function TaskRow({
                 e.stopPropagation();
                 onToggleBulkSelect(task.id, e.shiftKey);
               }}
-              className={cn(
-                "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-all duration-150 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FD91CC]",
-                isBulkSelected
-                  ? "border-[#09318D] bg-[#09318D] text-white dark:border-[#FD91CC] dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                  : "border-[#CAD5E8] bg-white hover:border-[#09318D] dark:border-[#1F459E] dark:bg-[#051A4D] dark:hover:border-[#FD91CC]"
-              )}
+              className="flex min-h-[48px] min-w-[48px] shrink-0 items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FD91CC] rounded-md"
             >
-              {isBulkSelected && (
-                <Check className="h-2.5 w-2.5 stroke-[3] animate-in zoom-in-50 duration-150" />
-              )}
+              <span
+                className={cn(
+                  "flex h-4 w-4 items-center justify-center rounded border transition-all duration-150",
+                  isBulkSelected
+                    ? "border-[#09318D] bg-[#09318D] text-white dark:border-[#FD91CC] dark:bg-[#FD91CC] dark:text-[#051A4D]"
+                    : "border-[#CAD5E8] bg-white hover:border-[#09318D] dark:border-[#1F459E] dark:bg-[#051A4D] dark:hover:border-[#FD91CC]"
+                )}
+              >
+                {isBulkSelected && (
+                  <Check className="h-2.5 w-2.5 stroke-[3] animate-in zoom-in-50 duration-150 motion-reduce:animate-none" />
+                )}
+              </span>
             </button>
           </div>
         )}
@@ -107,24 +181,31 @@ export function TaskRow({
             e.stopPropagation();
             onToggleComplete(task.id);
           }}
-          className={cn(
-            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-all duration-150 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FD91CC]",
-            task.completed
-              ? "border-[#FD91CC] bg-[#FD91CC] text-[#051A4D] shadow-xs"
-              : "border-[#CAD5E8] bg-white hover:border-[#09318D] dark:border-[#1F459E] dark:bg-[#051A4D] dark:hover:border-[#FD91CC]"
-          )}
+          className="flex min-h-[48px] min-w-[48px] shrink-0 items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FD91CC] rounded-full"
         >
-          {task.completed && (
-            <Check className="h-3 w-3 stroke-[3] animate-in zoom-in-50 duration-150" />
-          )}
+          <span
+            className={cn(
+              "flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-150",
+              task.completed
+                ? "border-[#FD91CC] bg-[#FD91CC] text-[#051A4D] shadow-xs"
+                : "border-[#CAD5E8] bg-white hover:border-[#09318D] dark:border-[#1F459E] dark:bg-[#051A4D] dark:hover:border-[#FD91CC]"
+            )}
+          >
+            {task.completed && (
+              <Check className="h-3 w-3 stroke-[3] animate-in zoom-in-50 duration-150 motion-reduce:animate-none" />
+            )}
+          </span>
         </button>
 
-        {/* Subtle Priority Indicator: quiet rose dot for High/Urgent, hidden for normal/low */}
+        {/* Priority flag: rose dot paired with a tiny word so meaning never rests on color alone */}
         {isHighPriority && (
           <span
-            className="h-2 w-2 shrink-0 rounded-full bg-rose-500"
-            title="High Priority"
-          />
+            className="inline-flex shrink-0 items-center gap-1 text-rose-600 dark:text-rose-400"
+            title={`${priorityWord} priority`}
+          >
+            <Flag className="h-3 w-3 fill-current" aria-hidden="true" />
+            <span className="text-[10px] font-bold uppercase tracking-wide">{priorityWord}</span>
+          </span>
         )}
 
         {/* Task Title & Quiet Meta Info */}
@@ -141,9 +222,9 @@ export function TaskRow({
           </p>
 
           {/* Subtitle Details: Due Date, Recurrence, Estimate, Location, Subtask Progress, Folder */}
-          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
+          <div className="mt-0.5 flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
             {task.dueDate && (
-              <span className="flex items-center gap-1 font-mono">
+              <span className="flex shrink-0 items-center gap-1 font-mono">
                 <Calendar className="h-3 w-3" />
                 <span>{task.dueDate}</span>
               </span>
@@ -153,7 +234,7 @@ export function TaskRow({
               <span
                 data-testid="task-recurrence-badge"
                 title="Recurring task"
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium bg-[#09318D]/10 text-[#09318D] dark:bg-[#FD91CC]/15 dark:text-[#FFA8D7]"
+                className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium bg-[#09318D]/10 text-[#09318D] dark:bg-[#FD91CC]/15 dark:text-[#FFA8D7]"
               >
                 <Repeat className="h-3 w-3" />
                 <span>Repeat</span>
@@ -164,7 +245,7 @@ export function TaskRow({
               <span
                 data-testid="task-estimate-badge"
                 title={`Estimated: ${formatEstimate(task.estimateMin)}`}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
               >
                 <Clock className="h-3 w-3" />
                 <span>{formatEstimate(task.estimateMin)}</span>
@@ -175,7 +256,7 @@ export function TaskRow({
               <span
                 data-testid="task-location-badge"
                 title={`Location: ${task.locationName}`}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium max-w-[130px] truncate bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+                className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium max-w-[130px] truncate bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
               >
                 <MapPin className="h-3 w-3 shrink-0" />
                 <span className="truncate">{task.locationName}</span>
@@ -183,15 +264,47 @@ export function TaskRow({
             )}
 
             {totalSubtasks > 0 && (
-              <span className="flex items-center gap-1 font-mono">
+              <span
+                data-testid="task-subtask-progress-chip"
+                title={`${completedSubtasks} of ${totalSubtasks} sub-tasks done`}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[#E4E8F2] bg-[#F2F5FC] px-1.5 py-0.5 text-[10px] font-medium text-[#5B6478] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3]"
+              >
                 <CheckSquare className="h-3 w-3" />
-                <span>
-                  {completedSubtasks}/{totalSubtasks}
+                <span className="font-mono">
+                  {completedSubtasks} of {totalSubtasks}
                 </span>
               </span>
             )}
 
-            <span className="capitalize font-mono text-[10px] text-[#5B6478]/80 dark:text-[#9BB0D3]/80">
+            {hasNotes && (
+              <span title="Has notes" className="shrink-0 text-[#5B6478]/70 dark:text-[#9BB0D3]/70">
+                <FileText className="h-3 w-3" aria-hidden="true" />
+              </span>
+            )}
+
+            {totalChecklist > 0 && (
+              <span
+                title={`Checklist ${completedChecklist} of ${totalChecklist} done`}
+                className="flex shrink-0 items-center gap-1 font-mono text-[#5B6478]/70 dark:text-[#9BB0D3]/70"
+              >
+                <ListChecks className="h-3 w-3" aria-hidden="true" />
+                <span>
+                  {completedChecklist}/{totalChecklist}
+                </span>
+              </span>
+            )}
+
+            {showListName && task.listName && (
+              <span
+                data-testid="task-list-name-chip"
+                title={`List: ${task.listName}`}
+                className="inline-flex max-w-[110px] shrink-0 items-center truncate rounded-md border border-[#09318D]/25 bg-[#09318D]/5 px-1.5 py-0.5 text-[10px] font-semibold text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
+              >
+                <span className="truncate">{task.listName}</span>
+              </span>
+            )}
+
+            <span className="min-w-0 truncate capitalize font-mono text-[10px] text-[#5B6478]/80 dark:text-[#9BB0D3]/80">
               • {task.folder}
             </span>
           </div>
@@ -224,6 +337,49 @@ export function TaskRow({
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Pink drop-position indicator rendered above/below the hovered row during a drag. */
+export function InsertionLine() {
+  return (
+    <div
+      aria-hidden="true"
+      className="mx-3 h-0.5 shrink-0 rounded-full bg-[#FD91CC] motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150 motion-reduce:animate-none"
+    />
+  );
+}
+
+export interface SortableTaskRowProps extends TaskRowProps {
+  /** Show the pink insertion line above/below this row while dragging. */
+  insertion?: "before" | "after" | null;
+  /** Virtualizer positioning (absolute translate). Merged onto the wrapper. */
+  wrapperStyle?: React.CSSProperties;
+}
+
+/**
+ * dnd-kit sortable wrapper around TaskRow. Uses a DragOverlay in the pane for
+ * the lifted preview, so no transform is applied here — the resting row only
+ * dims and the insertion line marks the drop spot.
+ */
+export function SortableTaskRow({
+  insertion = null,
+  wrapperStyle,
+  ...rowProps
+}: SortableTaskRowProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useSortable({
+    id: rowProps.task.id,
+  });
+  return (
+    <div ref={setNodeRef} style={wrapperStyle}>
+      {insertion === "before" && <InsertionLine />}
+      <TaskRow
+        {...rowProps}
+        isDragging={isDragging}
+        dragHandle={{ attributes, listeners }}
+      />
+      {insertion === "after" && <InsertionLine />}
     </div>
   );
 }
