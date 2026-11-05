@@ -1491,3 +1491,73 @@ export async function moveBoardTask(data: {
     body: JSON.stringify(data),
   });
 }
+
+// -------------------------------------------------------------
+// Planner & Time Blocks API (/api/v1/planner, /api/v1/time-blocks)
+// -------------------------------------------------------------
+
+export async function getPlanner(params?: {
+  date?: string;
+  tz?: string;
+}): Promise<BackendPlannerResponse> {
+  const query = new URLSearchParams();
+  if (params?.date) query.set("date", params.date);
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendPlannerResponse>(`/api/v1/planner${qs ? `?${qs}` : ""}`);
+}
+
+export async function createTimeBlock(data: {
+  taskId?: string;
+  title?: string;
+  startAt: string;
+  endAt: string;
+  color?: string;
+}, params?: { tz?: string }): Promise<BackendTimeBlock> {
+  const query = new URLSearchParams();
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendTimeBlock>(`/api/v1/time-blocks${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateTimeBlock(
+  id: string,
+  data: {
+    taskId?: string | null;
+    title?: string | null;
+    startAt?: string;
+    endAt?: string;
+    color?: string | null;
+  },
+  params?: { tz?: string }
+): Promise<BackendTimeBlock> {
+  const query = new URLSearchParams();
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendTimeBlock>(`/api/v1/time-blocks/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteTimeBlock(id: string): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(`/api/v1/time-blocks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function scheduleTask(data: {
+  taskId: string;
+  start: string;
+}, params?: { tz?: string }): Promise<BackendTimeBlock> {
+  const query = new URLSearchParams();
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendTimeBlock>(`/api/v1/planner/schedule${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
