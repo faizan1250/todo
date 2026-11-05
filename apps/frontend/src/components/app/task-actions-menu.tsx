@@ -9,6 +9,7 @@ import {
   Archive,
   Trash2,
   SkipForward,
+  Ban,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +20,7 @@ interface TaskActionsMenuProps {
   onDelete: () => void;
   isRecurring?: boolean;
   onSkip?: () => void;
+  onStopRepeat?: () => void;
   disabled?: boolean;
 }
 
@@ -29,6 +31,7 @@ export function TaskActionsMenu({
   onDelete,
   isRecurring = false,
   onSkip,
+  onStopRepeat,
   disabled = false,
 }: TaskActionsMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -97,7 +100,7 @@ export function TaskActionsMenu({
             <span>Duplicate Task</span>
           </button>
 
-          {/* Skip occurrence (Recurring tasks only) */}
+          {/* Skip this time (Recurring tasks only) */}
           {Boolean(isRecurring && onSkip) && (
             <button
               type="button"
@@ -108,7 +111,22 @@ export function TaskActionsMenu({
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[#09318D] hover:bg-[#F2F5FC] transition-colors cursor-pointer dark:text-[#FD91CC] dark:hover:bg-[#082363]"
             >
               <SkipForward className="h-3.5 w-3.5" />
-              <span>Skip occurrence</span>
+              <span>Skip this time</span>
+            </button>
+          )}
+
+          {/* Stop repeating (Recurring tasks only) */}
+          {Boolean(isRecurring && onStopRepeat) && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                if (onStopRepeat) handleAction(onStopRepeat);
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[#0B1220] hover:bg-[#F2F5FC] transition-colors cursor-pointer dark:text-[#E4E8F2] dark:hover:bg-[#082363]"
+            >
+              <Ban className="h-3.5 w-3.5 text-[#5B6478] dark:text-[#9BB0D3]" />
+              <span>Stop repeating</span>
             </button>
           )}
 

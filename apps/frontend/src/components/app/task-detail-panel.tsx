@@ -56,6 +56,8 @@ import {
 } from "@/components/reminders";
 import { MarkdownNotesEditor } from "./markdown-notes-editor";
 import { TaskActionsMenu } from "./task-actions-menu";
+import { useToast } from "./toast-system";
+import { RepeatEditor } from "@/components/repeat/RepeatEditor";
 import { SaveTemplateModal } from "./save-template-modal";
 
 interface TaskDetailPanelProps {
@@ -208,9 +210,9 @@ export function TaskDetailPanel({
   // (every panel edit persists immediately through onUpdateTask).
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const didMountRef = useRef(true);
-  const [customRrule, setCustomRrule] = useState("");
   const [customMinutes, setCustomMinutes] = useState("");
   const [isAddingReminder, setIsAddingReminder] = useState(false);
+  const { toast } = useToast();
   const pillsBarRef = useRef<HTMLDivElement>(null);
 
   // Close open picker on click outside
@@ -351,49 +353,41 @@ export function TaskDetailPanel({
     return Number.isNaN(d.getTime()) ? null : d.toISOString();
   };
 
-  // Recurrence Handlers
-  const handleSetRecurrencePreset = (preset: "none" | "daily" | "weekdays" | "weekly" | "monthly") => {
-    if (preset === "none") {
-      onUpdateTask({
-        ...task,
-        recurrenceId: null,
-        recurrenceRule: null,
-        updatedAt: "Just now",
-      });
-      return;
-    }
-
-    let rrule = "FREQ=DAILY;INTERVAL=1";
-    if (preset === "weekdays") rrule = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR";
-    else if (preset === "weekly") rrule = "FREQ=WEEKLY;INTERVAL=1";
-    else if (preset === "monthly") rrule = "FREQ=MONTHLY;INTERVAL=1";
-
-    const mode = task.recurrenceRule?.mode || "fixed";
+  // Recurrence Handlers — persistence stays on the existing path:
+  // onUpdateTask carries the full TaskItem and the workspace persists it.
+  const handleApplyRecurrence = (rrule: string, mode: "fixed" | "after_completion") => {
     onUpdateTask({
       ...task,
       recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
       recurrenceRule: { rrule, mode },
       updatedAt: "Just now",
     });
+    setOpenPicker(null);
   };
 
-  const handleSetRecurrenceMode = (mode: "fixed" | "after_completion") => {
-    const currentRule = task.recurrenceRule?.rrule || "FREQ=DAILY;INTERVAL=1";
+  const handleStopRepeat = () => {
+    const prevId = task.recurrenceId;
+    const prevRule = task.recurrenceRule;
+    if (!prevId && !prevRule) return;
     onUpdateTask({
       ...task,
-      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
-      recurrenceRule: { rrule: currentRule, mode },
+      recurrenceId: null,
+      recurrenceRule: null,
       updatedAt: "Just now",
     });
-  };
-
-  const handleSetCustomRRule = (customRule: string) => {
-    const mode = task.recurrenceRule?.mode || "fixed";
-    onUpdateTask({
-      ...task,
-      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
-      recurrenceRule: { rrule: customRule, mode },
-      updatedAt: "Just now",
+    setOpenPicker(null);
+    toast({
+      title: "Repeat stopped",
+      message: "This task will not repeat again.",
+      actionLabel: "Undo",
+      onAction: () => {
+        onUpdateTask({
+          ...task,
+          recurrenceId: prevId,
+          recurrenceRule: prevRule,
+          updatedAt: "Just now",
+        });
+      },
     });
   };
 
@@ -766,6 +760,7 @@ export function TaskDetailPanel({
             onDelete={() => onDeleteTask(task.id)}
             isRecurring={Boolean(task.recurrenceId || task.recurrenceRule)}
             onSkip={onSkipTask ? () => onSkipTask(task.id) : undefined}
+            onStopRepeat={handleStopRepeat}
           />
           <button
             type="button"
@@ -857,110 +852,14 @@ export function TaskDetailPanel({
                 <ChevronDown className="h-3 w-3 opacity-60" />
               </button>
               {openPicker === "recurrence" && (
-                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[210px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
-                  <div>
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Repeat Cadence
-                    </label>
-                    <div className="mt-1 space-y-1">
-                      {[
-                        { id: "none" as const, label: "Does not repeat" },
-                        { id: "daily" as const, label: "Daily" },
-                        { id: "weekdays" as const, label: "Weekdays (Mon-Fri)" },
-                        { id: "weekly" as const, label: "Weekly" },
-                        { id: "monthly" as const, label: "Monthly" },
-                      ].map((preset) => {
-                        const currentLabel = getRecurrenceLabel(task.recurrenceRule?.rrule);
-                        const isMatch =
-                          (preset.id === "none" && !task.recurrenceId && !task.recurrenceRule) ||
-                          (preset.id === "daily" && currentLabel === "Daily") ||
-                          (preset.id === "weekdays" && currentLabel === "Weekdays") ||
-                          (preset.id === "weekly" && currentLabel === "Weekly") ||
-                          (preset.id === "monthly" && currentLabel === "Monthly");
-                        return (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            onClick={() => {
-                              handleSetRecurrencePreset(preset.id);
-                              setOpenPicker(null);
-                            }}
-                            className={cn(
-                              "flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors",
-                              isMatch
-                                ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
-                                : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
-                            )}
-                          >
-                            <span>{preset.label}</span>
-                            {isMatch && <Check className="h-3.5 w-3.5" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Mode Selector */}
-                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]">
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Series Mode
-                    </label>
-                    <div className="mt-1 flex gap-1">
-                      <button
-                        type="button"
-                        onClick={() => handleSetRecurrenceMode("fixed")}
-                        className={cn(
-                          "flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer",
-                          (task.recurrenceRule?.mode || "fixed") === "fixed"
-                            ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                            : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                        )}
-                      >
-                        Fixed
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSetRecurrenceMode("after_completion")}
-                        className={cn(
-                          "flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer",
-                          task.recurrenceRule?.mode === "after_completion"
-                            ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                            : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                        )}
-                      >
-                        After Done
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Custom RRULE input */}
-                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]">
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Custom RRULE
-                    </label>
-                    <div className="mt-1 flex gap-1">
-                      <input
-                        type="text"
-                        placeholder="e.g. FREQ=DAILY;INTERVAL=2"
-                        value={customRrule}
-                        onChange={(e) => setCustomRrule(e.target.value)}
-                        className="flex-1 rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (customRrule.trim()) {
-                            handleSetCustomRRule(customRrule.trim());
-                            setCustomRrule("");
-                            setOpenPicker(null);
-                          }
-                        }}
-                        className="rounded bg-[#09318D] px-2 py-1 text-xs font-semibold text-white hover:bg-[#0B3EA8] dark:bg-[#FD91CC] dark:text-[#051A4D] cursor-pointer"
-                      >
-                        Set
-                      </button>
-                    </div>
-                  </div>
+                <div className="absolute left-0 top-full mt-1.5 z-30 w-[264px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D]">
+                  <RepeatEditor
+                    initialRrule={task.recurrenceRule?.rrule ?? null}
+                    initialMode={task.recurrenceRule?.mode || "fixed"}
+                    anchorIso={toIsoOrNull(task.dueAt)}
+                    onApply={handleApplyRecurrence}
+                    onRemove={handleStopRepeat}
+                  />
                 </div>
               )}
             </div>
