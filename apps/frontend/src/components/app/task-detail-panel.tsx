@@ -6,7 +6,6 @@ import {
   X,
   Check,
   Trash2,
-  Calendar,
   Flag,
   Folder,
   FolderInput,
@@ -22,6 +21,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatEstimate, formatDateWithTime } from "@/lib/adapters";
+import { formatWhen } from "@/lib/dates/formatWhen";
+import { DateChip, DatePopover, type DateSelection } from "@/components/dates";
 import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
 import {
@@ -316,55 +317,32 @@ export function TaskDetailPanel({
 
   const movePickedList = moveListId ? lists.find((l) => l.id === moveListId) || null : null;
 
-  const handleDueDateChange = (newDueDate?: string) => {
-    let dueAt: string | null = null;
-    if (newDueDate === "Today") {
-      dueAt = new Date().toISOString();
-    } else if (newDueDate === "Tomorrow") {
-      const tmr = new Date();
-      tmr.setDate(tmr.getDate() + 1);
-      dueAt = tmr.toISOString();
-    } else if (newDueDate === "Next week") {
-      const nw = new Date();
-      nw.setDate(nw.getDate() + 7);
-      dueAt = nw.toISOString();
-    } else if (newDueDate) {
-      const parsed = new Date(newDueDate);
-      if (!isNaN(parsed.getTime())) {
-        dueAt = parsed.toISOString();
-      }
-    }
-
+  const handleDatesApply = (dates: DateSelection) => {
+    // Same persistence as every other panel edit: onUpdateTask carries the
+    // full TaskItem, and the workspace persists it offline-first (mutate
+    // op:update) with a REST fallback. dueDate stays in sync as the display
+    // label so older readers of that field keep working.
+    const dueDate =
+      dates.dueAt != null
+        ? formatWhen(dates.dueAt, { allDay: dates.allDay }) ?? undefined
+        : undefined;
     onUpdateTask({
       ...task,
-      dueDate: newDueDate || undefined,
-      dueAt,
+      dueAt: dates.dueAt,
+      allDay: dates.allDay,
+      startAt: dates.startAt ?? null,
+      deadlineAt: dates.deadlineAt ?? null,
+      dueDate,
       updatedAt: "Just now",
     });
   };
 
-  const handleStartAtChange = (dateVal: string) => {
-    onUpdateTask({
-      ...task,
-      startAt: dateVal ? new Date(dateVal).toISOString() : null,
-      updatedAt: "Just now",
-    });
-  };
-
-  const handleDeadlineAtChange = (dateVal: string) => {
-    onUpdateTask({
-      ...task,
-      deadlineAt: dateVal ? new Date(dateVal).toISOString() : null,
-      updatedAt: "Just now",
-    });
-  };
-
-  const handleAllDayToggle = (allDay: boolean) => {
-    onUpdateTask({
-      ...task,
-      allDay,
-      updatedAt: "Just now",
-    });
+  const toIsoOrNull = (
+    value: string | number | null | undefined
+  ): string | null => {
+    if (value === null || value === undefined) return null;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
   };
 
   // Recurrence Handlers
@@ -791,108 +769,31 @@ export function TaskDetailPanel({
         {/* Horizontal Attribute Pills Bar */}
         <div className="space-y-2">
           <div ref={pillsBarRef} className="flex flex-wrap items-center gap-2">
-            {/* 1. Dates Pill & Popover (Due Date, Start Date, Deadline Date, All-Day) */}
+            {/* 1. Dates Pill & Premium Popover (Due, Start, Deadline, All-Day) */}
             <div className="relative">
-              <button
-                type="button"
-                onClick={() => setOpenPicker(openPicker === "due" ? null : "due")}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
-                  task.dueDate || task.startAt || task.deadlineAt
-                    ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
-                    : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                )}
-                title="Change Schedule & Dates"
-              >
-                <Calendar className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />
-                <span>
-                  Due: <span className="font-semibold">{task.dueDate || "None"}</span>
-                  {task.allDay && <span className="ml-1 text-[10px] opacity-75">(All day)</span>}
-                </span>
-                <ChevronDown className="h-3 w-3 opacity-60" />
-              </button>
+              <DateChip
+                dueAt={task.dueAt ?? task.dueDate ?? null}
+                allDay={task.allDay}
+                hasRepeat={Boolean(task.recurrenceId || task.recurrenceRule)}
+                hasBell={(task.reminders?.length ?? 0) > 0}
+                expanded={openPicker === "due"}
+                onOpen={() => setOpenPicker(openPicker === "due" ? null : "due")}
+              />
               {openPicker === "due" && (
-                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[210px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
-                  <div>
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Quick Due Date
-                    </label>
-                    <div className="mt-1 grid grid-cols-2 gap-1">
-                      {[
-                        { label: "None", value: "" },
-                        { label: "Today", value: "Today" },
-                        { label: "Tomorrow", value: "Tomorrow" },
-                        { label: "Next week", value: "Next week" },
-                      ].map((opt) => (
-                        <button
-                          key={opt.label}
-                          type="button"
-                          onClick={() => {
-                            handleDueDateChange(opt.value);
-                          }}
-                          className={cn(
-                            "rounded px-2 py-1 text-xs text-center cursor-pointer transition-colors",
-                            (task.dueDate || "") === opt.value
-                              ? "bg-[#09318D] font-bold text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                              : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                          )}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] space-y-2">
-                    <div>
-                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                        Due Date
-                      </label>
-                      <input
-                        type="date"
-                        value={task.dueAt ? new Date(task.dueAt).toISOString().split("T")[0] : ""}
-                        onChange={(e) => {
-                          handleDueDateChange(e.target.value);
-                        }}
-                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                        Start Date
-                      </label>
-                      <input
-                        type="date"
-                        value={task.startAt ? new Date(task.startAt).toISOString().split("T")[0] : ""}
-                        onChange={(e) => handleStartAtChange(e.target.value)}
-                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                        Deadline Date
-                      </label>
-                      <input
-                        type="date"
-                        value={task.deadlineAt ? new Date(task.deadlineAt).toISOString().split("T")[0] : ""}
-                        onChange={(e) => handleDeadlineAtChange(e.target.value)}
-                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                      />
-                    </div>
-
-                    <label className="flex items-center justify-between text-xs font-medium text-[#5B6478] dark:text-[#9BB0D3] cursor-pointer pt-1">
-                      <span>All-day event</span>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(task.allDay)}
-                        onChange={(e) => handleAllDayToggle(e.target.checked)}
-                        className="h-4 w-4 rounded border-[#CAD5E8] text-[#09318D] focus:ring-[#FD91CC] cursor-pointer"
-                      />
-                    </label>
-                  </div>
-                </div>
+                <DatePopover
+                  initial={{
+                    dueAt: toIsoOrNull(task.dueAt),
+                    allDay: Boolean(task.allDay),
+                    startAt: toIsoOrNull(task.startAt),
+                    deadlineAt: toIsoOrNull(task.deadlineAt),
+                  }}
+                  weekStart={1}
+                  onApply={(dates) => {
+                    handleDatesApply(dates);
+                    setOpenPicker(null);
+                  }}
+                  onClose={() => setOpenPicker(null)}
+                />
               )}
             </div>
 
