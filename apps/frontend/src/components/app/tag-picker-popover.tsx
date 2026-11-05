@@ -14,6 +14,8 @@ import {
   replaceTaskTags,
   type BackendTag,
 } from "@/lib/api";
+import { mutate } from "@/lib/data/mutate";
+import { v7 as uuidv7 } from "uuid";
 
 interface TagPickerPopoverProps {
   taskId: string;
@@ -23,6 +25,7 @@ interface TagPickerPopoverProps {
   disabled?: boolean;
   triggerClassName?: string;
   label?: string;
+  userId?: string | null;
 }
 
 export function TagPickerPopover({
@@ -33,6 +36,7 @@ export function TagPickerPopover({
   disabled = false,
   triggerClassName,
   label,
+  userId = null,
 }: TagPickerPopoverProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -147,7 +151,9 @@ export function TagPickerPopover({
     // Optimistic UI update
     onTagsUpdated(nextNames, nextIds);
 
-    // Call API if task ID is real
+    // Call API if task ID is real. Task tag attach/detach stays on REST:
+    // the sync tasks "update" op skips tagIds server-side (no task_tags
+    // sync path exists), so mutating tagIds would be silently dropped.
     if (tag.id && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
       try {
         await replaceTaskTags(taskId, nextIds);
@@ -164,18 +170,53 @@ export function TagPickerPopover({
     setIsCreating(true);
 
     try {
-      let createdId = `tag-${Date.now()}`;
+      const doRestCreate = async (): Promise<string> => {
+        try {
+          const created = await createTag({
+            name: trimmed,
+            color: selectedColor.hex,
+          });
+          setAvailableTags((prev) => [...prev, created]);
+          return created.id;
+        } catch (err) {
+          console.warn("Backend createTag failed, using local tag:", err);
+          return `tag-${Date.now()}`;
+        }
+      };
 
-      // Call create tag API if reachable
-      try {
-        const created = await createTag({
-          name: trimmed,
-          color: selectedColor.hex,
-        });
-        createdId = created.id;
-        setAvailableTags((prev) => [...prev, created]);
-      } catch (err) {
-        console.warn("Backend createTag failed, using local tag:", err);
+      // Offline-first tag create; the client-generated id is the sync
+      // entityId, so it can be attached immediately. Falls back to REST.
+      let createdId: string;
+      if (userId) {
+        createdId = uuidv7();
+        try {
+          await mutate(userId, {
+            entity: "tags",
+            op: "create",
+            entityId: createdId,
+            patch: { name: trimmed, color: selectedColor.hex },
+          });
+          setAvailableTags((prev) =>
+            prev.some((t) => t.id === createdId)
+              ? prev
+              : [
+                  ...prev,
+                  {
+                    id: createdId,
+                    userId,
+                    name: trimmed,
+                    color: selectedColor.hex,
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                    version: 1,
+                  },
+                ]
+          );
+        } catch {
+          createdId = await doRestCreate();
+        }
+      } else {
+        createdId = await doRestCreate();
       }
 
       const nextNames = [...activeTags, trimmed];

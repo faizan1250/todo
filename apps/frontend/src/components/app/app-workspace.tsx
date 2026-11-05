@@ -63,6 +63,7 @@ import {
   type BackendList,
   type BackendFolder,
   type BackendTask,
+  type BackendViewTask,
   type BackendViewCountsResponse,
   type TaskCompletionResult,
 } from "@/lib/api";
@@ -2170,6 +2171,9 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   );
 
   const handleUpdateTags = useCallback(
+    // Task tag attach/detach stays on REST: the sync tasks "update" op
+    // skips tagIds server-side (no task_tags sync path), so a mutate
+    // update carrying tagIds would be silently dropped.
     (tagNames: string[], tagIds?: string[]) => {
       if (
         isAuthenticated &&
@@ -2208,10 +2212,103 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const handleMoveBoardTask = useCallback(
     async (taskId: string, column: string, afterId?: string, beforeId?: string) => {
       if (!isAuthenticated) return;
-      try {
+
+      const doRestMove = async () => {
         await moveBoardTask({ taskId, column, afterId, beforeId });
         const res = await getBoard({ list_id: activeListId || undefined, group_by: boardGroupBy });
         setBoardData(res);
+      };
+
+      // Phase 5 cutover: offline-first board move via mutate with an
+      // optimistic column update (a REST refetch here would race the ~300ms
+      // delayed push and snap the card back). mutate "move" never ships
+      // computed positions — the server recomputes from afterId/beforeId.
+      // Status/priority column changes steer fields, not position, so they
+      // go through "update" (sync move only handles list/section/parent).
+      if (userId && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        try {
+          const reorderPatch: Record<string, unknown> = {};
+          if (afterId !== undefined) reorderPatch.afterId = afterId;
+          if (beforeId !== undefined) reorderPatch.beforeId = beforeId;
+
+          let movedFields: Partial<BackendViewTask> | null = null;
+          if (
+            boardGroupBy === "status" &&
+            ["todo", "in_progress", "done", "cancelled"].includes(column)
+          ) {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "update",
+              entityId: taskId,
+              patch: { status: column },
+            });
+            if (Object.keys(reorderPatch).length > 0) {
+              await mutate(userId, { entity: "tasks", op: "move", entityId: taskId, patch: reorderPatch });
+            }
+            movedFields = { status: column as BackendViewTask["status"] };
+          } else if (
+            boardGroupBy === "priority" &&
+            ["0", "1", "2", "3", "4"].includes(column)
+          ) {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "update",
+              entityId: taskId,
+              patch: { priority: Number(column) },
+            });
+            if (Object.keys(reorderPatch).length > 0) {
+              await mutate(userId, { entity: "tasks", op: "move", entityId: taskId, patch: reorderPatch });
+            }
+            movedFields = { priority: Number(column) };
+          } else {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "move",
+              entityId: taskId,
+              patch: {
+                sectionId: column === "no_section" ? null : column,
+                ...reorderPatch,
+              },
+            });
+            movedFields = { sectionId: column === "no_section" ? null : column };
+          }
+
+          setBoardData((prev) => {
+            if (!prev || !movedFields) return prev;
+            let moving: BackendViewTask | null = null;
+            const withoutSource = prev.columns.map((col) => {
+              const idx = col.tasks.findIndex((t) => t.id === taskId);
+              if (idx < 0) return col;
+              moving = col.tasks[idx];
+              return {
+                ...col,
+                tasks: col.tasks.filter((t) => t.id !== taskId),
+                count: Math.max(0, col.count - 1),
+              };
+            });
+            if (!moving) return prev;
+            const moved: BackendViewTask = { ...(moving as BackendViewTask), ...movedFields };
+            return {
+              ...prev,
+              columns: withoutSource.map((col) => {
+                if (col.key !== column) return col;
+                const at = beforeId ? col.tasks.findIndex((t) => t.id === beforeId) : -1;
+                const tasks =
+                  at >= 0
+                    ? [...col.tasks.slice(0, at), moved, ...col.tasks.slice(at)]
+                    : [...col.tasks, moved];
+                return { ...col, tasks, count: col.count + 1 };
+              }),
+            };
+          });
+          return;
+        } catch {
+          // Dexie write failed: fall through to the REST path below.
+        }
+      }
+
+      try {
+        await doRestMove();
       } catch (err) {
         console.error("Failed to move board task:", err);
         toast({
@@ -2221,7 +2318,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         });
       }
     },
-    [isAuthenticated, activeListId, boardGroupBy, toast]
+    [isAuthenticated, userId, activeListId, boardGroupBy, toast]
   );
 
   // Cycle folders for mobile nav
@@ -2373,6 +2470,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           onAddChecklistItem={handleAddChecklistItem}
           onDeleteChecklistItem={handleDeleteChecklistItem}
           onUpdateTags={handleUpdateTags}
+          userId={userId}
         />
       )}
 

@@ -54,6 +54,7 @@ interface TaskDetailPanelProps {
   onAddChecklistItem?: (text: string) => void;
   onDeleteChecklistItem?: (itemId: string) => void;
   onUpdateTags?: (tagNames: string[], tagIds?: string[]) => void;
+  userId?: string | null;
 }
 
 function updateSubtaskInTree(
@@ -146,6 +147,7 @@ export function TaskDetailPanel({
   onAddSubtask,
   onDeleteSubtask,
   onUpdateTags,
+  userId = null,
 }: TaskDetailPanelProps) {
   const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
   const [openPicker, setOpenPicker] = useState<
@@ -1134,6 +1136,7 @@ export function TaskDetailPanel({
               activeTags={task.tags}
               activeTagIds={task.tagIds}
               onTagsUpdated={handleTagsUpdated}
+              userId={userId}
               label={task.tags.length > 0 ? `Tags (${task.tags.length})` : "Tags"}
               triggerClassName="inline-flex items-center gap-1.5 rounded-lg border border-[#E4E8F2] bg-white px-2.5 py-1 text-xs font-medium text-[#5B6478] hover:bg-[#F2F5FC] transition-all cursor-pointer focus-ring-pink dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
             />
