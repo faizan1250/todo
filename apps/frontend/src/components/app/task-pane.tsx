@@ -122,6 +122,17 @@ export function TaskPane({
   const [isQuickAddFocused, setIsQuickAddFocused] = useState(false);
   const [openPicker, setOpenPicker] = useState<"due" | "priority" | "folder" | null>(null);
 
+  // Done group: completed tasks collapse under a "Done (n)" header (collapsed by default)
+  // View key resets the group back to collapsed when the viewed list/folder changes
+  // (state adjusted during render — the recommended pattern over a reset effect).
+  const doneGroupViewKey = `${activeListId ?? activeList}|${activeFolder ?? ""}`;
+  const [doneGroupView, setDoneGroupView] = useState(doneGroupViewKey);
+  const [isDoneExpanded, setIsDoneExpanded] = useState(false);
+  if (doneGroupView !== doneGroupViewKey) {
+    setDoneGroupView(doneGroupViewKey);
+    setIsDoneExpanded(false);
+  }
+
   const quickAddContainerRef = useRef<HTMLDivElement>(null);
   const quickAddInputRef = useRef<HTMLInputElement>(null);
   const newSectionInputRef = useRef<HTMLInputElement>(null);
@@ -323,9 +334,18 @@ export function TaskPane({
   }, [tasks, activeList, activeListId, activeFolder, statusFilter, priorityFilter, searchQuery]);
 
   // Group tasks into unsectioned vs sectioned
+  // When showing "all", completed tasks live in the collapsed Done group below,
+  // so section/flat lists only render active tasks (status tabs keep working).
+  const doneTasks = useMemo(() => filteredTasks.filter((t) => t.completed), [filteredTasks]);
+  const tasksForGrouping = useMemo(
+    () => (statusFilter === "all" ? filteredTasks.filter((t) => !t.completed) : filteredTasks),
+    [filteredTasks, statusFilter]
+  );
+  const showDoneGroup = statusFilter === "all" && doneTasks.length > 0;
+
   const { unsectionedTasks, sectionTasksMap } = useMemo(() => {
     if (effectiveSections.length === 0) {
-      return { unsectionedTasks: filteredTasks, sectionTasksMap: new Map<string, TaskItem[]>() };
+      return { unsectionedTasks: tasksForGrouping, sectionTasksMap: new Map<string, TaskItem[]>() };
     }
 
     const map = new Map<string, TaskItem[]>();
@@ -335,7 +355,7 @@ export function TaskPane({
 
     const unsectioned: TaskItem[] = [];
 
-    for (const task of filteredTasks) {
+    for (const task of tasksForGrouping) {
       if (task.sectionId && map.has(task.sectionId)) {
         map.get(task.sectionId)!.push(task);
       } else {
@@ -344,7 +364,7 @@ export function TaskPane({
     }
 
     return { unsectionedTasks: unsectioned, sectionTasksMap: map };
-  }, [filteredTasks, effectiveSections]);
+  }, [tasksForGrouping, effectiveSections]);
 
   // Main task creation handler (rapid keyboard entry supported)
   const handleCreateTask = async (e?: React.FormEvent) => {
@@ -484,6 +504,62 @@ export function TaskPane({
     } catch (err) {
       console.error("Failed to delete section:", err);
     }
+  };
+
+  // Collapsed-by-default "Done (n)" group for completed tasks in the current view.
+  // Expand animates only when motion is allowed (motion-safe:* = instant otherwise).
+  const renderDoneGroup = () => {
+    if (!showDoneGroup) return null;
+    return (
+      <div className="overflow-hidden rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50">
+        <button
+          type="button"
+          onClick={() => setIsDoneExpanded((v) => !v)}
+          aria-expanded={isDoneExpanded}
+          aria-label={isDoneExpanded ? `Collapse ${doneTasks.length} completed tasks` : `Expand ${doneTasks.length} completed tasks`}
+          className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-[#F2F5FC]/70 dark:hover:bg-[#051A4D]/60"
+        >
+          {isDoneExpanded ? (
+            <ChevronDown className="h-4 w-4 shrink-0 text-[#5B6478] dark:text-[#9BB0D3]" />
+          ) : (
+            <ChevronRight className="h-4 w-4 shrink-0 text-[#5B6478] dark:text-[#9BB0D3]" />
+          )}
+          <span className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+            Done
+          </span>
+          <span className="rounded-full bg-[#F2F5FC] px-2 py-0.5 font-mono text-[10px] font-semibold text-[#5B6478] dark:bg-[#051A4D] dark:text-[#9BB0D3]">
+            {doneTasks.length} {doneTasks.length === 1 ? "task" : "tasks"}
+          </span>
+        </button>
+        {isDoneExpanded && (
+          <div className="border-t border-[#E4E8F2] motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-top-1 motion-safe:duration-200 dark:border-[#132E74]">
+            {doneTasks.map((task) => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                isSelected={selectedTaskId === task.id}
+                isBulkSelected={selectedTaskIds?.has(task.id)}
+                hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+                showListName={showListName}
+                onSelect={onSelectTask}
+                onToggleComplete={onToggleComplete}
+                onDelete={onDeleteTask}
+                onToggleBulkSelect={
+                  onToggleSelectTask
+                    ? (id, shiftKey) =>
+                        onToggleSelectTask(
+                          id,
+                          shiftKey,
+                          filteredTasks.map((t) => t.id)
+                        )
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -965,30 +1041,35 @@ export function TaskPane({
           )
         ) : effectiveSections.length === 0 ? (
           /* Render Flat Task List when no sections exist */
-          <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-            {filteredTasks.map((task) => (
-              <TaskRow
-                key={task.id}
-                task={task}
-                isSelected={selectedTaskId === task.id}
-                isBulkSelected={selectedTaskIds?.has(task.id)}
-                hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-                showListName={showListName}
-                onSelect={onSelectTask}
-                onToggleComplete={onToggleComplete}
-                onDelete={onDeleteTask}
-                onToggleBulkSelect={
-                  onToggleSelectTask
-                    ? (id, shiftKey) =>
-                        onToggleSelectTask(
-                          id,
-                          shiftKey,
-                          filteredTasks.map((t) => t.id)
-                        )
-                    : undefined
-                }
-              />
-            ))}
+          <div className="space-y-3">
+            {tasksForGrouping.length > 0 && (
+              <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
+                {tasksForGrouping.map((task) => (
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    isSelected={selectedTaskId === task.id}
+                    isBulkSelected={selectedTaskIds?.has(task.id)}
+                    hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+                    showListName={showListName}
+                    onSelect={onSelectTask}
+                    onToggleComplete={onToggleComplete}
+                    onDelete={onDeleteTask}
+                    onToggleBulkSelect={
+                      onToggleSelectTask
+                        ? (id, shiftKey) =>
+                            onToggleSelectTask(
+                              id,
+                              shiftKey,
+                              filteredTasks.map((t) => t.id)
+                            )
+                        : undefined
+                    }
+                  />
+                ))}
+              </div>
+            )}
+            {renderDoneGroup()}
           </div>
         ) : (
           /* Render Collapsible Sections Grouping */
@@ -1254,6 +1335,7 @@ export function TaskPane({
                 </div>
               );
             })}
+            {renderDoneGroup()}
           </div>
         )}
 
