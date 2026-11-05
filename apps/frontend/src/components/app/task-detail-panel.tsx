@@ -720,6 +720,7 @@ export function TaskDetailPanel({
         <div className="flex items-center gap-2">
           <button
             type="button"
+            aria-label={task.completed ? "Mark task as active" : "Mark task complete"}
             onClick={() =>
               onUpdateTask({
                 ...task,
@@ -766,10 +767,14 @@ export function TaskDetailPanel({
       <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-6">
         {/* Task Title (Editable) */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+          <label
+            htmlFor="task-detail-title-input"
+            className="text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]"
+          >
             Task Title
           </label>
           <input
+            id="task-detail-title-input"
             type="text"
             value={task.title}
             maxLength={500}
