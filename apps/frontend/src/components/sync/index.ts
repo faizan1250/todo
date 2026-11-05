@@ -7,6 +7,17 @@ export { SafeEditBar, type SafeEditBarProps } from "./SafeEditBar";
 export {
   notifyRemoteChanged,
   subscribeRemoteChanged,
+  requestHistorySheet,
+  subscribeHistoryRequest,
   type RemoteChangedDetail,
+  type HistoryRequestDetail,
 } from "./remote-events";
 export { toastConflict, toastDeletedElsewhere, toastRejected } from "./sync-toasts";
+export { HistorySheet, type HistorySheetProps } from "./HistorySheet";
+export {
+  parseConflictValue,
+  formatConflictValue,
+  restoreMyVersion,
+  restoreFromTrash,
+  type RestoreVersionArgs,
+} from "./conflict-actions";

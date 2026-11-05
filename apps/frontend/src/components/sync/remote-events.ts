@@ -34,3 +34,36 @@ export function subscribeRemoteChanged(listener: Listener): () => void {
     listeners.delete(listener);
   };
 }
+
+// History-sheet requests (Phase 5 Day 5a). toastConflict's "See what's new"
+// callback fires requestHistorySheet(entityId); the Day-6 cutover parent
+// subscribes and renders HistorySheet. Decoupled on purpose: no imports
+// between the toast layer and the sheet.
+
+export interface HistoryRequestDetail {
+  entityId: string;
+}
+
+type HistoryRequestListener = (detail: HistoryRequestDetail) => void;
+
+const historyRequestListeners = new Set<HistoryRequestListener>();
+
+export function requestHistorySheet(entityId: string): void {
+  const detail: HistoryRequestDetail = { entityId };
+  for (const listener of Array.from(historyRequestListeners)) {
+    try {
+      listener(detail);
+    } catch {
+      // One bad listener must not break the rest.
+    }
+  }
+}
+
+export function subscribeHistoryRequest(
+  listener: HistoryRequestListener
+): () => void {
+  historyRequestListeners.add(listener);
+  return () => {
+    historyRequestListeners.delete(listener);
+  };
+}
