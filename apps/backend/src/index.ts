@@ -27,6 +27,7 @@ import { syncRoutes } from "./routes/sync";
 import { wsRoutes } from "./routes/ws";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
+import { setServer } from "./utils/sync-publisher";
 
 export const app = new Elysia()
   .use(
@@ -117,6 +118,7 @@ const PORT = Number(process.env.PORT) || 3001;
 
 if (import.meta.main) {
   app.listen(PORT);
+  setServer(app.server);
   console.log(`Backend server running on http://localhost:${app.server?.port ?? PORT}`);
 }
 

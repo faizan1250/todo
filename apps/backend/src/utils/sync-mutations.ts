@@ -8,6 +8,7 @@ import { validateFilterDsl } from "../utils/filter-dsl";
 import { validateTemplatePayload } from "../routes/templates";
 import { runCompleteHooks } from "./tasks";
 import { positionBetween } from "./position";
+import { schedulePublish } from "./sync-publisher";
 
 export type MutationStatus = 'applied' | 'duplicate' | 'rejected' | 'ignored';
 
@@ -1092,6 +1093,9 @@ export async function processMutations(
     });
 
     results.push(result);
+    if (result.status === "applied" && result.seq !== undefined) {
+      schedulePublish(userId, result.seq, deviceId);
+    }
   }
   return results;
 }
