@@ -22,6 +22,7 @@ import { TemplatesModal } from "./templates-modal";
 import { useAuth } from "@/components/auth";
 import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
+import { inverseOf, pushUndo, popUndo } from "@/lib/tasks/undo";
 import { restoreFromTrash } from "../sync/conflict-actions";
 import { subscribeRemoteChanged } from "../sync/remote-events";
 import {
@@ -1443,11 +1444,22 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         setStreakTaskTitle(target.title);
         setIsStreakActive(true);
 
+        // Phase 2 premium 1b (pilot): capture the before-image and push the
+        // inverse so Undo replays it via mutate(). Falls back to
+        // persistTaskReopen below when the stack misses.
+        pushUndo(
+          inverseOf(
+            { entity: "tasks", op: "complete", entityId: id },
+            { beforeStatus: target.rawStatus ?? "todo" }
+          )
+        );
+
         toast({
           title: "Task completed",
           message: `"${target.title}" marked done.`,
           type: "success",
           actionLabel: "Undo",
+          durationMs: 8000,
           onAction: () => {
             setTasks((prev) =>
               prev.map((t) => (t.id === id ? { ...t, completed: false, updatedAt: "Undone" } : t))
@@ -1455,7 +1467,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             setStreakCount((s) => Math.max(1, s - 1));
 
             if (isAuthenticated && !id.startsWith("temp-")) {
-              persistTaskReopen(userId, id).catch((err) => {
+              const next = popUndo();
+              const inverse = next && next.entityId === id ? next : undefined;
+              if (next && !inverse) pushUndo(next); // belongs to another toast; leave it
+              const undoWrite =
+                inverse && userId
+                  ? mutate(userId, inverse)
+                  : persistTaskReopen(userId, id);
+              undoWrite.catch((err) => {
                 console.error("Undo reopen task failed:", err);
                 setTasks((prev) =>
                   prev.map((t) => (t.id === id ? { ...t, completed: true } : t))
