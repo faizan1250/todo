@@ -145,6 +145,46 @@ export async function pushPhase(
   return { acked, retried };
 }
 
+export interface FlushOutboxResult {
+  flushed: number;
+  remaining: number;
+}
+
+// Sign-out flush path: push the per-user outbox until empty (max 5
+// pushPhase rounds), then report counts so the caller can decide whether
+// to proceed with sign-out. Never throws: transport/DB failures just stop
+// the loop and surface as `remaining`.
+export async function flushOutbox(
+  userId: string
+): Promise<FlushOutboxResult> {
+  const db = getDB(userId);
+  const deviceRow = await db.meta.get("deviceId").catch(() => undefined);
+  const deviceId =
+    typeof deviceRow?.value === "string" && deviceRow.value.length > 0
+      ? deviceRow.value
+      : "";
+  let flushed = 0;
+
+  for (let i = 0; i < 5; i++) {
+    const pending = await getPending(userId).catch(() => []);
+    if (pending.length === 0 || !deviceId) break;
+    try {
+      const res = await pushPhase(userId, deviceId);
+      flushed += res.acked;
+      const rest = await getPending(userId).catch(() => []);
+      // No drain progress (remaining entries are retry-gated): stop pushing.
+      if (rest.length >= pending.length) break;
+    } catch {
+      break;
+    }
+  }
+
+  const remaining = await getPending(userId)
+    .then((rows) => rows.length)
+    .catch(() => 0);
+  return { flushed, remaining };
+}
+
 export async function pullPhase(
   userId: string,
   deviceId: string,

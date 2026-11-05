@@ -4,6 +4,8 @@ import * as React from "react";
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "./auth-provider";
 import { ProfileModal } from "./profile-modal";
+import { useSignOutGuard } from "@/hooks/useSignOutGuard";
+import { SignOutDialog } from "@/components/sync/SignOutDialog";
 import { Button, Badge } from "@/components/ui";
 import {
   ChevronDown,
@@ -13,11 +15,14 @@ import {
 } from "lucide-react";
 
 export function UserNav() {
-  const { user, profile, isAuthenticated, isLoading, logout, openAuthModal, refreshSession } =
+  const { user, profile, isAuthenticated, isLoading, openAuthModal, refreshSession } =
     useAuth();
+  const guard = useSignOutGuard(user?.id);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [signOutOpen, setSignOutOpen] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -198,7 +203,8 @@ export function UserNav() {
                 role="menuitem"
                 onClick={async () => {
                   setDropdownOpen(false);
-                  await logout();
+                  const result = await guard.signOut();
+                  if (result === "confirm") setSignOutOpen(true);
                 }}
                 className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
               >
@@ -214,6 +220,34 @@ export function UserNav() {
       <ProfileModal
         isOpen={profileModalOpen}
         onClose={() => setProfileModalOpen(false)}
+      />
+
+      {/* Unsaved-changes guard */}
+      <SignOutDialog
+        open={signOutOpen}
+        pendingCount={guard.pendingCount}
+        isWorking={isSigningOut}
+        onClose={() => {
+          if (!isSigningOut) setSignOutOpen(false);
+        }}
+        onSaveAndSignOut={async () => {
+          setIsSigningOut(true);
+          try {
+            const result = await guard.flushAndSignOut();
+            if (result === "signed-out") setSignOutOpen(false);
+          } finally {
+            setIsSigningOut(false);
+          }
+        }}
+        onSignOutAnyway={async () => {
+          setIsSigningOut(true);
+          try {
+            await guard.signOut({ force: true });
+            setSignOutOpen(false);
+          } finally {
+            setIsSigningOut(false);
+          }
+        }}
       />
     </>
   );

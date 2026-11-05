@@ -5,6 +5,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { deleteUserDB } from "@/lib/db/index";
 import { getPending as getPendingLegacy } from "@/lib/sync/outbox";
 import { getPending as getPendingNew } from "@/lib/sync2/outbox";
+import { flushOutbox } from "@/lib/sync2/engine";
 
 export type SignOutResult = "signed-out" | "confirm";
 
@@ -13,6 +14,7 @@ export interface SignOutGuard {
   isChecking: boolean;
   refresh: () => Promise<number>;
   signOut: (opts?: { force?: boolean }) => Promise<SignOutResult>;
+  flushAndSignOut: () => Promise<SignOutResult>;
 }
 
 async function countPending(userId: string | null | undefined): Promise<number> {
@@ -78,5 +80,27 @@ export function useSignOutGuard(
     [userId, logout],
   );
 
-  return { pendingCount, isChecking, refresh, signOut };
+  // "Save and sign out" path: push the new-engine outbox until empty, then
+  // recount BOTH outboxes. Zero remaining -> proceed with sign-out,
+  // otherwise stay on "confirm" so the dialog stays open. Flush failures
+  // just surface as a nonzero recount; this never throws for sync reasons.
+  const flushAndSignOut = useCallback(async (): Promise<SignOutResult> => {
+    if (userId) {
+      try {
+        await flushOutbox(userId);
+      } catch {
+        // Recount below decides the outcome.
+      }
+    }
+    const pending = await countPending(userId);
+    setPendingCount(pending);
+    if (pending > 0) return "confirm";
+    if (userId) {
+      await deleteUserDB(userId);
+    }
+    await logout();
+    return "signed-out";
+  }, [userId, logout]);
+
+  return { pendingCount, isChecking, refresh, signOut, flushAndSignOut };
 }
