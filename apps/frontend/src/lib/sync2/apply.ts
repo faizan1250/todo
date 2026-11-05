@@ -8,10 +8,10 @@
 // Rows with deleted=1 are kept locally (Trash), never dropped.
 //
 // Remote-change fan-out: after the transaction commits, notifyRemoteChanged
-// fires once per row that already existed locally and differs from the
-// server version. New rows (first sync / first sighting) do not notify,
-// and ids with unsent local edits (pending map) are skipped so our own
-// echoes returning via pull never glow.
+// fires once per pulled row that is new locally or differs from the server
+// version. Ids with unsent local edits (pending map) are skipped so our own
+// echoes returning via pull never glow: an echo matches the local row, so
+// rowsEqual already filters it; the pending check covers the reorder window.
 
 import { getDB, type SyncRow } from "../db/schema";
 import { notifyRemoteChanged } from "@/components/sync/remote-events";
@@ -107,7 +107,7 @@ export async function applyPage(
         const id = rebased["id"];
         if (typeof id === "string" && !pending.has(`${entity}:${id}`)) {
           const before = existing.get(id);
-          if (before && !rowsEqual(before, rebased)) {
+          if (!before || !rowsEqual(before, rebased)) {
             remoteChanged.push({ entity, id });
           }
         }

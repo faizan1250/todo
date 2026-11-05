@@ -1,3 +1,6 @@
+import { db } from "../db";
+import * as schema from "../db/schema";
+
 type ServerLike = { publish: (topic: string, data: string) => unknown } | null;
 
 let server: ServerLike = null;
@@ -64,5 +67,21 @@ export function flushPublish(userId?: string) {
 
   for (const [uid, s] of Array.from(publishers.entries())) {
     flushOne(uid, s);
+  }
+}
+
+/**
+ * Notify other devices after a REST (non-sync-push) write. Reads the
+ * current global seq (bumped by DB triggers on every write) and schedules
+ * a coalesced `changed` publish. Origin device is unknown here, so all
+ * devices pull — the writer's extra pull is harmless.
+ */
+export function notifyUserChanged(userId: string): void {
+  try {
+    const state = db.select().from(schema.syncState).get();
+    if (!state) return;
+    schedulePublish(userId, state.seq, null);
+  } catch {
+    // Notification must never break the write path.
   }
 }

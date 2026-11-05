@@ -61,7 +61,12 @@ export const app = new Elysia()
       origin: trustedOrigins,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       credentials: true,
-      allowedHeaders: ["Content-Type", "Authorization"],
+      allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-Device-Id",
+        "X-Client-Version",
+      ],
       exposeHeaders: ["set-auth-token"],
     })
   )

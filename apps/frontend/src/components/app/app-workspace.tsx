@@ -23,6 +23,7 @@ import { useAuth } from "@/components/auth";
 import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
 import { restoreFromTrash } from "../sync/conflict-actions";
+import { subscribeRemoteChanged } from "../sync/remote-events";
 import {
   getLists,
   getFolders,
@@ -808,6 +809,46 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       isMounted = false;
     };
   }, [isAuthenticated, activeListId, userId, toast]);
+
+  // Remote-change refresh: sync pulls write to Dexie, but `tasks` is React
+  // state loaded one-shot above — without this, rows created or edited on
+  // another device would never render here. Collapses pull bursts (first
+  // sync notifies per row) into one trailing reload.
+  useEffect(() => {
+    if (!isAuthenticated || !userId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeRemoteChanged((detail) => {
+      if (
+        detail.entity !== "tasks" &&
+        detail.entity !== "sections" &&
+        detail.entity !== "checklistItems"
+      ) {
+        return;
+      }
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        if (!activeListId) return;
+        getListTasks(userId, activeListId)
+          .then((local) => dexieRowsToTaskItems(userId, local))
+          .then((mapped) => {
+            setTasks(mapped);
+            setSelectedTaskId((prev) =>
+              prev && mapped.some((t) => t.id === prev)
+                ? prev
+                : mapped[0]?.id ?? null
+            );
+          })
+          .catch((err) => {
+            console.error("Remote-change reload failed:", err);
+          });
+      }, 500);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [isAuthenticated, userId, activeListId]);
 
   // Bulk Selection Handlers
   const handleToggleSelectTask = useCallback(
