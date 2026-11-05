@@ -1464,3 +1464,30 @@ export async function getCalendar(params: {
   const qs = query.toString();
   return apiFetch<BackendCalendarResponse>(`/api/v1/calendar?${qs}`);
 }
+
+// -------------------------------------------------------------
+// Board API (/api/v1/board)
+// -------------------------------------------------------------
+
+export async function getBoard(params?: {
+  list_id?: string;
+  group_by?: string;
+}): Promise<BackendBoardResponse> {
+  const query = new URLSearchParams();
+  if (params?.list_id) query.set("list_id", params.list_id);
+  if (params?.group_by) query.set("group_by", params.group_by);
+  const qs = query.toString();
+  return apiFetch<BackendBoardResponse>(`/api/v1/board${qs ? `?${qs}` : ""}`);
+}
+
+export async function moveBoardTask(data: {
+  taskId: string;
+  column: string;
+  afterId?: string;
+  beforeId?: string;
+}): Promise<BackendBoardMoveResponse> {
+  return apiFetch<BackendBoardMoveResponse>("/api/v1/board/move", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
