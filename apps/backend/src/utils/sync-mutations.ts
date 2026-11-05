@@ -1086,7 +1086,7 @@ export async function processMutations(
           deviceId,
           status: r.status,
           result: JSON.stringify(r),
-          createdAt: Date.now() as any,
+          createdAt: new Date(),
         })
         .run();
       return r;
