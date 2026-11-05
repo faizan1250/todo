@@ -1,6 +1,6 @@
 // Local Trash view: tombstoned tasks, most recently deleted first.
 
-import { getDB } from "../../../db/schema";
+import { getDB } from "../../db/schema";
 import type { LocalTask } from "../types";
 import { asTask, isAlive, ms } from "./shared";
 

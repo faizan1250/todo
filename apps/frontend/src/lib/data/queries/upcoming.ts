@@ -2,7 +2,7 @@
 // active tasks due (or starting, when no due) within tomorrow .. today+days.
 // Default window 7 days, clamped 1..90 like the backend.
 
-import { getDB } from "../../../db/schema";
+import { getDB } from "../../db/schema";
 import { dayBounds } from "../dayBounds";
 import type { LocalTask } from "../types";
 import {

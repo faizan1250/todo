@@ -2,7 +2,7 @@
 // active tasks with a due date before now (timed) or before today's floating
 // start (all-day).
 
-import { getDB } from "../../../db/schema";
+import { getDB } from "../../db/schema";
 import { dayBounds } from "../dayBounds";
 import type { LocalTask } from "../types";
 import { asTask, isActiveTask, ms, type ViewOptions } from "./shared";

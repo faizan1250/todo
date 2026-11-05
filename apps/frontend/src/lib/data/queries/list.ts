@@ -1,7 +1,7 @@
 // Local list view: non-deleted tasks of one list, position order.
 // Subtasks are included; callers group by parentId/sectionId for display.
 
-import { getDB } from "../../../db/schema";
+import { getDB } from "../../db/schema";
 import type { LocalTask } from "../types";
 import { asTask, isAlive, sortByPosition } from "./shared";
 

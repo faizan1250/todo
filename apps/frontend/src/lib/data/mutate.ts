@@ -436,6 +436,13 @@ export async function mutate(
         if (entity === "tasks" && patch["parentId"] !== undefined) {
           parentRow = await assertValidParent(table, entityId, patch["parentId"]);
         }
+        // Server-side defaults (backend create uses the same).
+        const createPatch: Record<string, unknown> = { ...patch };
+        if (entity === "tasks") {
+          if (createPatch["status"] === undefined) createPatch["status"] = "todo";
+          if (createPatch["priority"] === undefined) createPatch["priority"] = 0;
+          if (createPatch["allDay"] === undefined) createPatch["allDay"] = false;
+        }
         let scope: Scope = {};
         if (entity === "tasks") {
           const listId = parentRow
@@ -457,7 +464,7 @@ export async function mutate(
             : await appendPosition(table, entity, scope, entityId);
         const row: SyncRow = {
           ...(existing ?? {}),
-          ...patch,
+          ...createPatch,
           id: entityId,
           position,
           updatedAt: editedAt,
@@ -473,7 +480,7 @@ export async function mutate(
           db,
           entity,
           entityId,
-          { ...patch, position },
+          { ...createPatch, position },
           editedAt,
           now,
           existing ? undefined : "create"
@@ -483,13 +490,50 @@ export async function mutate(
 
       case "update": {
         requireRow(existing, entity);
+        // Parent changes are hierarchy moves: validate like move, derive the
+        // list from the new parent, and cascade it to descendants (backend
+        // update does the same). Subtasks are otherwise locked to their
+        // parent's list: a bare listId change is dropped locally, and the
+        // server ignores it too. The server-bound patch stays untouched.
+        const localPatch: SyncRow = { ...patch };
+        if (entity === "tasks" && patch["parentId"] !== undefined) {
+          const rawParent = patch["parentId"] as string | null;
+          const parentRow = await assertValidParent(
+            table,
+            entityId,
+            rawParent
+          );
+          if (rawParent && parentRow) {
+            localPatch["listId"] = parentRow["listId"] as string;
+          }
+        } else if (
+          entity === "tasks" &&
+          patch["listId"] !== undefined &&
+          (existing["parentId"] as string | null) &&
+          (patch["listId"] as string) !== (existing["listId"] as string)
+        ) {
+          delete localPatch["listId"];
+        }
         const row: SyncRow = {
           ...existing,
-          ...patch,
+          ...localPatch,
           id: entityId,
           updatedAt: editedAt,
         };
         await table.put(row);
+        if (
+          entity === "tasks" &&
+          localPatch["listId"] !== undefined &&
+          localPatch["listId"] !== (existing["listId"] as string)
+        ) {
+          const { ids } = await localDescendants(table, entityId);
+          for (const id of ids) {
+            await table.update(id, {
+              listId: localPatch["listId"],
+              updatedAt: editedAt,
+            });
+          }
+        }
         outboxId = await enqueueUpsert(
           db,
           entity,

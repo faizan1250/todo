@@ -2,7 +2,7 @@
 // active tasks with due before end of today (includes overdue), plus tasks
 // with no due whose start falls within today.
 
-import { getDB } from "../../../db/schema";
+import { getDB } from "../../db/schema";
 import { dayBounds } from "../dayBounds";
 import type { LocalTask } from "../types";
 import {
