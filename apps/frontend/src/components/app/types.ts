@@ -8,7 +8,7 @@ export type SystemViewId =
   | "no-date"
   | "all";
 
-export type ViewMode = "list" | "calendar";
+export type ViewMode = "list" | "calendar" | "planner";
 
 export type ListId = SystemViewId | (string & {});
 

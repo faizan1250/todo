@@ -5,6 +5,7 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { Sidebar } from "./sidebar";
 import { TaskPane } from "./task-pane";
 import { CalendarView } from "./calendar-view";
+import { PlannerView } from "./planner-view";
 import { TaskDetailPanel } from "./task-detail-panel";
 import { StreakCelebration } from "./streak-celebration";
 import { CommandPalette } from "./command-palette";
@@ -1847,8 +1848,17 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           >
             Calendar
           </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("planner")}
+            className={`rounded-md px-3 py-1 text-sm ${viewMode === "planner" ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]" : "text-[#5B6478] hover:bg-[#F4F6FB] dark:text-[#9BB0D3] dark:hover:bg-[#0A2A6B]"}`}
+          >
+            Planner
+          </button>
         </div>
-        {viewMode === "calendar" ? (
+        {viewMode === "planner" ? (
+          <PlannerView className="flex-1" />
+        ) : viewMode === "calendar" ? (
           <CalendarView
             items={calendarItems}
             isLoading={isLoadingCalendar}
