@@ -4,6 +4,9 @@ import * as React from "react";
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { Sidebar } from "./sidebar";
 import { TaskPane } from "./task-pane";
+import { CalendarView } from "./calendar-view";
+import { PlannerView } from "./planner-view";
+import { BoardView } from "./board-view";
 import { TaskDetailPanel } from "./task-detail-panel";
 import { StreakCelebration } from "./streak-celebration";
 import { CommandPalette } from "./command-palette";
@@ -12,6 +15,7 @@ import { MobileNav } from "./mobile-nav";
 import { ToastProvider, useToast } from "./toast-system";
 import { ListDialog } from "./list-dialog";
 import { FolderDialog } from "./folder-dialog";
+import { FilterDialog } from "./filter-dialog";
 import { BulkActionToolbar } from "./bulk-action-toolbar";
 import { TrashModal } from "./trash-modal";
 import { TemplatesModal } from "./templates-modal";
@@ -20,6 +24,12 @@ import {
   getLists,
   getFolders,
   getTasks,
+  getTask,
+  getViewsCounts,
+  getViewItems,
+  getCalendar,
+  getBoard,
+  moveBoardTask,
   createTask,
   quickAddTask,
   updateTask,
@@ -40,16 +50,27 @@ import {
   deleteList,
   archiveList,
   deleteFolder,
+  getFilters,
+  createFilter,
+  updateFilter,
+  deleteFilter,
+  moveFilter,
+  getFilterTasks,
+  previewFilter,
+  type BackendSavedFilter,
   type BackendList,
   type BackendFolder,
   type BackendTask,
+  type BackendViewCountsResponse,
 } from "@/lib/api";
 import {
   backendTaskToTaskItem,
   priorityUiToBackend,
   taskItemToBackendUpdateInput,
 } from "@/lib/adapters";
-import type { TaskItem, ListId, FolderId, Priority } from "./types";
+import type { TaskItem, ListId, FolderId, Priority, ViewMode } from "./types";
+
+const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
 
 const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
   {
@@ -280,7 +301,23 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [userFolders, setUserFolders] = useState<BackendFolder[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
+  const [viewCounts, setViewCounts] = useState<BackendViewCountsResponse | null>(null);
+  const [viewCursor, setViewCursor] = useState<string | null>(null);
+  const [viewHasMore, setViewHasMore] = useState(false);
+  const [isLoadingView, setIsLoadingView] = useState(false);
   const [selectedListOverride, setSelectedListOverride] = useState<ListId | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
+  const [calendarItems, setCalendarItems] = useState<
+    import("@/lib/api").BackendCalendarItem[]
+  >([]);
+  const [isLoadingCalendar, setIsLoadingCalendar] = useState(false);
+  const [includeDone, setIncludeDone] = useState(false);
+
+  // Board state
+  const [boardData, setBoardData] = useState<import("@/lib/api").BackendBoardResponse | null>(null);
+  const [isLoadingBoard, setIsLoadingBoard] = useState(false);
+  const [boardGroupBy, setBoardGroupBy] = useState<string>("section");
 
   // Modals state for Lists & Folders
   const [isListDialogOpen, setIsListDialogOpen] = useState(false);
@@ -291,6 +328,17 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [isFolderDialogOpen, setIsFolderDialogOpen] = useState(false);
   const [folderDialogMode, setFolderDialogMode] = useState<"create" | "edit">("create");
   const [folderToEdit, setFolderToEdit] = useState<BackendFolder | null>(null);
+
+  // Saved filters state
+  const [savedFilters, setSavedFilters] = useState<BackendSavedFilter[]>([]);
+  const [activeFilterId, setActiveFilterId] = useState<string | null>(null);
+  const [filterTasks, setFilterTasks] = useState<TaskItem[]>([]);
+  const [filterCursor, setFilterCursor] = useState<string | null>(null);
+  const [filterHasMore, setFilterHasMore] = useState(false);
+  const [isLoadingFilter, setIsLoadingFilter] = useState(false);
+  const [isFilterDialogOpen, setIsFilterDialogOpen] = useState(false);
+  const [filterDialogMode, setFilterDialogMode] = useState<"create" | "edit">("create");
+  const [filterToEdit, setFilterToEdit] = useState<BackendSavedFilter | null>(null);
 
   const prefList = auth?.profile?.preferences?.defaultListId as ListId | undefined;
   const effectiveDefaultList: ListId =
@@ -320,6 +368,58 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [streakCount, setStreakCount] = useState(5);
   const [isStreakActive, setIsStreakActive] = useState(false);
   const [streakTaskTitle, setStreakTaskTitle] = useState("");
+
+  // Calendar fetch
+  useEffect(() => {
+    if (viewMode !== "calendar") return;
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    const run = async () => {
+      setIsLoadingCalendar(true);
+      try {
+        const year = calendarMonth.getFullYear();
+        const monthIndex = calendarMonth.getMonth();
+        const first = new Date(year, monthIndex, 1);
+        const last = new Date(year, monthIndex + 1, 0);
+        const from = first.toISOString().slice(0, 10);
+        const to = last.toISOString().slice(0, 10);
+        const res = await getCalendar({ from, to, include_done: includeDone });
+        if (!cancelled) setCalendarItems(res.items ?? []);
+      } catch (err) {
+        console.error("Failed to load calendar:", err);
+        if (!cancelled) setCalendarItems([]);
+      } finally {
+        if (!cancelled) setIsLoadingCalendar(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, isAuthenticated, calendarMonth, includeDone]);
+
+  // Board fetch
+  useEffect(() => {
+    if (viewMode !== "board") return;
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    const run = async () => {
+      setIsLoadingBoard(true);
+      try {
+        const res = await getBoard({ list_id: activeListId || undefined, group_by: boardGroupBy });
+        if (!cancelled) setBoardData(res);
+      } catch (err) {
+        console.error("Failed to load board:", err);
+        if (!cancelled) setBoardData(null);
+      } finally {
+        if (!cancelled) setIsLoadingBoard(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, isAuthenticated, activeListId, boardGroupBy]);
 
   // Container CRUD handlers
   const handleCreateList = useCallback((folderId?: string | null) => {
@@ -473,6 +573,23 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   useEffect(() => {
     if (!isAuthenticated) return;
     let isMounted = true;
+    getFilters()
+      .then((res) => {
+        if (!isMounted) return;
+        setSavedFilters(res);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error("Failed to load filters:", err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let isMounted = true;
 
     Promise.all([getLists(), getFolders()])
       .then(([lists, folders]) => {
@@ -493,6 +610,22 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       isMounted = false;
     };
   }, [isAuthenticated]);
+
+  // Fetch smart view counts
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let isMounted = true;
+    getViewsCounts()
+      .then((res) => {
+        if (isMounted) setViewCounts(res);
+      })
+      .catch((err) => {
+        if (isMounted) console.error("Failed to load view counts:", err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, tasks.length]);
 
   // Fetch tasks for active list or active smart view
   const loadTasks = useCallback(async () => {
@@ -523,6 +656,43 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       });
     }
   }, [isAuthenticated, activeListId, toast]);
+
+  // Load items for Phase 4 smart views via getViewItems
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (!PHASE4_VIEWS.has(activeList)) return;
+    let isMounted = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setIsLoadingView(true);
+    getViewItems(activeList, { limit: 50 })
+      .then((res) => {
+        if (!isMounted) return;
+        const mapped = res.items.map((t) =>
+          backendTaskToTaskItem(t as BackendTask, { listOverride: activeList as ListId })
+        );
+        setTasks(mapped);
+        setViewCursor(res.nextCursor);
+        setViewHasMore(res.hasMore);
+        setIsLoadingView(false);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error("Failed to load view items:", err);
+        setIsLoadingView(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, activeList]);
+
+  // Reload all tasks when leaving a Phase 4 view to a normal smart view
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (PHASE4_VIEWS.has(activeList)) return;
+    if (activeListId !== null) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadTasks();
+  }, [isAuthenticated, activeList, activeListId, loadTasks]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -824,10 +994,152 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     [success]
   );
 
+  const handleNewFilter = useCallback(() => {
+    setFilterDialogMode("create");
+    setFilterToEdit(null);
+    setIsFilterDialogOpen(true);
+  }, []);
+
+  const handleEditFilter = useCallback(
+    (id: string) => {
+      const f = savedFilters.find((x) => x.id === id) || null;
+      setFilterDialogMode("edit");
+      setFilterToEdit(f);
+      setIsFilterDialogOpen(true);
+    },
+    [savedFilters]
+  );
+
+  const handleDeleteFilter = useCallback(
+    async (id: string) => {
+      try {
+        await deleteFilter(id);
+        setSavedFilters((prev) => prev.filter((f) => f.id !== id));
+        if (activeFilterId === id) {
+          setActiveFilterId(null);
+          setFilterTasks([]);
+        }
+        success("Deleted filter");
+      } catch (err) {
+        console.error("Failed to delete filter:", err);
+        toast({
+          title: "Delete failed",
+          message: err instanceof Error ? err.message : "Could not delete filter",
+          type: "error",
+        });
+      }
+    },
+    [activeFilterId, success, toast]
+  );
+
+  const handleMoveFilter = useCallback(
+    async (id: string, dir: "up" | "down") => {
+      const idx = savedFilters.findIndex((f) => f.id === id);
+      if (idx < 0) return;
+      const targetIdx = dir === "up" ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= savedFilters.length) return;
+      const other = savedFilters[targetIdx];
+      try {
+        // move after/before
+        if (dir === "up") {
+          await moveFilter(id, { beforeId: other.id });
+        } else {
+          await moveFilter(id, { afterId: other.id });
+        }
+        // reload
+        const res = await getFilters();
+        setSavedFilters(res);
+      } catch (err) {
+        console.error("Failed to move filter:", err);
+        toast({
+          title: "Move failed",
+          message: err instanceof Error ? err.message : "Could not move filter",
+          type: "error",
+        });
+      }
+    },
+    [savedFilters, toast]
+  );
+
+  const handleSelectFilter = useCallback(
+    async (id: string) => {
+      setActiveFilterId(id);
+      setIsLoadingFilter(true);
+      try {
+        const res = await getFilterTasks(id, { limit: 50 });
+        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+        setFilterTasks(mapped);
+        setFilterCursor(res.nextCursor);
+        setFilterHasMore(res.hasMore);
+      } catch (err) {
+        console.error("Failed to load filter tasks:", err);
+        setFilterTasks([]);
+      } finally {
+        setIsLoadingFilter(false);
+      }
+    },
+    []
+  );
+
+  const handleLoadMoreFilter = useCallback(async () => {
+    if (!activeFilterId || !filterCursor || !filterHasMore) return;
+    setIsLoadingFilter(true);
+    try {
+      const res = await getFilterTasks(activeFilterId, { cursor: filterCursor, limit: 50 });
+      const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+      setFilterTasks((prev) => [...prev, ...mapped]);
+      setFilterCursor(res.nextCursor);
+      setFilterHasMore(res.hasMore);
+    } catch (err) {
+      console.error("Failed to load more filter tasks:", err);
+    } finally {
+      setIsLoadingFilter(false);
+    }
+  }, [activeFilterId, filterCursor, filterHasMore]);
+
+  const handleFilterSuccess = useCallback(
+    (saved: BackendSavedFilter) => {
+      setSavedFilters((prev) => {
+        const idx = prev.findIndex((f) => f.id === saved.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = saved;
+          return next;
+        }
+        return [...prev, saved];
+      });
+      success(`Saved filter "${saved.name}"`);
+    },
+    [success]
+  );
+
   const handleOpenShortcuts = useCallback(() => {
     setIsShortcutsOpen(true);
     externalOpenShortcuts?.();
   }, [externalOpenShortcuts]);
+
+  const handleOpenTaskFromSearch = useCallback(
+    async (taskId: string) => {
+      if (tasks.some((t) => t.id === taskId)) {
+        setSelectedTaskId(taskId);
+        return;
+      }
+      if (!isAuthenticated) {
+        setSelectedTaskId(taskId);
+        return;
+      }
+      try {
+        const fetched = await getTask(taskId, "subtasks,checklist,tags");
+        const mapped = backendTaskToTaskItem(fetched);
+        setTasks((prev) => (prev.some((t) => t.id === mapped.id) ? prev : [mapped, ...prev]));
+        setSelectedTaskId(mapped.id);
+      } catch (err) {
+        console.error("Failed to open task from search:", err);
+        setSelectedTaskId(taskId);
+      }
+    },
+    [tasks, isAuthenticated]
+  );
 
   // Derived Inbox list and active list name
   const inboxList = useMemo(() => {
@@ -845,10 +1157,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   // Compute counts
   const listCounts = useMemo(() => {
     const counts: Record<string, number> = {
-      today: tasks.filter((t) => t.list === "today").length,
-      upcoming: tasks.filter((t) => t.list === "upcoming").length,
+      today: viewCounts?.counts?.today ?? tasks.filter((t) => t.list === "today").length,
+      upcoming: viewCounts?.counts?.upcoming ?? tasks.filter((t) => t.list === "upcoming").length,
       backlog: tasks.filter((t) => t.list === "backlog").length,
-      completed: tasks.filter((t) => t.completed).length,
+      completed: viewCounts?.counts?.completed ?? tasks.filter((t) => t.completed).length,
+      overdue: viewCounts?.counts?.overdue ?? 0,
+      priority: viewCounts?.counts?.priority ?? 0,
+      "no-date": viewCounts?.counts?.["no-date"] ?? 0,
+      all: viewCounts?.counts?.all ?? tasks.length,
     };
 
     for (const list of userLists) {
@@ -856,7 +1172,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     }
 
     return counts;
-  }, [tasks, userLists]);
+  }, [tasks, userLists, viewCounts]);
 
   const folderCounts = useMemo(() => {
     const counts: Record<string, number> = {
@@ -1642,6 +1958,43 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     [isAuthenticated, selectedTaskId]
   );
 
+  const handleLoadMoreView = useCallback(async () => {
+    if (!viewCursor || !viewHasMore) return;
+    setIsLoadingView(true);
+    try {
+      const res = await getViewItems(activeList, { cursor: viewCursor, limit: 50 });
+      const mapped = res.items.map((t) =>
+        backendTaskToTaskItem(t as BackendTask, { listOverride: activeList as ListId })
+      );
+      setTasks((prev) => [...prev, ...mapped]);
+      setViewCursor(res.nextCursor);
+      setViewHasMore(res.hasMore);
+    } catch (err) {
+      console.error("Failed to load more view items:", err);
+    } finally {
+      setIsLoadingView(false);
+    }
+  }, [activeList, viewCursor, viewHasMore]);
+
+  const handleMoveBoardTask = useCallback(
+    async (taskId: string, column: string, afterId?: string, beforeId?: string) => {
+      if (!isAuthenticated) return;
+      try {
+        await moveBoardTask({ taskId, column, afterId, beforeId });
+        const res = await getBoard({ list_id: activeListId || undefined, group_by: boardGroupBy });
+        setBoardData(res);
+      } catch (err) {
+        console.error("Failed to move board task:", err);
+        toast({
+          title: "Move failed",
+          message: err instanceof Error ? err.message : "Could not move task",
+          type: "error",
+        });
+      }
+    },
+    [isAuthenticated, activeListId, boardGroupBy, toast]
+  );
+
   // Cycle folders for mobile nav
   const handleCycleFolder = useCallback(() => {
     const folders: (FolderId | null)[] = [null, "engineering", "design", "personal"];
@@ -1683,27 +2036,93 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onDeleteFolder={handleDeleteFolder}
         onOpenTrash={() => setIsTrashOpen(true)}
         onOpenTemplates={() => setIsTemplatesOpen(true)}
+        savedFilters={[...savedFilters].sort((a, b) => Number(b.pinned) - Number(a.pinned))}
+        activeFilterId={activeFilterId}
+        onSelectFilter={handleSelectFilter}
+        onNewFilter={handleNewFilter}
+        onEditFilter={handleEditFilter}
+        onDeleteFilter={handleDeleteFilter}
+        onMoveFilter={handleMoveFilter}
         className="hidden md:flex"
       />
 
-      {/* Main Task Pane */}
-      <TaskPane
-        tasks={tasks}
-        activeList={activeList}
-        activeListId={activeListId}
-        activeListName={activeListName}
-        activeFolder={activeFolder}
-        folders={userFolders}
-        selectedTaskId={selectedTaskId}
-        selectedTaskIds={selectedTaskIds}
-        onToggleSelectTask={handleToggleSelectTask}
-        onSelectTask={(task) => setSelectedTaskId(task.id)}
-        onToggleComplete={handleToggleComplete}
-        onDeleteTask={handleDeleteTask}
-        onAddTask={handleAddTask}
-        onQuickAddTask={handleQuickAddTask}
-        isLoading={isLoadingTasks}
-      />
+      {/* Main Task Pane / Calendar View */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-[#E4E8F2] bg-white px-4 py-2 dark:border-[#132E74] dark:bg-[#051A4D]">
+          <button
+            type="button"
+            onClick={() => setViewMode("list")}
+            className={`rounded-md px-3 py-1 text-sm ${viewMode === "list" ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]" : "text-[#5B6478] hover:bg-[#F4F6FB] dark:text-[#9BB0D3] dark:hover:bg-[#0A2A6B]"}`}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("calendar")}
+            className={`rounded-md px-3 py-1 text-sm ${viewMode === "calendar" ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]" : "text-[#5B6478] hover:bg-[#F4F6FB] dark:text-[#9BB0D3] dark:hover:bg-[#0A2A6B]"}`}
+          >
+            Calendar
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("planner")}
+            className={`rounded-md px-3 py-1 text-sm ${viewMode === "planner" ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]" : "text-[#5B6478] hover:bg-[#F4F6FB] dark:text-[#9BB0D3] dark:hover:bg-[#0A2A6B]"}`}
+          >
+            Planner
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("board")}
+            className={`rounded-md px-3 py-1 text-sm ${viewMode === "board" ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]" : "text-[#5B6478] hover:bg-[#F4F6FB] dark:text-[#9BB0D3] dark:hover:bg-[#0A2A6B]"}`}
+          >
+            Board
+          </button>
+        </div>
+        {viewMode === "board" ? (
+          <BoardView
+            columns={boardData?.columns ?? []}
+            isLoading={isLoadingBoard}
+            groupBy={boardGroupBy}
+            onGroupByChange={(g) => setBoardGroupBy(g)}
+            onMoveTask={handleMoveBoardTask}
+            className="flex-1"
+          />
+        ) : viewMode === "planner" ? (
+          <PlannerView className="flex-1" />
+        ) : viewMode === "calendar" ? (
+          <CalendarView
+            items={calendarItems}
+            isLoading={isLoadingCalendar}
+            month={calendarMonth}
+            onMonthChange={setCalendarMonth}
+            onSelectTask={(id) => setSelectedTaskId(id)}
+            includeDone={includeDone}
+            onToggleIncludeDone={setIncludeDone}
+            className="flex-1"
+          />
+        ) : (
+          <TaskPane
+            tasks={activeFilterId ? filterTasks : tasks}
+            activeList={activeList}
+            activeListId={activeListId}
+            activeListName={activeFilterId ? (savedFilters.find((f) => f.id === activeFilterId)?.name) : activeListName}
+            activeFolder={activeFolder}
+            folders={userFolders}
+            selectedTaskId={selectedTaskId}
+            selectedTaskIds={selectedTaskIds}
+            onToggleSelectTask={handleToggleSelectTask}
+            onSelectTask={(task) => setSelectedTaskId(task.id)}
+            onToggleComplete={handleToggleComplete}
+            onDeleteTask={handleDeleteTask}
+            onAddTask={handleAddTask}
+            onQuickAddTask={handleQuickAddTask}
+            isLoading={activeFilterId ? isLoadingFilter : (isLoadingTasks || isLoadingView)}
+            hasMore={activeFilterId ? filterHasMore : viewHasMore}
+            isLoadingMore={activeFilterId ? isLoadingFilter : isLoadingView}
+            onLoadMore={activeFilterId ? handleLoadMoreFilter : handleLoadMoreView}
+          />
+        )}
+      </div>
 
       {/* Collapsible Task Detail Panel */}
       {selectedTask && (
@@ -1752,6 +2171,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onOpenShortcuts={handleOpenShortcuts}
         onOpenTrash={() => setIsTrashOpen(true)}
         onOpenTemplates={() => setIsTemplatesOpen(true)}
+        onOpenTask={handleOpenTaskFromSearch}
       />
 
       {/* Global Keyboard Shortcuts Modal */}
@@ -1775,6 +2195,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       />
 
       {/* List Dialog Modal */}
+      <FilterDialog
+        isOpen={isFilterDialogOpen}
+        onClose={() => setIsFilterDialogOpen(false)}
+        mode={filterDialogMode}
+        filterToEdit={filterToEdit}
+        onSuccess={handleFilterSuccess}
+      />
+
       <ListDialog
         isOpen={isListDialogOpen}
         onClose={() => setIsListDialogOpen(false)}

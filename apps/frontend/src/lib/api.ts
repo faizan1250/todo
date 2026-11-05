@@ -233,6 +233,219 @@ export interface BackendTemplate {
   deletedAt?: string | number | null;
 }
 
+// -------------------------------------------------------------
+// Phase 4: Views, Filters, Search, Calendar, Board, Planner DTOs
+// -------------------------------------------------------------
+
+export interface BackendView {
+  key: string;
+  name: string;
+  icon: string;
+}
+
+export interface BackendViewsResponse {
+  builtIns: BackendView[];
+  savedFilters: BackendSavedFilter[];
+}
+
+export interface BackendViewCounts {
+  overdue: number;
+  today: number;
+  upcoming: number;
+  priority: number;
+  "no-date": number;
+  completed: number;
+  all: number;
+}
+
+export interface BackendViewCountsResponse {
+  counts: BackendViewCounts;
+  filters?: Record<string, number>;
+}
+
+export interface BackendViewTask {
+  id: string;
+  userId: string;
+  listId: string;
+  sectionId?: string | null;
+  parentId?: string | null;
+  title: string;
+  notes?: string | null;
+  status: "todo" | "in_progress" | "done" | "cancelled";
+  priority: number;
+  position: string;
+  startAt?: string | number | null;
+  dueAt?: string | number | null;
+  deadlineAt?: string | number | null;
+  allDay?: boolean;
+  estimateMin?: number | null;
+  recurrenceId?: string | null;
+  placeId?: string | null;
+  locationName?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  radiusM?: number | null;
+  locationTrigger?: "arrive" | "leave" | null;
+  completedAt?: string | number | null;
+  archivedAt?: string | number | null;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version: number;
+  deletedAt?: string | number | null;
+  listName?: string | null;
+  listColor?: string | null;
+  parentTitle?: string | null;
+  subtaskDone?: number;
+  subtaskTotal?: number;
+}
+
+export interface BackendViewItemsResponse {
+  key: string;
+  items: BackendViewTask[];
+  groups?: Array<{ date: string; tasks: BackendViewTask[] }>;
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface BackendSavedFilter {
+  id: string;
+  userId: string;
+  name: string;
+  icon?: string | null;
+  color?: string | null;
+  query: unknown;
+  sort?: Array<{ by: string; order: "asc" | "desc" }> | null;
+  groupBy?: string | null;
+  position: string;
+  pinned: boolean;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version: number;
+  deletedAt?: string | number | null;
+}
+
+export interface BackendFilterSchema {
+  fields: unknown;
+  operators: unknown;
+  relativeDates: unknown;
+}
+
+export interface BackendFilteredTasksResponse {
+  items: BackendViewTask[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  filter?: BackendSavedFilter;
+}
+
+export interface BackendSearchTaskResult extends BackendViewTask {
+  titleHl: string;
+  notesHl: string;
+  rank: number;
+}
+
+export interface BackendSearchResponse {
+  tasks: BackendSearchTaskResult[];
+  total?: number;
+  lists?: Array<{ id: string; name: string; color?: string | null; isInbox: boolean; position: string }>;
+  tags?: Array<{ id: string; name: string; color?: string | null }>;
+  filters?: Array<{ id: string; name: string; icon?: string | null; color?: string | null; position: string; pinned: boolean }>;
+}
+
+export interface BackendCalendarItem {
+  id: string;
+  type: "task" | "block" | "virtual";
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  status: string | null;
+  priority: number;
+  listId: string | null;
+  color: string | null;
+  virtual?: boolean;
+  taskId?: string | null;
+  recurrenceId?: string | null;
+}
+
+export interface BackendCalendarResponse {
+  from: string;
+  to: string;
+  items: BackendCalendarItem[];
+  total: number;
+}
+
+export interface BackendBoardColumn {
+  key: string;
+  title: string;
+  sectionId?: string | null;
+  count: number;
+  tasks: BackendViewTask[];
+  nextCursor?: string | null;
+}
+
+export interface BackendBoardResponse {
+  listId: string;
+  groupBy: string;
+  columns: BackendBoardColumn[];
+}
+
+export interface BackendBoardMoveResponse {
+  task: BackendTask;
+  nextTask?: BackendTask | null;
+}
+
+export interface BackendTimeBlock {
+  id: string;
+  userId: string;
+  taskId?: string | null;
+  title?: string | null;
+  startAt: string | number;
+  endAt: string | number;
+  color?: string | null;
+  createdAt: string | number;
+  updatedAt: string | number;
+  version?: number;
+  deletedAt?: string | number | null;
+  task?: {
+    id: string;
+    title: string;
+    status: string;
+    priority: number;
+    estimateMin: number | null;
+    listId: string;
+  } | null;
+}
+
+export interface BackendPlannerUnscheduledTask {
+  id: string;
+  title: string;
+  status: string;
+  priority: number;
+  dueAt: string | null;
+  startAt: string | null;
+  allDay: boolean;
+  estimateMin: number | null;
+  listName: string | null;
+  listColor: string | null;
+  subtaskDone: number;
+  subtaskTotal: number;
+}
+
+export interface BackendPlannerCapacity {
+  workMin: number;
+  scheduledMin: number;
+  estimatedMin: number;
+}
+
+export interface BackendPlannerResponse {
+  date: string;
+  workHours: string;
+  blocks: BackendTimeBlock[];
+  unscheduled: BackendPlannerUnscheduledTask[];
+  capacity: BackendPlannerCapacity;
+  conflicts: Array<[string, string]>;
+}
+
 export interface PaginatedTasksResponse {
   items: BackendTask[];
   nextCursor: string | null;
@@ -1071,5 +1284,280 @@ export async function deleteTemplate(
 ): Promise<{ success: boolean }> {
   return apiFetch<{ success: boolean }>(`/api/v1/templates/${encodeURIComponent(templateId)}`, {
     method: "DELETE",
+  });
+}
+
+// -------------------------------------------------------------
+// Views API (/api/v1/views)
+// -------------------------------------------------------------
+
+export async function getViews(): Promise<BackendViewsResponse> {
+  return apiFetch<BackendViewsResponse>("/api/v1/views");
+}
+
+export async function getViewsCounts(params?: {
+  tz?: string;
+  days?: number;
+  completed_days?: number;
+  filters?: boolean;
+}): Promise<BackendViewCountsResponse> {
+  const query = new URLSearchParams();
+  if (params?.tz) query.set("tz", params.tz);
+  if (params?.days !== undefined) query.set("days", String(params.days));
+  if (params?.completed_days !== undefined) query.set("completed_days", String(params.completed_days));
+  if (params?.filters) query.set("filters", "true");
+  const qs = query.toString();
+  return apiFetch<BackendViewCountsResponse>(`/api/v1/views/counts${qs ? `?${qs}` : ""}`);
+}
+
+export async function getViewItems(
+  key: string,
+  params?: { cursor?: string; limit?: number; tz?: string; days?: number }
+): Promise<BackendViewItemsResponse> {
+  const query = new URLSearchParams();
+  if (params?.cursor) query.set("cursor", params.cursor);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.tz) query.set("tz", params.tz);
+  if (params?.days !== undefined) query.set("days", String(params.days));
+  const qs = query.toString();
+  return apiFetch<BackendViewItemsResponse>(`/api/v1/views/${encodeURIComponent(key)}${qs ? `?${qs}` : ""}`);
+}
+
+// -------------------------------------------------------------
+// Saved Filters API (/api/v1/filters)
+// -------------------------------------------------------------
+
+export async function getFilters(): Promise<BackendSavedFilter[]> {
+  return apiFetch<BackendSavedFilter[]>("/api/v1/filters");
+}
+
+export async function getFilterSchema(): Promise<BackendFilterSchema> {
+  return apiFetch<BackendFilterSchema>("/api/v1/filters/schema");
+}
+
+export async function createFilter(data: {
+  name: string;
+  icon?: string;
+  color?: string;
+  query: unknown;
+  sort?: Array<{ by: string; order: "asc" | "desc" }>;
+  groupBy?: string;
+  pinned?: boolean;
+}): Promise<BackendSavedFilter> {
+  return apiFetch<BackendSavedFilter>("/api/v1/filters", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateFilter(
+  id: string,
+  data: {
+    name?: string;
+    icon?: string | null;
+    color?: string | null;
+    query?: unknown;
+    sort?: Array<{ by: string; order: "asc" | "desc" }> | null;
+    groupBy?: string | null;
+    pinned?: boolean;
+  }
+): Promise<BackendSavedFilter> {
+  return apiFetch<BackendSavedFilter>(`/api/v1/filters/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteFilter(id: string): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(`/api/v1/filters/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function moveFilter(
+  id: string,
+  data: { afterId?: string; beforeId?: string }
+): Promise<BackendSavedFilter> {
+  return apiFetch<BackendSavedFilter>(`/api/v1/filters/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getFilterTasks(
+  id: string,
+  params?: { cursor?: string; limit?: number; tz?: string }
+): Promise<BackendFilteredTasksResponse> {
+  const query = new URLSearchParams();
+  if (params?.cursor) query.set("cursor", params.cursor);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendFilteredTasksResponse>(`/api/v1/filters/${encodeURIComponent(id)}/tasks${qs ? `?${qs}` : ""}`);
+}
+
+export async function previewFilter(data: {
+  query: unknown;
+  sort?: Array<{ by: string; order: "asc" | "desc" }>;
+}, params?: { cursor?: string; limit?: number; tz?: string }): Promise<BackendFilteredTasksResponse> {
+  const query = new URLSearchParams();
+  if (params?.cursor) query.set("cursor", params.cursor);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendFilteredTasksResponse>(`/api/v1/filters/preview${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+// -------------------------------------------------------------
+// Search API (/api/v1/search)
+// -------------------------------------------------------------
+
+export async function search(params: {
+  q?: string;
+  types?: string;
+  list_id?: string;
+  status?: string;
+  tag?: string;
+  archived?: boolean;
+  scope?: string;
+  limit?: number;
+}): Promise<BackendSearchResponse> {
+  const query = new URLSearchParams();
+  if (params?.q) query.set("q", params.q);
+  if (params?.types) query.set("types", params.types);
+  if (params?.list_id) query.set("list_id", params.list_id);
+  if (params?.status) query.set("status", params.status);
+  if (params?.tag) query.set("tag", params.tag);
+  if (params?.archived !== undefined) query.set("archived", String(params.archived));
+  if (params?.scope) query.set("scope", params.scope);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<BackendSearchResponse>(`/api/v1/search${qs ? `?${qs}` : ""}`);
+}
+
+export async function rebuildSearchIndex(): Promise<{ success: boolean; message: string; timestamp: string }> {
+  return apiFetch<{ success: boolean; message: string; timestamp: string }>("/api/v1/search/rebuild", {
+    method: "POST",
+  });
+}
+
+// -------------------------------------------------------------
+// Calendar API (/api/v1/calendar)
+// -------------------------------------------------------------
+
+export async function getCalendar(params: {
+  from: string;
+  to: string;
+  list_id?: string;
+  include_done?: boolean;
+  tz?: string;
+}): Promise<BackendCalendarResponse> {
+  const query = new URLSearchParams();
+  query.set("from", params.from);
+  query.set("to", params.to);
+  if (params.list_id) query.set("list_id", params.list_id);
+  if (params.include_done !== undefined) query.set("include_done", String(params.include_done));
+  if (params.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendCalendarResponse>(`/api/v1/calendar?${qs}`);
+}
+
+// -------------------------------------------------------------
+// Board API (/api/v1/board)
+// -------------------------------------------------------------
+
+export async function getBoard(params?: {
+  list_id?: string;
+  group_by?: string;
+}): Promise<BackendBoardResponse> {
+  const query = new URLSearchParams();
+  if (params?.list_id) query.set("list_id", params.list_id);
+  if (params?.group_by) query.set("group_by", params.group_by);
+  const qs = query.toString();
+  return apiFetch<BackendBoardResponse>(`/api/v1/board${qs ? `?${qs}` : ""}`);
+}
+
+export async function moveBoardTask(data: {
+  taskId: string;
+  column: string;
+  afterId?: string;
+  beforeId?: string;
+}): Promise<BackendBoardMoveResponse> {
+  return apiFetch<BackendBoardMoveResponse>("/api/v1/board/move", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+// -------------------------------------------------------------
+// Planner & Time Blocks API (/api/v1/planner, /api/v1/time-blocks)
+// -------------------------------------------------------------
+
+export async function getPlanner(params?: {
+  date?: string;
+  tz?: string;
+}): Promise<BackendPlannerResponse> {
+  const query = new URLSearchParams();
+  if (params?.date) query.set("date", params.date);
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendPlannerResponse>(`/api/v1/planner${qs ? `?${qs}` : ""}`);
+}
+
+export async function createTimeBlock(data: {
+  taskId?: string;
+  title?: string;
+  startAt: string;
+  endAt: string;
+  color?: string;
+}, params?: { tz?: string }): Promise<BackendTimeBlock> {
+  const query = new URLSearchParams();
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendTimeBlock>(`/api/v1/time-blocks${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateTimeBlock(
+  id: string,
+  data: {
+    taskId?: string | null;
+    title?: string | null;
+    startAt?: string;
+    endAt?: string;
+    color?: string | null;
+  },
+  params?: { tz?: string }
+): Promise<BackendTimeBlock> {
+  const query = new URLSearchParams();
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendTimeBlock>(`/api/v1/time-blocks/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteTimeBlock(id: string): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(`/api/v1/time-blocks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function scheduleTask(data: {
+  taskId: string;
+  start: string;
+}, params?: { tz?: string }): Promise<BackendTimeBlock> {
+  const query = new URLSearchParams();
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendTimeBlock>(`/api/v1/planner/schedule${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    body: JSON.stringify(data),
   });
 }

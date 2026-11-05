@@ -1,4 +1,14 @@
-export type SystemViewId = "today" | "upcoming" | "backlog" | "completed";
+export type SystemViewId =
+  | "today"
+  | "upcoming"
+  | "backlog"
+  | "completed"
+  | "overdue"
+  | "priority"
+  | "no-date"
+  | "all";
+
+export type ViewMode = "list" | "calendar" | "planner" | "board";
 
 export type ListId = SystemViewId | (string & {});
 

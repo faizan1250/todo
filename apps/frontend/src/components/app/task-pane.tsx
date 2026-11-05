@@ -63,6 +63,9 @@ interface TaskPaneProps {
   isLoading?: boolean;
   selectedTaskIds?: Set<string>;
   onToggleSelectTask?: (id: string, shiftKey?: boolean, visibleTaskIds?: string[]) => void;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 export function TaskPane({
@@ -81,6 +84,9 @@ export function TaskPane({
   isLoading = false,
   selectedTaskIds,
   onToggleSelectTask,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
 }: TaskPaneProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "completed">("all");
@@ -122,6 +128,10 @@ export function TaskPane({
     upcoming: "Upcoming",
     backlog: "Backlog",
     completed: "Completed",
+    overdue: "Overdue",
+    priority: "Priority",
+    "no-date": "No Date",
+    all: "All",
   };
 
   const resolvedTitle =
@@ -1237,6 +1247,19 @@ export function TaskPane({
             >
               <FolderPlus className="h-4 w-4" />
               <span>Add New Section</span>
+            </button>
+          </div>
+        )}
+
+        {hasMore && (
+          <div className="pt-2 flex justify-center">
+            <button
+              type="button"
+              onClick={onLoadMore}
+              disabled={isLoadingMore}
+              className="rounded-lg border border-[#E4E8F2] bg-white px-4 py-2 text-xs font-semibold text-[#09318D] hover:bg-[#F2F5FC] transition-colors dark:border-[#132E74] dark:bg-[#082363] dark:text-[#FFA8D7] cursor-pointer disabled:opacity-50"
+            >
+              {isLoadingMore ? "Loading..." : "Load more"}
             </button>
           </div>
         )}
