@@ -16,11 +16,14 @@ import { getDB, type TodoDB } from "../db/schema";
 import {
   pullPage,
   pushBatch,
+  RetryableError,
   SyncResyncRequired,
+  SyncUpdateRequired,
   type PushMutation,
 } from "./transport";
 import { applyPage } from "./apply";
 import { learnOffset } from "./clock";
+import { setStatus } from "./status";
 import {
   getPending,
   pendingPatchesByEntity,
@@ -172,4 +175,140 @@ export async function pullPhase(
   }
 
   return cur;
+}
+
+// ---- runSync orchestrator (Day 2b) ----
+//
+// One full cycle: idle -> pushing -> pulling -> idle, with the status
+// store updated after each phase (pendingCount) and on completion
+// (lastSyncAt). Concurrent calls join the in-flight run. No timers here:
+// backoff returns retryDelayMs and the caller (triggers.ts) schedules.
+
+export type RunSyncStatus = "ok" | "offline" | "backoff" | "updateRequired";
+
+export interface RunSyncOptions {
+  // Bypass the concurrent-run guard and start a fresh run.
+  force?: boolean;
+}
+
+export interface RunSyncResult {
+  status: RunSyncStatus;
+  // Present when status is "backoff": caller schedules the retry.
+  retryDelayMs?: number;
+  // Cursor after a successful pull.
+  cursor?: string;
+}
+
+const BACKOFF_BASE_MS = 2000;
+const BACKOFF_MAX_MS = 60000;
+const BACKOFF_JITTER_MS = 1000;
+
+let inFlight: Promise<RunSyncResult> | null = null;
+let consecutiveFailures = 0;
+
+export function backoffDelayMs(failures: number): number {
+  const exp = BACKOFF_BASE_MS * 2 ** Math.max(0, failures - 1);
+  return Math.min(BACKOFF_MAX_MS, exp) + Math.random() * BACKOFF_JITTER_MS;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function readCursor(userId: string): Promise<string> {
+  const row = await getDB(userId).meta.get("cursor");
+  return typeof row?.value === "string" ? row.value : "";
+}
+
+async function refreshPendingCount(userId: string): Promise<void> {
+  const pending = await getPending(userId);
+  setStatus({ pendingCount: pending.length });
+}
+
+function failUpdate(err: unknown): RunSyncResult {
+  setStatus({ state: "updateRequired", error: errorMessage(err) });
+  return { status: "updateRequired" };
+}
+
+async function failTransient(
+  userId: string,
+  err: unknown
+): Promise<RunSyncResult> {
+  consecutiveFailures += 1;
+  const computed = backoffDelayMs(consecutiveFailures);
+  const serverDelay =
+    err instanceof RetryableError && err.delayMs > 0 ? err.delayMs : 0;
+  const retryDelayMs = Math.max(computed, serverDelay);
+  setStatus({ state: "backoff", error: errorMessage(err) });
+  await refreshPendingCount(userId).catch(() => {});
+  return { status: "backoff", retryDelayMs };
+}
+
+function succeed(cursor: string): RunSyncResult {
+  consecutiveFailures = 0;
+  setStatus({ state: "idle", lastSyncAt: Date.now(), error: null });
+  return { status: "ok", cursor };
+}
+
+// Full resync: push the outbox first so unsent local edits survive, wipe
+// entity tables (never the outbox), then pull from "". A second resync
+// demand inside is treated as transient and retried later.
+async function doResync(
+  userId: string,
+  deviceId: string
+): Promise<RunSyncResult> {
+  setStatus({ state: "resyncing", error: null });
+  try {
+    await pushPhase(userId, deviceId);
+    await refreshPendingCount(userId);
+    const db = getDB(userId);
+    await clearEntityTables(db);
+    await db.meta.put({ key: "cursor", value: "" });
+    setStatus({ state: "pulling" });
+    const next = await pullPhase(userId, deviceId, "");
+    await refreshPendingCount(userId);
+    return succeed(next);
+  } catch (err) {
+    if (err instanceof SyncUpdateRequired) return failUpdate(err);
+    return failTransient(userId, err);
+  }
+}
+
+async function doRunSync(
+  userId: string,
+  deviceId: string
+): Promise<RunSyncResult> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    setStatus({ state: "offline", error: null });
+    return { status: "offline" };
+  }
+  try {
+    setStatus({ state: "pushing", error: null });
+    await pushPhase(userId, deviceId);
+    await refreshPendingCount(userId);
+    setStatus({ state: "pulling" });
+    const next = await pullPhase(userId, deviceId, await readCursor(userId));
+    await refreshPendingCount(userId);
+    return succeed(next);
+  } catch (err) {
+    if (err instanceof SyncUpdateRequired) return failUpdate(err);
+    if (err instanceof SyncResyncRequired) return doResync(userId, deviceId);
+    return failTransient(userId, err);
+  }
+}
+
+export function runSync(
+  userId: string,
+  deviceId: string,
+  opts?: RunSyncOptions
+): Promise<RunSyncResult> {
+  if (inFlight && !opts?.force) return inFlight;
+  const p = doRunSync(userId, deviceId);
+  inFlight = p;
+  // doRunSync never rejects (all errors map to results), so this finally
+  // handler never produces an unhandled rejection.
+  void p.then(() => {
+    if (inFlight === p) inFlight = null;
+  });
+  return p;
 }
