@@ -132,7 +132,7 @@ export function EmptyState({
       role="region"
       aria-label="Empty state feedback"
       className={cn(
-        "flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#E4E8F2] bg-white/70 p-8 sm:p-12 text-center backdrop-blur-xs transition-all dark:border-[#132E74] dark:bg-[#082363]/30",
+        "flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#E4E8F2] bg-white/70 p-8 sm:p-12 text-center backdrop-blur-xs motion-safe:transition-all dark:border-[#132E74] dark:bg-[#082363]/30",
         className
       )}
     >

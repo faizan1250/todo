@@ -113,9 +113,8 @@ export function NetworkBanner({ className, forceOffline }: NetworkBannerProps) {
         </div>
 
         <div className="truncate">
-          <span className="font-semibold">Backend Offline (:3001)</span>
-          <span className="hidden sm:inline text-amber-800/90 dark:text-amber-300/80 ml-2">
-            Running in local resilient mode. Local changes will sync once backend restores.
+          <span className="font-semibold">
+            You&apos;re offline. Your changes will sync when you&apos;re back.
           </span>
         </div>
       </div>

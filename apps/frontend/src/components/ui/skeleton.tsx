@@ -16,7 +16,7 @@ export function Skeleton({
       aria-label="Loading content"
       className={cn(
         "rounded-md bg-[#EBF0FA] dark:bg-[#0C2B7A]",
-        shimmer ? "animate-pulse" : "",
+        shimmer ? "motion-safe:animate-pulse" : "",
         className
       )}
       {...props}

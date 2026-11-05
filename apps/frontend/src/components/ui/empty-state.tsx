@@ -1,0 +1,1 @@
+export { EmptyState, type EmptyStateProps, type EmptyStateType } from "@/components/app/empty-state";
