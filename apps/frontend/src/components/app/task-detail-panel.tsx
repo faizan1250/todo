@@ -148,6 +148,25 @@ function getRecurrenceLabel(rrule?: string | null): string {
   return "Custom";
 }
 
+// TaskItem.createdAt is a pre-formatted display string ("Just now", "5m ago",
+// "Yesterday", "Oct 24") — not a raw date. Derive a friendly "Created …"
+// label from it without needing new props.
+function friendlyCreatedLabel(createdAt: string): string {
+  const c = (createdAt || "").trim();
+  if (!c) return "recently";
+  if (/yesterday/i.test(c)) return "yesterday";
+  if (/just now|ago|[AP]M/i.test(c)) return "today";
+  const parsed = new Date(`${c} ${new Date().getFullYear()}`);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+    });
+  }
+  return c;
+}
+
 export function TaskDetailPanel({
   task,
   isOpen,
@@ -177,6 +196,10 @@ export function TaskDetailPanel({
   const [moveListId, setMoveListId] = useState<string | null>(null);
   const [moveSections, setMoveSections] = useState<BackendSection[]>([]);
   const [isMoveSectionsLoading, setIsMoveSectionsLoading] = useState(false);
+  // Quiet footer save indicator: stamped whenever the task's updatedAt flips
+  // (every panel edit persists immediately through onUpdateTask).
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const didMountRef = useRef(true);
   const [customRrule, setCustomRrule] = useState("");
   const [customMinutes, setCustomMinutes] = useState("");
   const [isAddingReminder, setIsAddingReminder] = useState(false);
@@ -200,6 +223,15 @@ export function TaskDetailPanel({
       getPlaces().then(setPlaces).catch(() => setPlaces([]));
     }
   }, [openPicker]);
+
+  const taskUpdatedAt = task?.updatedAt;
+  useEffect(() => {
+    if (didMountRef.current) {
+      didMountRef.current = false;
+      return;
+    }
+    setLastSavedAt(Date.now());
+  }, [taskUpdatedAt]);
 
   const currentFolderObj =
     !task?.folder || task.folder === "none"
@@ -1648,8 +1680,22 @@ export function TaskDetailPanel({
         </div>
       </div>
 
-      {/* Detail Footer Delete */}
-      <div className="border-t border-[#E4E8F2] p-4 dark:border-[#132E74]">
+      {/* Detail Footer: save status + created stamp, then delete */}
+      <div className="border-t border-[#E4E8F2] p-4 dark:border-[#132E74] space-y-3">
+        <div className="flex items-center justify-between text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
+          <span className="inline-flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
+            <Check className="h-3 w-3 stroke-[3]" />
+            <span>
+              Saved
+              {lastSavedAt !== null &&
+                ` · ${new Date(lastSavedAt).toLocaleTimeString("en-US", {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}`}
+            </span>
+          </span>
+          <span>Created {friendlyCreatedLabel(task.createdAt)}</span>
+        </div>
         <button
           type="button"
           onClick={() => onDeleteTask(task.id)}
