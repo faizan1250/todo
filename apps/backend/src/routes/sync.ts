@@ -3,6 +3,7 @@ import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
+import { processMutations } from "../utils/sync-mutations";
 
 export const syncRoutes = new Elysia({ prefix: "/api/v1/sync" })
   .use(authMacro)
@@ -164,13 +165,21 @@ export const syncRoutes = new Elysia({ prefix: "/api/v1/sync" })
   )
   .post(
     "/push",
-    async () => {
-      return { results: [] };
+    async ({ user, body, request }) => {
+      const deviceId =
+        request.headers.get("x-device-id") ?? body.deviceId ?? null;
+      const results = processMutations(
+        user.id,
+        deviceId,
+        body.mutations
+      );
+      return { results };
     },
     {
       auth: true,
       body: t.Object({
-        mutations: t.Array(t.Any()),
+        deviceId: t.Optional(t.String()),
+        mutations: t.Array(t.Any(), { maxItems: 100 }),
       }),
     }
   );
