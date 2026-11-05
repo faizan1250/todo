@@ -1,5 +1,7 @@
 import Dexie, { type Table } from "dexie";
 
+export type SyncRow = Record<string, unknown>;
+
 export interface SyncMeta {
   key: string;
   value: unknown;
@@ -10,7 +12,7 @@ export interface OutboxEntry {
   entity: string;
   op: string;
   entityId: string;
-  patch?: any;
+  patch?: SyncRow;
   editedAt: number;
   schemaVersion?: number;
   createdAt: number;
@@ -35,19 +37,19 @@ const entityStores: Record<string, string> = {
 };
 
 export class TodoDB extends Dexie {
-  folders!: Table<any, string>;
-  lists!: Table<any, string>;
-  sections!: Table<any, string>;
-  tasks!: Table<any, string>;
-  checklistItems!: Table<any, string>;
-  tags!: Table<any, string>;
-  templates!: Table<any, string>;
-  reminders!: Table<any, string>;
-  recurrences!: Table<any, string>;
-  places!: Table<any, string>;
-  savedFilters!: Table<any, string>;
-  timeBlocks!: Table<any, string>;
-  user!: Table<any, string>;
+  folders!: Table<SyncRow, string>;
+  lists!: Table<SyncRow, string>;
+  sections!: Table<SyncRow, string>;
+  tasks!: Table<SyncRow, string>;
+  checklistItems!: Table<SyncRow, string>;
+  tags!: Table<SyncRow, string>;
+  templates!: Table<SyncRow, string>;
+  reminders!: Table<SyncRow, string>;
+  recurrences!: Table<SyncRow, string>;
+  places!: Table<SyncRow, string>;
+  savedFilters!: Table<SyncRow, string>;
+  timeBlocks!: Table<SyncRow, string>;
+  user!: Table<SyncRow, string>;
   outbox!: Table<OutboxEntry, string>;
   meta!: Table<SyncMeta, string>;
 

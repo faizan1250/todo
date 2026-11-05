@@ -30,7 +30,7 @@ export async function localMutate(
   entity: string,
   op: SyncOp,
   entityId: string,
-  patch?: any,
+  patch?: Record<string, unknown>,
 ): Promise<string> {
   if (!(ENTITY_TABLES as readonly string[]).includes(entity)) {
     throw new Error(`Unknown sync entity: ${entity}`);

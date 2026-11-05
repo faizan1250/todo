@@ -8,7 +8,7 @@ export interface SyncMutation {
   entity: string;
   op: SyncOp;
   entityId: string;
-  patch?: any;
+  patch?: unknown;
   editedAt: number;
   schemaVersion?: number;
 }
