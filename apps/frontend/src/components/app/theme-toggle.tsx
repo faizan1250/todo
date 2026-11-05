@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { useState, useSyncExternalStore } from "react";
-import { Sun, Moon } from "lucide-react";
+import { useTheme } from "next-themes";
+import { Sun, Moon, Monitor } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useOptionalAuth } from "@/components/auth";
 
@@ -10,40 +10,25 @@ interface ThemeToggleProps {
   className?: string;
 }
 
-const emptySubscribe = () => () => {};
+const THEMES = [
+  { value: "light", label: "Light", icon: Sun },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "system", label: "Auto", icon: Monitor },
+] as const;
 
 export function ThemeToggle({ className }: ThemeToggleProps) {
+  const { theme, setTheme, resolvedTheme } = useTheme();
   const auth = useOptionalAuth();
-  const mounted = useSyncExternalStore(
-    emptySubscribe,
-    () => true,
-    () => false
-  );
+  const [mounted, setMounted] = React.useState(false);
 
-  const [isDark, setIsDark] = useState(() => {
-    if (typeof document === "undefined") return false;
-    return (
-      document.documentElement.classList.contains("dark") ||
-      localStorage.getItem("theme") === "dark" ||
-      (!localStorage.getItem("theme") &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches)
-    );
-  });
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
 
-  const toggleTheme = () => {
-    const nextDark = !isDark;
-    setIsDark(nextDark);
-    const themeStr = nextDark ? "dark" : "light";
-    if (nextDark) {
-      document.documentElement.classList.add("dark");
-      localStorage.setItem("theme", "dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      localStorage.setItem("theme", "light");
-    }
-
+  const handleSelect = (value: string) => {
+    setTheme(value);
     if (auth?.isAuthenticated && auth.updatePreferences) {
-      void auth.updatePreferences({ theme: themeStr });
+      void auth.updatePreferences({ theme: value });
     }
   };
 
@@ -51,7 +36,7 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
     return (
       <div
         className={cn(
-          "h-8 w-8 rounded-lg border border-[#E4E8F2] bg-white dark:border-[#132E74] dark:bg-[#051A4D]",
+          "inline-flex h-8 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1",
           className
         )}
       />
@@ -59,21 +44,36 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
   }
 
   return (
-    <button
-      type="button"
-      onClick={toggleTheme}
-      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+    <div
+      role="group"
+      aria-label="Theme selection"
       className={cn(
-        "flex h-8 w-8 items-center justify-center rounded-lg border border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] transition-colors focus-ring-pink dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3] dark:hover:text-white cursor-pointer",
+        "inline-flex h-8 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1",
         className
       )}
-      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
     >
-      {isDark ? (
-        <Sun className="h-4 w-4 text-[#FD91CC]" />
-      ) : (
-        <Moon className="h-4 w-4 text-[#09318D]" />
-      )}
-    </button>
+      {THEMES.map(({ value, label, icon: Icon }) => {
+        const active = theme === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={() => handleSelect(value)}
+            aria-pressed={active}
+            aria-label={`${label} theme`}
+            title={label}
+            className={cn(
+              "flex h-6 w-6 items-center justify-center rounded-md text-[var(--fg-muted)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+              active
+                ? "bg-[var(--primary)] text-[var(--on-primary)]"
+                : "hover:bg-[var(--bg-soft)] hover:text-[var(--fg)]"
+            )}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            <span className="sr-only">{label}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
