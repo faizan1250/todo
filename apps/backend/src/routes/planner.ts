@@ -28,14 +28,16 @@ export function validateBlockTimes(
     };
   }
 
-  // 5-minute increments check
+  // 5-minute increments check (in user's timezone, not process/UTC time)
+  const startLocalDt = DateTime.fromJSDate(startAt, { zone: tz });
+  const endLocalDt = DateTime.fromJSDate(endAt, { zone: tz });
   if (
-    startAt.getMinutes() % 5 !== 0 ||
-    endAt.getMinutes() % 5 !== 0 ||
-    startAt.getSeconds() !== 0 ||
-    endAt.getSeconds() !== 0 ||
-    startAt.getMilliseconds() !== 0 ||
-    endAt.getMilliseconds() !== 0
+    startLocalDt.minute % 5 !== 0 ||
+    endLocalDt.minute % 5 !== 0 ||
+    startLocalDt.second !== 0 ||
+    endLocalDt.second !== 0 ||
+    startLocalDt.millisecond !== 0 ||
+    endLocalDt.millisecond !== 0
   ) {
     return {
       valid: false,
