@@ -22,6 +22,7 @@ import { SYNC_LEADER_LOCK } from "@/lib/sync2/leader";
 import { connectRealtime } from "@/lib/sync2/realtime";
 import { wireSyncTriggers } from "@/lib/sync2/triggers";
 import {
+  getServerSnapshot,
   getSnapshot,
   subscribe,
   type SyncStatus,
@@ -116,7 +117,7 @@ async function runAsLeaderIfAvailable(
 }
 
 export function useSyncEngine(userId: string | null): UseSyncEngineReturn {
-  const status = useSyncExternalStore(subscribe, getSnapshot);
+  const status = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const runnerRef = useRef<() => Promise<RunSyncResult>>(async () => SKIPPED);
 
   useEffect(() => {

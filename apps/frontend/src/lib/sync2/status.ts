@@ -39,6 +39,12 @@ export function getSnapshot(): SyncStatus {
   return snapshot;
 }
 
+// Server snapshot for SSR/prerender: stable initial value. Never mutates;
+// `snapshot` is always replaced, never mutated in place.
+export function getServerSnapshot(): SyncStatus {
+  return INITIAL;
+}
+
 export function getStatus(): SyncStatus {
   return snapshot;
 }
