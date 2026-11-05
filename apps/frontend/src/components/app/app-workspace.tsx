@@ -22,6 +22,8 @@ import { TemplatesModal } from "./templates-modal";
 import { useAuth } from "@/components/auth";
 import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
+import { restoreFromTrash } from "../sync/conflict-actions";
+import { subscribeRemoteChanged } from "../sync/remote-events";
 import {
   getLists,
   getFolders,
@@ -63,6 +65,7 @@ import {
   type BackendList,
   type BackendFolder,
   type BackendTask,
+  type BackendViewTask,
   type BackendViewCountsResponse,
   type TaskCompletionResult,
 } from "@/lib/api";
@@ -807,6 +810,46 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     };
   }, [isAuthenticated, activeListId, userId, toast]);
 
+  // Remote-change refresh: sync pulls write to Dexie, but `tasks` is React
+  // state loaded one-shot above — without this, rows created or edited on
+  // another device would never render here. Collapses pull bursts (first
+  // sync notifies per row) into one trailing reload.
+  useEffect(() => {
+    if (!isAuthenticated || !userId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeRemoteChanged((detail) => {
+      if (
+        detail.entity !== "tasks" &&
+        detail.entity !== "sections" &&
+        detail.entity !== "checklistItems"
+      ) {
+        return;
+      }
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        if (!activeListId) return;
+        getListTasks(userId, activeListId)
+          .then((local) => dexieRowsToTaskItems(userId, local))
+          .then((mapped) => {
+            setTasks(mapped);
+            setSelectedTaskId((prev) =>
+              prev && mapped.some((t) => t.id === prev)
+                ? prev
+                : mapped[0]?.id ?? null
+            );
+          })
+          .catch((err) => {
+            console.error("Remote-change reload failed:", err);
+          });
+      }, 500);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [isAuthenticated, userId, activeListId]);
+
   // Bulk Selection Handlers
   const handleToggleSelectTask = useCallback(
     (id: string, shiftKey?: boolean, visibleTaskIds?: string[]) => {
@@ -1017,7 +1060,17 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onAction: async () => {
           try {
             if (isAuthenticated) {
-              await Promise.all(ids.map((id) => restoreTrash("task", id)));
+              // Offline-first restore (mutate op) with REST fallback.
+              // Local-only ids never left the device, so they stay REST.
+              await Promise.all(
+                ids.map((id) =>
+                  userId && !id.startsWith("temp-") && !id.startsWith("task-")
+                    ? restoreFromTrash(userId, "tasks", id).catch(() =>
+                        restoreTrash("task", id)
+                      )
+                    : restoreTrash("task", id)
+                )
+              );
             }
             setTasks((prev) => [...deletedTasks, ...prev]);
             success(`Restored ${ids.length} ${ids.length === 1 ? "task" : "tasks"}`);
@@ -1041,7 +1094,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         type: "error",
       });
     }
-  }, [isAuthenticated, selectedTaskId, selectedTaskIds, tasks, success, toast]);
+  }, [isAuthenticated, selectedTaskId, selectedTaskIds, tasks, success, toast, userId]);
 
   // Trash & Template callback handlers
   const handleItemRestored = useCallback(
@@ -1934,8 +1987,30 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
 
       if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        // Phase 5 follow-up: offline-first archive. archivedAt is a mutable
+        // task field in the sync registry (TASK_FIELDS + date-parsed, not
+        // server-owned), so archive/unarchive mirror as update patches with
+        // the local ms convention. REST remains the fallback when there is
+        // no userId or Dexie throws (e.g. unknown local row).
+        const archiveOp: Promise<unknown> = userId
+          ? mutate(userId, {
+              entity: "tasks",
+              op: "update",
+              entityId: taskId,
+              patch: { archivedAt: Date.now() },
+            }).catch(() => archiveTask(taskId))
+          : archiveTask(taskId);
+        const unarchiveOp = (): Promise<unknown> =>
+          userId
+            ? mutate(userId, {
+                entity: "tasks",
+                op: "update",
+                entityId: taskId,
+                patch: { archivedAt: null },
+              }).catch(() => unarchiveTask(taskId))
+            : unarchiveTask(taskId);
         try {
-          await archiveTask(taskId);
+          await archiveOp;
           toast({
             title: "Task archived",
             message: `"${target.title}" moved to archive.`,
@@ -1943,7 +2018,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             onAction: () => {
               setTasks((prev) => [target, ...prev]);
               setSelectedTaskId(target.id);
-              unarchiveTask(taskId).catch((err) => {
+              unarchiveOp().catch((err) => {
                 console.error("Failed to unarchive task:", err);
                 setTasks((prev) => prev.filter((t) => t.id !== taskId));
                 toast({
@@ -1975,7 +2050,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         });
       }
     },
-    [tasks, selectedTaskId, isAuthenticated, toast]
+    [tasks, selectedTaskId, isAuthenticated, userId, toast]
   );
 
   const handleSaveAsTemplate = useCallback(
@@ -2002,13 +2077,16 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const handleToggleSubtask = useCallback(
     (subtaskId: string, completed: boolean) => {
       if (isAuthenticated && !subtaskId.startsWith("st-") && !subtaskId.startsWith("temp-")) {
-        const apiCall = completed ? completeTask(subtaskId) : reopenTask(subtaskId);
-        apiCall.catch((err) => {
+        // Offline-first via mutate (complete/reopen), REST fallback.
+        const persist = completed
+          ? persistTaskComplete(userId, subtaskId)
+          : persistTaskReopen(userId, subtaskId);
+        persist.catch((err) => {
           console.error("Failed to toggle subtask on backend:", err);
         });
       }
     },
-    [isAuthenticated]
+    [isAuthenticated, userId]
   );
 
   const handleAddSubtask = useCallback(
@@ -2017,28 +2095,56 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         activeListId || userLists.find((l) => l.isInbox)?.id || userLists[0]?.id;
 
       if (isAuthenticated && targetBackendListId && !parentId.startsWith("temp-") && !parentId.startsWith("task-")) {
-        createTask({
-          title,
-          parentId,
-          listId: targetBackendListId,
-          priority: 1,
-        }).catch((err) => {
-          console.error("Failed to create subtask on backend:", err);
-        });
+        const doRestCreate = () => {
+          createTask({
+            title,
+            parentId,
+            listId: targetBackendListId,
+            priority: 1,
+          }).catch((err) => {
+            console.error("Failed to create subtask on backend:", err);
+          });
+        };
+        if (userId) {
+          // Offline-first subtask create (tasks entity with parentId).
+          // Falls back to REST when the parent row is unknown locally.
+          mutate(userId, {
+            entity: "tasks",
+            op: "create",
+            entityId: uuidv7(),
+            patch: {
+              title,
+              parentId,
+              listId: targetBackendListId,
+              priority: 1,
+            },
+          }).catch(() => doRestCreate());
+        } else {
+          doRestCreate();
+        }
       }
     },
-    [isAuthenticated, activeListId, userLists]
+    [isAuthenticated, activeListId, userLists, userId]
   );
 
   const handleDeleteSubtask = useCallback(
     (subtaskId: string) => {
       if (isAuthenticated && !subtaskId.startsWith("st-") && !subtaskId.startsWith("temp-")) {
-        deleteTask(subtaskId).catch((err) => {
-          console.error("Failed to delete subtask on backend:", err);
-        });
+        const doRestDelete = () => {
+          deleteTask(subtaskId).catch((err) => {
+            console.error("Failed to delete subtask on backend:", err);
+          });
+        };
+        if (userId) {
+          mutate(userId, { entity: "tasks", op: "delete", entityId: subtaskId }).catch(() =>
+            doRestDelete()
+          );
+        } else {
+          doRestDelete();
+        }
       }
     },
-    [isAuthenticated]
+    [isAuthenticated, userId]
   );
 
   const handleAddChecklistItem = useCallback(
@@ -2049,66 +2155,129 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         !selectedTaskId.startsWith("temp-") &&
         !selectedTaskId.startsWith("task-")
       ) {
-        createChecklistItem(selectedTaskId, text)
-          .then((createdItem) => {
-            setTasks((prev) =>
-              prev.map((t) => {
-                if (t.id !== selectedTaskId) return t;
-                const updatedList = t.checklist.map((ci) =>
-                  ci.text === text && ci.id.startsWith("ci-")
-                    ? { ...ci, id: createdItem.id }
-                    : ci
-                );
-                return { ...t, checklist: updatedList };
-              })
-            );
+        const taskId = selectedTaskId;
+        const reconcileId = (id: string) => {
+          setTasks((prev) =>
+            prev.map((t) => {
+              if (t.id !== taskId) return t;
+              const updatedList = t.checklist.map((ci) =>
+                ci.text === text && ci.id.startsWith("ci-")
+                  ? { ...ci, id }
+                  : ci
+              );
+              return { ...t, checklist: updatedList };
+            })
+          );
+        };
+        const doRestCreate = () => {
+          createChecklistItem(taskId, text)
+            .then((createdItem) => {
+              reconcileId(createdItem.id);
+            })
+            .catch((err) => {
+              console.error("Failed to create checklist item on backend:", err);
+            });
+        };
+        if (userId) {
+          // Offline-first checklist create; reconcile the optimistic temp
+          // id with the client-generated id (server echo arrives via sync).
+          const newId = uuidv7();
+          mutate(userId, {
+            entity: "checklistItems",
+            op: "create",
+            entityId: newId,
+            patch: { taskId, text },
           })
-          .catch((err) => {
-            console.error("Failed to create checklist item on backend:", err);
-          });
+            .then(() => {
+              reconcileId(newId);
+            })
+            .catch(() => doRestCreate());
+        } else {
+          doRestCreate();
+        }
       }
     },
-    [isAuthenticated, selectedTaskId]
+    [isAuthenticated, selectedTaskId, userId]
   );
 
   const handleToggleChecklistItem = useCallback(
     (itemId: string, done: boolean) => {
       if (isAuthenticated && !itemId.startsWith("ci-")) {
-        updateChecklistItem(itemId, { done }).catch((err) => {
-          console.error("Failed to update checklist item on backend:", err);
-        });
+        const doRestUpdate = () => {
+          updateChecklistItem(itemId, { done }).catch((err) => {
+            console.error("Failed to update checklist item on backend:", err);
+          });
+        };
+        if (userId) {
+          // done-toggle is an update op (no complete op for checklistItems).
+          mutate(userId, {
+            entity: "checklistItems",
+            op: "update",
+            entityId: itemId,
+            patch: { done },
+          }).catch(() => doRestUpdate());
+        } else {
+          doRestUpdate();
+        }
       }
     },
-    [isAuthenticated]
+    [isAuthenticated, userId]
   );
 
   const handleDeleteChecklistItem = useCallback(
     (itemId: string) => {
       if (isAuthenticated && !itemId.startsWith("ci-")) {
-        deleteChecklistItem(itemId).catch((err) => {
-          console.error("Failed to delete checklist item on backend:", err);
-        });
+        const doRestDelete = () => {
+          deleteChecklistItem(itemId).catch((err) => {
+            console.error("Failed to delete checklist item on backend:", err);
+          });
+        };
+        if (userId) {
+          mutate(userId, { entity: "checklistItems", op: "delete", entityId: itemId }).catch(() =>
+            doRestDelete()
+          );
+        } else {
+          doRestDelete();
+        }
       }
     },
-    [isAuthenticated]
+    [isAuthenticated, userId]
   );
 
   const handleUpdateTags = useCallback(
+    // Offline-first tag attach/detach via the tasks setTags sync op
+    // (whole-set LWW, patch { tagIds }). REST remains the fallback when
+    // there is no userId or Dexie throws. An empty array is a valid set
+    // (detach-all), so only the array's presence is required.
     (tagNames: string[], tagIds?: string[]) => {
       if (
         isAuthenticated &&
         selectedTaskId &&
         tagIds &&
-        tagIds.length > 0 &&
         !selectedTaskId.startsWith("temp-") &&
         !selectedTaskId.startsWith("task-")
       ) {
-        replaceTaskTags(selectedTaskId, tagIds).catch((err) => {
-          console.error("Failed to replace tags on backend:", err);
-        });
+        const taskId = selectedTaskId;
+        const nextIds = [...tagIds];
+        if (userId) {
+          mutate(userId, {
+            entity: "tasks",
+            op: "setTags",
+            entityId: taskId,
+            patch: { tagIds: nextIds },
+          }).catch(() => {
+            replaceTaskTags(taskId, nextIds).catch((err) => {
+              console.error("Failed to replace tags on backend:", err);
+            });
+          });
+        } else {
+          replaceTaskTags(taskId, nextIds).catch((err) => {
+            console.error("Failed to replace tags on backend:", err);
+          });
+        }
       }
     },
-    [isAuthenticated, selectedTaskId]
+    [isAuthenticated, selectedTaskId, userId]
   );
 
   const handleLoadMoreView = useCallback(async () => {
@@ -2132,10 +2301,103 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const handleMoveBoardTask = useCallback(
     async (taskId: string, column: string, afterId?: string, beforeId?: string) => {
       if (!isAuthenticated) return;
-      try {
+
+      const doRestMove = async () => {
         await moveBoardTask({ taskId, column, afterId, beforeId });
         const res = await getBoard({ list_id: activeListId || undefined, group_by: boardGroupBy });
         setBoardData(res);
+      };
+
+      // Phase 5 cutover: offline-first board move via mutate with an
+      // optimistic column update (a REST refetch here would race the ~300ms
+      // delayed push and snap the card back). mutate "move" never ships
+      // computed positions — the server recomputes from afterId/beforeId.
+      // Status/priority column changes steer fields, not position, so they
+      // go through "update" (sync move only handles list/section/parent).
+      if (userId && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        try {
+          const reorderPatch: Record<string, unknown> = {};
+          if (afterId !== undefined) reorderPatch.afterId = afterId;
+          if (beforeId !== undefined) reorderPatch.beforeId = beforeId;
+
+          let movedFields: Partial<BackendViewTask> | null = null;
+          if (
+            boardGroupBy === "status" &&
+            ["todo", "in_progress", "done", "cancelled"].includes(column)
+          ) {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "update",
+              entityId: taskId,
+              patch: { status: column },
+            });
+            if (Object.keys(reorderPatch).length > 0) {
+              await mutate(userId, { entity: "tasks", op: "move", entityId: taskId, patch: reorderPatch });
+            }
+            movedFields = { status: column as BackendViewTask["status"] };
+          } else if (
+            boardGroupBy === "priority" &&
+            ["0", "1", "2", "3", "4"].includes(column)
+          ) {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "update",
+              entityId: taskId,
+              patch: { priority: Number(column) },
+            });
+            if (Object.keys(reorderPatch).length > 0) {
+              await mutate(userId, { entity: "tasks", op: "move", entityId: taskId, patch: reorderPatch });
+            }
+            movedFields = { priority: Number(column) };
+          } else {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "move",
+              entityId: taskId,
+              patch: {
+                sectionId: column === "no_section" ? null : column,
+                ...reorderPatch,
+              },
+            });
+            movedFields = { sectionId: column === "no_section" ? null : column };
+          }
+
+          setBoardData((prev) => {
+            if (!prev || !movedFields) return prev;
+            let moving: BackendViewTask | null = null;
+            const withoutSource = prev.columns.map((col) => {
+              const idx = col.tasks.findIndex((t) => t.id === taskId);
+              if (idx < 0) return col;
+              moving = col.tasks[idx];
+              return {
+                ...col,
+                tasks: col.tasks.filter((t) => t.id !== taskId),
+                count: Math.max(0, col.count - 1),
+              };
+            });
+            if (!moving) return prev;
+            const moved: BackendViewTask = { ...(moving as BackendViewTask), ...movedFields };
+            return {
+              ...prev,
+              columns: withoutSource.map((col) => {
+                if (col.key !== column) return col;
+                const at = beforeId ? col.tasks.findIndex((t) => t.id === beforeId) : -1;
+                const tasks =
+                  at >= 0
+                    ? [...col.tasks.slice(0, at), moved, ...col.tasks.slice(at)]
+                    : [...col.tasks, moved];
+                return { ...col, tasks, count: col.count + 1 };
+              }),
+            };
+          });
+          return;
+        } catch {
+          // Dexie write failed: fall through to the REST path below.
+        }
+      }
+
+      try {
+        await doRestMove();
       } catch (err) {
         console.error("Failed to move board task:", err);
         toast({
@@ -2145,7 +2407,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         });
       }
     },
-    [isAuthenticated, activeListId, boardGroupBy, toast]
+    [isAuthenticated, userId, activeListId, boardGroupBy, toast]
   );
 
   // Cycle folders for mobile nav
@@ -2297,6 +2559,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           onAddChecklistItem={handleAddChecklistItem}
           onDeleteChecklistItem={handleDeleteChecklistItem}
           onUpdateTags={handleUpdateTags}
+          userId={userId}
         />
       )}
 
@@ -2396,6 +2659,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         isOpen={isTrashOpen}
         onClose={() => setIsTrashOpen(false)}
         onItemRestored={handleItemRestored}
+        userId={userId}
       />
 
       {/* Templates Modal */}

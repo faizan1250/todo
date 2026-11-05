@@ -1,8 +1,10 @@
 // Remote-change event bus (Phase 5 Day 4b; wired at cutover 6a).
 //
-// sync2/apply.ts calls notifyRemoteChanged for pulled rows that changed
-// remotely (pre-existing locally, differing from server, no unsent edits).
-// Row components subscribe via subscribeRemoteChanged and glow on match.
+// sync2/apply.ts calls notifyRemoteChanged for pulled rows that are new
+// locally or differ from the server version (no unsent edits). Row
+// components subscribe via subscribeRemoteChanged and glow on match; list
+// views subscribe to refresh from Dexie (new rows have no rendered row to
+// glow, so without a refresh they would never appear).
 
 export interface RemoteChangedDetail {
   entity: string;

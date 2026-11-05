@@ -14,6 +14,8 @@ import {
   replaceTaskTags,
   type BackendTag,
 } from "@/lib/api";
+import { mutate } from "@/lib/data/mutate";
+import { v7 as uuidv7 } from "uuid";
 
 interface TagPickerPopoverProps {
   taskId: string;
@@ -23,6 +25,7 @@ interface TagPickerPopoverProps {
   disabled?: boolean;
   triggerClassName?: string;
   label?: string;
+  userId?: string | null;
 }
 
 export function TagPickerPopover({
@@ -33,6 +36,7 @@ export function TagPickerPopover({
   disabled = false,
   triggerClassName,
   label,
+  userId = null,
 }: TagPickerPopoverProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -147,12 +151,31 @@ export function TagPickerPopover({
     // Optimistic UI update
     onTagsUpdated(nextNames, nextIds);
 
-    // Call API if task ID is real
+    // Offline-first tag attach/detach via the tasks setTags sync op
+    // (whole-set LWW, patch { tagIds: nextIds }). REST remains the fallback
+    // when there is no userId or Dexie throws.
     if (tag.id && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
-      try {
-        await replaceTaskTags(taskId, nextIds);
-      } catch (err) {
-        console.error("Failed to replace task tags on backend:", err);
+      if (userId) {
+        try {
+          await mutate(userId, {
+            entity: "tasks",
+            op: "setTags",
+            entityId: taskId,
+            patch: { tagIds: nextIds },
+          });
+        } catch {
+          try {
+            await replaceTaskTags(taskId, nextIds);
+          } catch (err) {
+            console.error("Failed to replace task tags on backend:", err);
+          }
+        }
+      } else {
+        try {
+          await replaceTaskTags(taskId, nextIds);
+        } catch (err) {
+          console.error("Failed to replace task tags on backend:", err);
+        }
       }
     }
   };
@@ -164,18 +187,53 @@ export function TagPickerPopover({
     setIsCreating(true);
 
     try {
-      let createdId = `tag-${Date.now()}`;
+      const doRestCreate = async (): Promise<string> => {
+        try {
+          const created = await createTag({
+            name: trimmed,
+            color: selectedColor.hex,
+          });
+          setAvailableTags((prev) => [...prev, created]);
+          return created.id;
+        } catch (err) {
+          console.warn("Backend createTag failed, using local tag:", err);
+          return `tag-${Date.now()}`;
+        }
+      };
 
-      // Call create tag API if reachable
-      try {
-        const created = await createTag({
-          name: trimmed,
-          color: selectedColor.hex,
-        });
-        createdId = created.id;
-        setAvailableTags((prev) => [...prev, created]);
-      } catch (err) {
-        console.warn("Backend createTag failed, using local tag:", err);
+      // Offline-first tag create; the client-generated id is the sync
+      // entityId, so it can be attached immediately. Falls back to REST.
+      let createdId: string;
+      if (userId) {
+        createdId = uuidv7();
+        try {
+          await mutate(userId, {
+            entity: "tags",
+            op: "create",
+            entityId: createdId,
+            patch: { name: trimmed, color: selectedColor.hex },
+          });
+          setAvailableTags((prev) =>
+            prev.some((t) => t.id === createdId)
+              ? prev
+              : [
+                  ...prev,
+                  {
+                    id: createdId,
+                    userId,
+                    name: trimmed,
+                    color: selectedColor.hex,
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                    version: 1,
+                  },
+                ]
+          );
+        } catch {
+          createdId = await doRestCreate();
+        }
+      } else {
+        createdId = await doRestCreate();
       }
 
       const nextNames = [...activeTags, trimmed];
@@ -183,11 +241,31 @@ export function TagPickerPopover({
 
       onTagsUpdated(nextNames, nextIds);
 
+      // Attach the created tag via setTags (whole-set replace with the full
+      // new id array). REST remains the fallback when there is no userId or
+      // Dexie throws.
       if (!taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
-        try {
-          await replaceTaskTags(taskId, nextIds);
-        } catch (replaceErr) {
-          console.error("Failed to assign created tag to task:", replaceErr);
+        if (userId) {
+          try {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "setTags",
+              entityId: taskId,
+              patch: { tagIds: nextIds },
+            });
+          } catch {
+            try {
+              await replaceTaskTags(taskId, nextIds);
+            } catch (replaceErr) {
+              console.error("Failed to assign created tag to task:", replaceErr);
+            }
+          }
+        } else {
+          try {
+            await replaceTaskTags(taskId, nextIds);
+          } catch (replaceErr) {
+            console.error("Failed to assign created tag to task:", replaceErr);
+          }
         }
       }
 

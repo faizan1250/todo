@@ -10,6 +10,7 @@ import { toUtcMidnight, validateStartDue, validateEstimateMin, validateLocationC
 import { recomputeTaskReminders, firePendingTaskReminders, calculateRelativeRemindAt } from "../services/reminders";
 import { spawnNextRecurrenceInstance } from "../services/recurrence";
 import { parseNaturalLanguage, type ParsedTaskResult } from "../utils/parser";
+import { notifyUserChanged } from "../utils/sync-publisher";
 
 /**
  * Normalizes notes string:
@@ -375,6 +376,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
 
       // Optionally attach includes if tags were linked
       const [result] = await attachTaskIncludes([task], "tags", user.id);
+      notifyUserChanged(user.id);
       return status(201, result);
     },
     {
@@ -1087,6 +1089,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
       });
 
       const [withIncludes] = await attachTaskIncludes([createdTask], ["tags", "subtasks", "checklist"], user.id);
+      notifyUserChanged(user.id);
       return status(201, withIncludes);
     },
     {
@@ -1395,6 +1398,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
       });
 
       const [withIncludes] = await attachTaskIncludes([updated], null, user.id);
+      notifyUserChanged(user.id);
       return withIncludes;
     },
     {
@@ -1487,6 +1491,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
           );
       }
 
+      notifyUserChanged(user.id);
       return { success: true };
     },
     {
@@ -1652,6 +1657,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         return res;
       });
 
+      notifyUserChanged(user.id);
       return updated;
     },
     {

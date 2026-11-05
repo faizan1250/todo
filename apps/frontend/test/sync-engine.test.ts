@@ -235,7 +235,7 @@ describe("applyPage rebase", () => {
     expect(row?.["completeSubtasks"]).toBeUndefined();
   });
 
-  it("notifies for changed pre-existing rows only", async () => {
+  it("notifies for new and changed rows, skipping pending echoes", async () => {
     const uid = freshUid();
     await seedTask(uid, "t-old", { title: "Old" });
     const seen: Array<{ entity: string; id: string }> = [];
@@ -263,7 +263,10 @@ describe("applyPage rebase", () => {
     } finally {
       unsub();
     }
-    expect(seen).toEqual([{ entity: "tasks", id: "t-old" }]);
+    expect(seen).toEqual([
+      { entity: "tasks", id: "t-old" },
+      { entity: "tasks", id: "t-brand-new" },
+    ]);
   });
 });
 

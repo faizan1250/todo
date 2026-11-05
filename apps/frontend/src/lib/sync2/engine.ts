@@ -2,7 +2,7 @@
 //
 // pushPhase: oldest-first outbox drain in batches of 100. srcOp is stripped
 // per the Day-1b note: create -> create, plain upsert -> update, domain ops
-// (complete/move/restore) -> their op with the stored patch.
+// (complete/move/restore/setTags) -> their op with the stored patch.
 //   applied|duplicate -> entry removed.
 //   rejected          -> entry removed AND local row deleted so the next pull
 //                        restores server truth; ConflictToast event fires.
@@ -68,6 +68,8 @@ function toPushOp(entry: LocalOutboxEntry): string {
       return "move";
     case "restore":
       return "restore";
+    case "setTags":
+      return "setTags";
     default:
       return "update";
   }
@@ -141,6 +143,46 @@ export async function pushPhase(
   }
 
   return { acked, retried };
+}
+
+export interface FlushOutboxResult {
+  flushed: number;
+  remaining: number;
+}
+
+// Sign-out flush path: push the per-user outbox until empty (max 5
+// pushPhase rounds), then report counts so the caller can decide whether
+// to proceed with sign-out. Never throws: transport/DB failures just stop
+// the loop and surface as `remaining`.
+export async function flushOutbox(
+  userId: string
+): Promise<FlushOutboxResult> {
+  const db = getDB(userId);
+  const deviceRow = await db.meta.get("deviceId").catch(() => undefined);
+  const deviceId =
+    typeof deviceRow?.value === "string" && deviceRow.value.length > 0
+      ? deviceRow.value
+      : "";
+  let flushed = 0;
+
+  for (let i = 0; i < 5; i++) {
+    const pending = await getPending(userId).catch(() => []);
+    if (pending.length === 0 || !deviceId) break;
+    try {
+      const res = await pushPhase(userId, deviceId);
+      flushed += res.acked;
+      const rest = await getPending(userId).catch(() => []);
+      // No drain progress (remaining entries are retry-gated): stop pushing.
+      if (rest.length >= pending.length) break;
+    } catch {
+      break;
+    }
+  }
+
+  const remaining = await getPending(userId)
+    .then((rows) => rows.length)
+    .catch(() => 0);
+  return { flushed, remaining };
 }
 
 export async function pullPhase(

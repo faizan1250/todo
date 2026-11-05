@@ -1,10 +1,9 @@
 "use client";
 
-// New-engine app-shell mount (Phase 5 cutover 6a).
+// New-engine app-shell mount (Phase 5 cutover).
 //
-// Runs alongside the OLD engine (SyncStatus/NetworkBanner in page.tsx) until
-// the cutover removes the old one. Both engines pushing/pulling concurrently
-// is safe: pushes are idempotent (mutation id), pulls are harmless dupes.
+// Single sync engine: the old lib/sync engine was removed at cutover.
+// Pushes are idempotent (mutation id), pulls are harmless dupes.
 //
 // Owns: useSyncEngine(userId) lifecycle, SyncPill + SyncSheet wiring,
 // OfflineBanner, FirstSyncScreen (resyncing / first-ever sync), InstallGuide,

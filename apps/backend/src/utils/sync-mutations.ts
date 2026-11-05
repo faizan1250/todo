@@ -1504,6 +1504,55 @@ async function applyMutation(tx: any, userId: string, deviceId: string | null, m
       return { id: m.id, status: "applied", version, seq };
     }
 
+    case "setTags": {
+      // Last-write-wins whole-set replace: delete existing links, insert new set.
+      // Tags are not a LWW field — no fieldTs entry, no conflict rows.
+      const existing = tx
+        .select()
+        .from(schema.tasks)
+        .where(and(eq(schema.tasks.id, m.entityId), eq(schema.tasks.userId, userId), isNull(schema.tasks.deletedAt)))
+        .get();
+      if (!existing) {
+        return { id: m.id, status: "rejected", reason: "not_found" };
+      }
+
+      const rawIds = m.patch?.tagIds;
+      if (!Array.isArray(rawIds)) {
+        return { id: m.id, status: "rejected", reason: "invalid_tagIds" };
+      }
+      const uniqueTagIds = [...new Set(rawIds.filter((t: unknown) => typeof t === "string" && t.length > 0))];
+      if (rawIds.some((t: unknown) => typeof t !== "string")) {
+        return { id: m.id, status: "rejected", reason: "invalid_tagIds" };
+      }
+      if (uniqueTagIds.length > 0) {
+        const owned = tx
+          .select({ id: schema.tags.id })
+          .from(schema.tags)
+          .where(and(eq(schema.tags.userId, userId), inArray(schema.tags.id, uniqueTagIds), isNull(schema.tags.deletedAt)))
+          .all();
+        if (owned.length !== uniqueTagIds.length) {
+          return { id: m.id, status: "rejected", reason: "not_found" };
+        }
+      }
+
+      tx.delete(schema.taskTags).where(eq(schema.taskTags.taskId, m.entityId)).run();
+      if (uniqueTagIds.length > 0) {
+        tx.insert(schema.taskTags)
+          .values(uniqueTagIds.map((tagId) => ({ taskId: m.entityId, tagId })))
+          .run();
+      }
+      // Touch the task so the seq trigger fires (plain UPDATE bumps seq)
+      // and downstream pull sees the new tag set.
+      tx.update(schema.tasks)
+        .set({ updatedAt: now, version: sql`${schema.tasks.version} + 1` })
+        .where(and(eq(schema.tasks.id, m.entityId), eq(schema.tasks.userId, userId)))
+        .run();
+
+      const setTagsVersion = readVersion(tx, m.entityId)!;
+      const setTagsSeq = readSeq(tx, m.entityId)!;
+      return { id: m.id, status: "applied", version: setTagsVersion, seq: setTagsSeq };
+    }
+
     default:
       return { id: m.id, status: "rejected", reason: "unknown_op" };
   }

@@ -10,7 +10,6 @@ import {
   ThemeToggle,
   KeyboardShortcutsModal,
   NetworkBanner,
-  SyncStatus,
   ErrorBoundary,
 } from "@/components/app";
 import { Sparkles, LayoutDashboard, Globe, HelpCircle } from "lucide-react";
@@ -120,11 +119,7 @@ export default function HomePage() {
 
       {/* Network & Offline Resilience Banner */}
       <NetworkBanner />
-      {/* Client sync status */}
-      <div className="flex justify-center px-4 pt-2">
-        <SyncStatus />
-      </div>
-      {/* New engine (Phase 5 cutover 6a): runs alongside old engine for now */}
+      {/* New engine (Phase 5 cutover): single sync engine */}
       <SyncEngineMount />
 
       {/* Main View Area with Error Boundary */}

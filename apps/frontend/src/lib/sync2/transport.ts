@@ -11,7 +11,7 @@
 
 import { API_BASE_URL } from "../auth-client";
 
-export const CLIENT_VERSION = "1";
+export const CLIENT_VERSION = "1.0.0";
 
 const SYNC_PATH = "/api/v1/sync";
 const DEFAULT_RETRY_DELAY_MS = 5000;

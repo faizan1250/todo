@@ -6,6 +6,7 @@
 //   complete      -> local status/completedAt        + outbox "upsert" (domain)
 //   move          -> local parent/list/section/pos   + outbox "upsert" (domain)
 //   restore       -> local tombstone clear           + outbox "upsert" (domain)
+//   setTags       -> local tagIds whole-set replace  + outbox "upsert" (domain)
 //
 // Coalescing (preserves push order; merge only into the LATEST pending entry,
 // and only when it is a plain upsert):
@@ -13,8 +14,9 @@
 //   - create+update: single create entry (merge patch into it, keep marker).
 //   - create+delete: nothing was ever synced -> drop outbox entries, delete
 //     the local row entirely, enqueue nothing.
-//   - domain ops (complete/move/restore) always enqueue separately, never
-//     coalesced (the Day-3 push layer sends them as operations, not patches).
+//   - domain ops (complete/move/restore/setTags) always enqueue separately,
+//     never coalesced (the Day-3 push layer sends them as operations, not
+//     patches).
 //
 // Local row convention: camelCase keys, timestamps as UTC ms numbers,
 // `deleted` 0|1 derived flag alongside `deletedAt`.
@@ -41,9 +43,10 @@ export type MutateOp =
   | "delete"
   | "complete"
   | "move"
-  | "restore";
+  | "restore"
+  | "setTags";
 
-type DomainOp = "create" | "complete" | "move" | "restore";
+type DomainOp = "create" | "complete" | "move" | "restore" | "setTags";
 
 export interface MutateInput {
   entity: string;
@@ -82,6 +85,7 @@ const OPS = new Set<string>([
   "complete",
   "move",
   "restore",
+  "setTags",
 ]);
 
 const TITLE_MAX: Record<string, number> = { tasks: 500, templates: 255 };
@@ -777,6 +781,39 @@ export async function mutate(
           editedAt,
           createdAt: now,
           srcOp: "restore",
+        });
+        break;
+      }
+
+      case "setTags": {
+        if (entity !== "tasks") {
+          throw new Error(`Op "setTags" is not supported for ${entity}`);
+        }
+        requireRow(existing, entity);
+        const tagIds = patch["tagIds"];
+        if (
+          !Array.isArray(tagIds) ||
+          tagIds.some((t) => typeof t !== "string")
+        ) {
+          throw new Error("tagIds must be a string array");
+        }
+        // Whole-set LWW (mirrors backend): dedupe, drop empties.
+        const nextTagIds = [
+          ...new Set(tagIds.filter((t) => t.length > 0)),
+        ];
+        await table.update(entityId, {
+          tagIds: nextTagIds,
+          updatedAt: editedAt,
+        });
+        // Domain op: separate entry, never coalesced.
+        outboxId = await addEntry(db, {
+          entity,
+          op: "upsert",
+          entityId,
+          patch: { tagIds: nextTagIds },
+          editedAt,
+          createdAt: now,
+          srcOp: "setTags",
         });
         break;
       }
