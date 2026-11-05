@@ -121,6 +121,7 @@ export const copy = {
     templateSentence: "Save it as a reusable task.",
     bulkSelect: "Select several",
     subtask: "Sub-task",
+    subtaskDepthLimit: "Sub-tasks can only go 3 levels deep.",
     duplicateVerb: "Make a copy",
     restoredToInbox: "Its list was deleted, so we put it in your Inbox.",
     completeWithSubtasks: (n: number): string =>
