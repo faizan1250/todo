@@ -37,7 +37,7 @@ function collectTagNames(payload: schema.TemplatePayload, tagSet: Set<string>): 
   }
 }
 
-function validateTemplatePayload(payload: schema.TemplatePayload): { valid: boolean; error?: string } {
+export function validateTemplatePayload(payload: schema.TemplatePayload): { valid: boolean; error?: string } {
   if (!payload || typeof payload !== "object") {
     return { valid: false, error: "Template payload must be an object" };
   }

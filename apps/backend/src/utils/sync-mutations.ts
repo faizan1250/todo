@@ -2,7 +2,10 @@ import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db, sqlite } from "../db";
 import * as schema from "../db/schema";
 import { validateSubtaskHierarchy, getTaskDescendants } from "./tasks";
-import { spawnNextRecurrenceInstance } from "../services/recurrence";
+import { spawnNextRecurrenceInstance, validateRecurrenceRule } from "../services/recurrence";
+import { validateLocationCoords } from "../utils/dates";
+import { validateFilterDsl } from "../utils/filter-dsl";
+import { validateTemplatePayload } from "../routes/templates";
 import { runCompleteHooks } from "./tasks";
 import { positionBetween } from "./position";
 
@@ -116,13 +119,364 @@ function readVersion(tx: any, id: string): number | undefined {
   return row?.version;
 }
 
+function readRow(tx: any, table: any, id: string): any {
+  return tx.select().from(table).where(eq(table.id, id)).get();
+}
+
+function readSeqGeneric(tx: any, table: any, id: string): number | undefined {
+  const row = tx.select().from(table).where(eq(table.id, id)).get();
+  return row?.seq;
+}
+function readVersionGeneric(tx: any, table: any, id: string): number | undefined {
+  const row = tx.select().from(table).where(eq(table.id, id)).get();
+  return row?.version;
+}
+
+const ENTITY_TABLE: Record<string, any> = {
+  templates: schema.templates,
+  reminders: schema.reminders,
+  recurrences: schema.recurrences,
+  places: schema.places,
+  savedFilters: schema.savedFilters,
+  timeBlocks: schema.timeBlocks,
+  user: schema.users,
+};
+
+const FIELD_MAP: Record<string, Record<string, string>> = {
+  templates: { name: "name", payload: "payload" },
+  reminders: { taskId: "taskId", task_id: "taskId", kind: "kind", relativeTo: "relativeTo", relative_to: "relativeTo", offsetMin: "offsetMin", offset_min: "offsetMin", remindAt: "remindAt", remind_at: "remindAt", firedAt: "firedAt", fired_at: "firedAt" },
+  recurrences: { rrule: "rrule", mode: "mode", timezone: "timezone", dtstart: "dtstart", until: "until", maxCount: "maxCount", max_count: "maxCount", completedCount: "completedCount", completed_count: "completedCount", active: "active" },
+  places: { name: "name", lat: "lat", lng: "lng", radiusM: "radiusM", radius_m: "radiusM" },
+  savedFilters: { name: "name", icon: "icon", color: "color", query: "query", sort: "sort", groupBy: "groupBy", group_by: "groupBy", position: "position", pinned: "pinned" },
+  timeBlocks: { taskId: "taskId", task_id: "taskId", title: "title", startAt: "startAt", start_at: "startAt", endAt: "endAt", end_at: "endAt", color: "color" },
+  user: { name: "name", timezone: "timezone", locale: "locale", weekStartsOn: "weekStartsOn", week_starts_on: "weekStartsOn", preferences: "preferences", image: "image" },
+};
+
+const DATE_FIELDS_BY_ENTITY: Record<string, Set<string>> = {
+  templates: new Set([]),
+  reminders: new Set(["remindAt", "firedAt"]),
+  recurrences: new Set(["dtstart", "until"]),
+  places: new Set([]),
+  savedFilters: new Set([]),
+  timeBlocks: new Set(["startAt", "endAt"]),
+  user: new Set([]),
+};
+
+async function applySimpleMutation(tx: any, userId: string, m: Mutation, entity: string, now: Date, editedAt: number): Promise<MutationResult> {
+  const table = ENTITY_TABLE[entity];
+  const fieldMap = FIELD_MAP[entity];
+  const dateFields = DATE_FIELDS_BY_ENTITY[entity];
+
+  const isUser = entity === "user";
+  const idField = isUser ? "id" : "id";
+
+  switch (m.op) {
+    case "create": {
+      const existing = tx.select().from(table).where(eq(table.id, m.entityId)).get();
+      if (existing) {
+        if (!isUser && existing.userId !== userId) return { id: m.id, status: "rejected", reason: "not_found" };
+        if (isUser && m.entityId !== userId) return { id: m.id, status: "rejected", reason: "not_found" };
+        return { id: m.id, status: "rejected", reason: "id_taken" };
+      }
+
+      const patch = m.patch ?? {};
+      // map fields
+      const values: Record<string, any> = {};
+      if (!isUser) values.userId = userId;
+      if (isUser) values.id = userId; else values.id = m.entityId;
+
+      // validation + mapping
+      for (const k of Object.keys(patch)) {
+        if (k in fieldMap === false) continue;
+        const canon = fieldMap[k];
+        values[canon] = patch[k];
+      }
+      // date parse
+      for (const f of dateFields) {
+        if (f in values) values[f] = parseDateVal(values[f]);
+      }
+
+      // entity-specific validation
+      if (entity === "templates") {
+        const name = (values.name ?? "").trim?.() ?? values.name;
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        values.name = name;
+        if (!values.payload) return { id: m.id, status: "rejected", reason: "invalid_payload" };
+        const v = validateTemplatePayload(values.payload);
+        if (!v.valid) return { id: m.id, status: "rejected", reason: v.error ?? "invalid_payload" };
+      }
+      if (entity === "places") {
+        const name = (values.name ?? "").trim?.();
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        values.name = name;
+        const loc = validateLocationCoords(values.lat, values.lng, values.radiusM ?? 200);
+        if (!loc.valid) return { id: m.id, status: "rejected", reason: loc.error ?? "invalid_location" };
+        if (values.radiusM === undefined) values.radiusM = 200;
+      }
+      if (entity === "reminders") {
+        if (!values.taskId) return { id: m.id, status: "rejected", reason: "task_required" };
+        const task = tx.select().from(schema.tasks).where(and(eq(schema.tasks.id, values.taskId), eq(schema.tasks.userId, userId), isNull(schema.tasks.deletedAt))).get();
+        if (!task) return { id: m.id, status: "rejected", reason: "not_found" };
+        if (!values.kind) return { id: m.id, status: "rejected", reason: "invalid_kind" };
+        if (values.remindAt === undefined) return { id: m.id, status: "rejected", reason: "remindAt_required" };
+        values.remindAt = parseDateVal(values.remindAt);
+      }
+      if (entity === "recurrences") {
+        if (!values.rrule) return { id: m.id, status: "rejected", reason: "rrule_required" };
+        const mode = values.mode ?? "fixed";
+        const maxCount = values.maxCount ?? null;
+        const v = validateRecurrenceRule(values.rrule, mode, maxCount);
+        if (!v.valid) return { id: m.id, status: "rejected", reason: v.error ?? "invalid_rrule" };
+        if (!values.timezone) values.timezone = "UTC";
+        if (values.dtstart === undefined) values.dtstart = new Date();
+        else values.dtstart = parseDateVal(values.dtstart);
+        if (values.until !== undefined) values.until = parseDateVal(values.until);
+        if (values.active === undefined) values.active = true;
+        if (values.completedCount === undefined) values.completedCount = 0;
+      }
+      if (entity === "savedFilters") {
+        const name = (values.name ?? "").trim?.();
+        if (!name) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        values.name = name;
+        if (values.query !== undefined) {
+          const dsl = validateFilterDsl(values.query);
+          if (!dsl.valid) return { id: m.id, status: "rejected", reason: "invalid_query" };
+        } else {
+          return { id: m.id, status: "rejected", reason: "query_required" };
+        }
+        if (values.position === undefined) {
+          // default position at end
+          values.position = await positionBetween({ table, where: and(eq(table.userId, userId), isNull(table.deletedAt)) });
+        }
+        if (values.pinned === undefined) values.pinned = false;
+      }
+      if (entity === "timeBlocks") {
+        if (!values.startAt || !values.endAt) return { id: m.id, status: "rejected", reason: "time_required" };
+        values.startAt = parseDateVal(values.startAt);
+        values.endAt = parseDateVal(values.endAt);
+        if (!(values.endAt > values.startAt)) return { id: m.id, status: "rejected", reason: "invalid_time" };
+      }
+      if (entity === "user") {
+        // only update allowed; create not applicable
+        return { id: m.id, status: "rejected", reason: "unsupported_op" };
+      }
+
+      values.version = 1;
+      values.createdAt = now;
+      values.updatedAt = now;
+      values.deletedAt = null;
+      if (table === schema.savedFilters) {}
+      // fieldTs
+      const fieldTs: Record<string, number> = {};
+      for (const k of Object.keys(patch)) {
+        const canon = fieldMap[k];
+        if (canon) fieldTs[canon] = editedAt;
+      }
+      if (!isUser) values.fieldTs = fieldTs;
+
+      tx.insert(table).values(values).run();
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    case "update": {
+      let existing;
+      if (isUser) {
+        existing = tx.select().from(table).where(eq(table.id, userId)).get();
+        if (!existing || m.entityId !== userId) {
+          // not found
+          return { id: m.id, status: "rejected", reason: "not_found" };
+        }
+      } else {
+        existing = tx.select().from(table).where(and(eq(table.id, m.entityId), eq(table.userId, userId), isNull(table.deletedAt))).get();
+        if (!existing) {
+          const anyRow = tx.select().from(table).where(eq(table.id, m.entityId)).get();
+          if (anyRow && anyRow.userId !== userId) return { id: m.id, status: "rejected", reason: "not_found" };
+          return { id: m.id, status: "rejected", reason: "not_found" };
+        }
+      }
+
+      const patch = m.patch ?? {};
+      const updates: Record<string, any> = {};
+      const newFieldTs = { ...(existing.fieldTs ?? {}) };
+
+      for (const k of Object.keys(patch)) {
+        if (!(k in fieldMap)) continue;
+        const canon = fieldMap[k];
+        // LWW
+        const ts = existing.fieldTs?.[canon] ?? 0;
+        if (ts > editedAt) continue;
+        updates[canon] = patch[k];
+        newFieldTs[canon] = editedAt;
+      }
+
+      // date parse
+      for (const f of dateFields) {
+        if (f in updates) updates[f] = parseDateVal(updates[f]);
+      }
+
+      // validation for specific fields
+      if (entity === "templates" && updates.name !== undefined) {
+        const nm = String(updates.name).trim();
+        if (!nm) return { id: m.id, status: "rejected", reason: "invalid_name" };
+        updates.name = nm;
+      }
+      if (entity === "templates" && updates.payload !== undefined) {
+        const v = validateTemplatePayload(updates.payload);
+        if (!v.valid) return { id: m.id, status: "rejected", reason: v.error ?? "invalid_payload" };
+      }
+      if (entity === "places") {
+        const nextLat = updates.lat !== undefined ? updates.lat : existing.lat;
+        const nextLng = updates.lng !== undefined ? updates.lng : existing.lng;
+        const nextRadius = updates.radiusM !== undefined ? updates.radiusM : existing.radiusM;
+        const loc = validateLocationCoords(nextLat, nextLng, nextRadius);
+        if (!loc.valid) return { id: m.id, status: "rejected", reason: loc.error ?? "invalid_location" };
+        if (updates.name !== undefined) {
+          const nm = String(updates.name).trim();
+          if (!nm) return { id: m.id, status: "rejected", reason: "invalid_name" };
+          updates.name = nm;
+        }
+      }
+      if (entity === "reminders") {
+        if (updates.taskId !== undefined) {
+          const task = tx.select().from(schema.tasks).where(and(eq(schema.tasks.id, updates.taskId), eq(schema.tasks.userId, userId), isNull(schema.tasks.deletedAt))).get();
+          if (!task) return { id: m.id, status: "rejected", reason: "not_found" };
+        }
+      }
+      if (entity === "recurrences") {
+        const nextRrule = updates.rrule ?? existing.rrule;
+        const nextMode = updates.mode ?? existing.mode;
+        const nextMaxCount = updates.maxCount !== undefined ? updates.maxCount : existing.maxCount;
+        const v = validateRecurrenceRule(nextRrule, nextMode, nextMaxCount);
+        if (!v.valid) return { id: m.id, status: "rejected", reason: v.error ?? "invalid_rrule" };
+      }
+      if (entity === "savedFilters") {
+        if (updates.name !== undefined) {
+          const nm = String(updates.name).trim();
+          if (!nm) return { id: m.id, status: "rejected", reason: "invalid_name" };
+          updates.name = nm;
+        }
+        if (updates.query !== undefined) {
+          const dsl = validateFilterDsl(updates.query);
+          if (!dsl.valid) return { id: m.id, status: "rejected", reason: "invalid_query" };
+        }
+      }
+      if (entity === "timeBlocks") {
+        const nextStart = updates.startAt !== undefined ? updates.startAt : existing.startAt;
+        const nextEnd = updates.endAt !== undefined ? updates.endAt : existing.endAt;
+        const s = parseDateVal(nextStart);
+        const e = parseDateVal(nextEnd);
+        if (!(e > s)) return { id: m.id, status: "rejected", reason: "invalid_time" };
+      }
+
+      if (Object.keys(updates).length === 0) {
+        // still bump? apply no-op but return current
+      }
+
+      updates.version = sql`${table.version} + 1`;
+      updates.updatedAt = now;
+      if (!isUser) updates.fieldTs = newFieldTs;
+      if (isUser && "preferences" in updates) {
+        // keep json
+      }
+
+      const where = isUser
+        ? eq(table.id, userId)
+        : and(eq(table.id, m.entityId), eq(table.userId, userId));
+
+      tx.update(table).set(updates).where(where).run();
+
+      const targetId = isUser ? userId : m.entityId;
+      const version = readVersionGeneric(tx, table, targetId)!;
+      const seq = readSeqGeneric(tx, table, targetId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    case "delete": {
+      let existing;
+      if (isUser) {
+        return { id: m.id, status: "rejected", reason: "unsupported_op" };
+      }
+      existing = tx.select().from(table).where(and(eq(table.id, m.entityId), eq(table.userId, userId), isNull(table.deletedAt))).get();
+      if (!existing) return { id: m.id, status: "rejected", reason: "not_found" };
+
+      tx.update(table).set({ deletedAt: now, updatedAt: now, version: sql`${table.version} + 1` }).where(and(eq(table.id, m.entityId), eq(table.userId, userId))).run();
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    case "restore": {
+      if (isUser) return { id: m.id, status: "rejected", reason: "unsupported_op" };
+      const existing = tx.select().from(table).where(and(eq(table.id, m.entityId), eq(table.userId, userId), sql`${table.deletedAt} IS NOT NULL`)).get();
+      if (!existing) return { id: m.id, status: "rejected", reason: "not_found" };
+
+      tx.update(table).set({ deletedAt: null, updatedAt: now, version: sql`${table.version} + 1` }).where(and(eq(table.id, m.entityId), eq(table.userId, userId))).run();
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    case "move": {
+      if (entity !== "savedFilters") return { id: m.id, status: "rejected", reason: "unsupported_op" };
+      const existing = tx.select().from(table).where(and(eq(table.id, m.entityId), eq(table.userId, userId), isNull(table.deletedAt))).get();
+      if (!existing) return { id: m.id, status: "rejected", reason: "not_found" };
+
+      const patch = m.patch ?? {};
+      let newPosition = patch.position ?? existing.position;
+      if (patch.position === undefined && (patch.afterId !== undefined || patch.beforeId !== undefined)) {
+        newPosition = await positionBetween(
+          { table, where: and(eq(table.userId, userId), isNull(table.deletedAt)), excludeId: m.entityId },
+          patch.afterId ?? null,
+          patch.beforeId ?? null
+        );
+      }
+
+      tx.update(table).set({ position: newPosition, updatedAt: now, version: sql`${table.version} + 1` }).where(and(eq(table.id, m.entityId), eq(table.userId, userId))).run();
+
+      const version = readVersionGeneric(tx, table, m.entityId)!;
+      const seq = readSeqGeneric(tx, table, m.entityId)!;
+      return { id: m.id, status: "applied", version, seq };
+    }
+
+    default:
+      return { id: m.id, status: "rejected", reason: "unknown_op" };
+  }
+}
+
+
+function normalizeEntity(e: string): string {
+  if (e === "saved_filters") return "savedFilters";
+  if (e === "time_blocks") return "timeBlocks";
+  return e;
+}
+
+const SIMPLE_ENTITIES = new Set([
+  "templates",
+  "reminders",
+  "recurrences",
+  "places",
+  "savedFilters",
+  "timeBlocks",
+  "user",
+]);
+
 async function applyMutation(tx: any, userId: string, m: Mutation): Promise<MutationResult> {
-  if (m.entity !== "tasks") {
+  const entity = normalizeEntity(m.entity);
+  const now = new Date();
+  const editedAt = clampEditedAt(m.editedAt);
+
+  if (entity !== "tasks" && !SIMPLE_ENTITIES.has(entity)) {
     return { id: m.id, status: "rejected", reason: "unsupported_entity" };
   }
 
-  const now = new Date();
-  const editedAt = clampEditedAt(m.editedAt);
+  if (entity !== "tasks") {
+    return await applySimpleMutation(tx, userId, m, entity, now, editedAt);
+  }
 
   switch (m.op) {
     case "create": {
