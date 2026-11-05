@@ -1,6 +1,7 @@
-// Remote-change event bus (Phase 5 Day 4b).
+// Remote-change event bus (Phase 5 Day 4b; wired at cutover 6a).
 //
-// apply.ts (sync2) does NOT call this — wire-up comes at cutover.
+// sync2/apply.ts calls notifyRemoteChanged for pulled rows that changed
+// remotely (pre-existing locally, differing from server, no unsent edits).
 // Row components subscribe via subscribeRemoteChanged and glow on match.
 
 export interface RemoteChangedDetail {
