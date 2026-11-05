@@ -124,7 +124,6 @@ export const copy = {
     settingUp: "Getting things ready…",
     refreshing: "Getting the latest changes…",
     stuck: "Having trouble saving. We'll keep trying.",
-    newVersion: "A new version is ready. Refresh to get it.",
     waitingCount: (n: number): string =>
       n === 1 ? "1 change waiting" : `${n} changes waiting`,
     conflictKept: (name: string): string => `Kept your copy of "${name}".`,

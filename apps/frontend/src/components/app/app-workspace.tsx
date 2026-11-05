@@ -36,6 +36,7 @@ import {
   moveBoardTask,
   createTask,
   quickAddTask,
+  parseNaturalLanguageText,
   updateTask,
   deleteTask,
   completeTask,
@@ -68,10 +69,13 @@ import {
   type BackendViewTask,
   type BackendViewCountsResponse,
   type TaskCompletionResult,
+  type ParsedTaskResult,
 } from "@/lib/api";
 import {
   backendTaskToTaskItem,
   priorityUiToBackend,
+  priorityBackendToUi,
+  formatDueDate,
   taskItemToBackendUpdateInput,
 } from "@/lib/adapters";
 import { getListTasks } from "@/lib/data/queries/list";
@@ -114,6 +118,29 @@ async function persistTaskReopen(
     return null;
   } catch {
     return reopenTask(id);
+  }
+}
+
+// Phase 5 follow-up: offline-first bulk writes. Each bulk action expands
+// into sequential per-task mutate() ops (sequential keeps position moves
+// ordered). If any mutate throws, the whole batch falls back to the
+// existing transactional bulk REST endpoint.
+async function persistBulk(
+  userId: string | null,
+  ids: string[],
+  mutateOne: (uid: string, id: string) => Promise<unknown>,
+  restFallback: () => Promise<unknown>
+): Promise<void> {
+  if (!userId) {
+    await restFallback();
+    return;
+  }
+  try {
+    for (const id of ids) {
+      await mutateOne(userId, id);
+    }
+  } catch {
+    await restFallback();
   }
 }
 
@@ -897,7 +924,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     setIsBulkSubmitting(true);
     try {
       if (isAuthenticated) {
-        await bulkTasks(ids, "complete", { completeSubtasks: true });
+        await persistBulk(
+          userId,
+          ids,
+          (uid, id) =>
+            mutate(uid, {
+              entity: "tasks",
+              op: "complete",
+              entityId: id,
+              patch: { completeSubtasks: true },
+            }),
+          () => bulkTasks(ids, "complete", { completeSubtasks: true })
+        );
       }
       setTasks((prev) =>
         prev.map((t) => (ids.includes(t.id) ? { ...t, completed: true } : t))
@@ -914,7 +952,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     } finally {
       setIsBulkSubmitting(false);
     }
-  }, [isAuthenticated, selectedTaskIds, success, toast]);
+  }, [isAuthenticated, selectedTaskIds, success, toast, userId]);
 
   const handleBulkReopen = useCallback(async () => {
     if (selectedTaskIds.size === 0) return;
@@ -922,7 +960,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     setIsBulkSubmitting(true);
     try {
       if (isAuthenticated) {
-        await bulkTasks(ids, "reopen");
+        await persistBulk(
+          userId,
+          ids,
+          (uid, id) =>
+            mutate(uid, {
+              entity: "tasks",
+              op: "update",
+              entityId: id,
+              patch: { status: "todo", completedAt: null },
+            }),
+          () => bulkTasks(ids, "reopen")
+        );
       }
       setTasks((prev) =>
         prev.map((t) => (ids.includes(t.id) ? { ...t, completed: false } : t))
@@ -939,7 +988,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     } finally {
       setIsBulkSubmitting(false);
     }
-  }, [isAuthenticated, selectedTaskIds, success, toast]);
+  }, [isAuthenticated, selectedTaskIds, success, toast, userId]);
 
   const handleBulkMove = useCallback(
     async (targetListId: string) => {
@@ -949,7 +998,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       setIsBulkSubmitting(true);
       try {
         if (isAuthenticated) {
-          await bulkTasks(ids, "move", { listId: targetListId });
+          await persistBulk(
+            userId,
+            ids,
+            (uid, id) =>
+              mutate(uid, {
+                entity: "tasks",
+                op: "move",
+                entityId: id,
+                patch: { listId: targetListId },
+              }),
+            () => bulkTasks(ids, "move", { listId: targetListId })
+          );
         }
         setTasks((prev) =>
           prev.map((t) => (ids.includes(t.id) ? { ...t, listId: targetListId } : t))
@@ -969,7 +1029,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         setIsBulkSubmitting(false);
       }
     },
-    [isAuthenticated, selectedTaskIds, userLists, success, toast]
+    [isAuthenticated, selectedTaskIds, userLists, success, toast, userId]
   );
 
   const handleBulkSetPriority = useCallback(
@@ -987,7 +1047,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       setIsBulkSubmitting(true);
       try {
         if (isAuthenticated) {
-          await bulkTasks(ids, "set_priority", { priority });
+          await persistBulk(
+            userId,
+            ids,
+            (uid, id) =>
+              mutate(uid, {
+                entity: "tasks",
+                op: "update",
+                entityId: id,
+                patch: { priority },
+              }),
+            () => bulkTasks(ids, "set_priority", { priority })
+          );
         }
         setTasks((prev) =>
           prev.map((t) => (ids.includes(t.id) ? { ...t, priority: uiPriority } : t))
@@ -1007,7 +1078,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         setIsBulkSubmitting(false);
       }
     },
-    [isAuthenticated, selectedTaskIds, success, toast]
+    [isAuthenticated, selectedTaskIds, success, toast, userId]
   );
 
   const handleBulkArchive = useCallback(async () => {
@@ -1016,7 +1087,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     setIsBulkSubmitting(true);
     try {
       if (isAuthenticated) {
-        await bulkTasks(ids, "archive");
+        await persistBulk(
+          userId,
+          ids,
+          (uid, id) =>
+            mutate(uid, {
+              entity: "tasks",
+              op: "update",
+              entityId: id,
+              patch: { archivedAt: Date.now() },
+            }),
+          () => bulkTasks(ids, "archive")
+        );
       }
       setTasks((prev) => prev.filter((t) => !ids.includes(t.id)));
       if (selectedTaskId && ids.includes(selectedTaskId)) {
@@ -1034,7 +1116,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     } finally {
       setIsBulkSubmitting(false);
     }
-  }, [isAuthenticated, selectedTaskId, selectedTaskIds, success, toast]);
+  }, [isAuthenticated, selectedTaskId, selectedTaskIds, success, toast, userId]);
 
   const handleBulkDelete = useCallback(async () => {
     if (selectedTaskIds.size === 0) return;
@@ -1050,7 +1132,12 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
 
     try {
       if (isAuthenticated) {
-        await bulkTasks(ids, "delete");
+        await persistBulk(
+          userId,
+          ids,
+          (uid, id) => mutate(uid, { entity: "tasks", op: "delete", entityId: id }),
+          () => bulkTasks(ids, "delete")
+        );
       }
 
       toast({
@@ -1857,6 +1944,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       const trimmed = text.trim();
       if (!trimmed) return;
 
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
       if (!isAuthenticated) {
         handleAddTask({
           title: trimmed,
@@ -1867,10 +1956,182 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         return;
       }
 
+      // Offline-first path (Phase 5 follow-up): NLP parse stays online, then
+      // the task is created via mutate. Tag/reminder/recurrence enrichment
+      // from the parse result cannot resolve offline (tag ids, reminder and
+      // recurrence rows), so only plain task row fields (title/listId/dueAt/
+      // priority/allDay/estimateMin) travel on the mutate path.
+      if (userId) {
+        const resolveListId = (preferred?: string | null) =>
+          preferred ??
+          activeListId ??
+          userLists.find((l) => l.isInbox)?.id ??
+          userLists[0]?.id;
+
+        // Optimistic mutate-create: prepends the temp item, swaps in the
+        // client-generated id on success, removes it on failure.
+        const mutateCreate = async (
+          patch: Record<string, unknown>,
+          optimistic: TaskItem
+        ): Promise<string> => {
+          const newId = uuidv7();
+          setTasks((prev) => [optimistic, ...prev]);
+          setSelectedTaskId(optimistic.id);
+          try {
+            await mutate(userId, {
+              entity: "tasks",
+              op: "create",
+              entityId: newId,
+              patch,
+            });
+          } catch (err) {
+            setTasks((prev) => prev.filter((t) => t.id !== optimistic.id));
+            setSelectedTaskId((prev) => (prev === optimistic.id ? null : prev));
+            throw err;
+          }
+          setTasks((prev) =>
+            prev.map((t) => (t.id === optimistic.id ? { ...t, id: newId } : t))
+          );
+          setSelectedTaskId((prev) => (prev === optimistic.id ? newId : prev));
+          return newId;
+        };
+
+        let parsed: ParsedTaskResult | null = null;
+        try {
+          parsed = await parseNaturalLanguageText(trimmed);
+        } catch {
+          parsed = null;
+        }
+
+        if (parsed) {
+          const finalListId = resolveListId(parsed.list?.id);
+          if (finalListId) {
+            let dueAt: string | undefined;
+            if (parsed.dueAt) {
+              const d =
+                parsed.dueAt instanceof Date
+                  ? parsed.dueAt
+                  : new Date(parsed.dueAt);
+              if (!isNaN(d.getTime())) dueAt = d.toISOString();
+            }
+            const patch: Record<string, unknown> = {
+              title: parsed.title,
+              listId: finalListId,
+              priority: parsed.priority,
+              allDay: parsed.allDay,
+            };
+            if (dueAt) patch["dueAt"] = dueAt;
+            if (parsed.estimateMin != null) patch["estimateMin"] = parsed.estimateMin;
+            const optimistic: TaskItem = {
+              id: `temp-${Date.now()}`,
+              title: parsed.title,
+              completed: false,
+              priority: priorityBackendToUi(parsed.priority),
+              folder: activeFolder || "none",
+              list: activeList === "completed" ? "today" : activeList,
+              tags: [],
+              dueDate: dueAt ? formatDueDate(dueAt) : undefined,
+              subtasks: [],
+              checklist: [],
+              createdAt: "Just now",
+              updatedAt: "Just now",
+              listId: finalListId,
+              sectionId: null,
+            };
+            try {
+              await mutateCreate(patch, optimistic);
+              success(`Created "${parsed.title}"`);
+            } catch {
+              // Local write failed: fall back to the quick REST endpoint.
+              try {
+                const created = await quickAddTask({
+                  text: trimmed,
+                  timezone,
+                  listId: activeListId || undefined,
+                });
+                const taskItem = backendTaskToTaskItem(created);
+                setTasks((prev) => [taskItem, ...prev]);
+                setSelectedTaskId(taskItem.id);
+                success(`Created "${taskItem.title}"`);
+              } catch (err) {
+                console.error("Quick add failed:", err);
+                toast({
+                  title: "Quick add failed",
+                  message:
+                    err instanceof Error ? err.message : "Could not create task",
+                  type: "error",
+                });
+              }
+            }
+            return;
+          }
+        }
+
+        // Parse unavailable (offline?) or no target list: try the quick REST
+        // endpoint, which re-parses server-side. When that fails too, create
+        // a plain local task via mutate with the raw text as title.
+        try {
+          const created = await quickAddTask({
+            text: trimmed,
+            timezone,
+            listId: activeListId || undefined,
+          });
+          const taskItem = backendTaskToTaskItem(created);
+          setTasks((prev) => [taskItem, ...prev]);
+          setSelectedTaskId(taskItem.id);
+          success(`Created "${taskItem.title}"`);
+        } catch (err) {
+          console.error("Quick add failed, falling back to local create:", err);
+          const fallbackListId = resolveListId();
+          if (!fallbackListId) {
+            handleAddTask({
+              title: trimmed,
+              priority: "med",
+              folder: activeFolder || "none",
+              list: activeList === "completed" ? "today" : activeList,
+            });
+            return;
+          }
+          const optimistic: TaskItem = {
+            id: `temp-${Date.now()}`,
+            title: trimmed,
+            completed: false,
+            priority: "med",
+            folder: activeFolder || "none",
+            list: activeList === "completed" ? "today" : activeList,
+            tags: [],
+            subtasks: [],
+            checklist: [],
+            createdAt: "Just now",
+            updatedAt: "Just now",
+            listId: fallbackListId,
+            sectionId: null,
+          };
+          try {
+            await mutateCreate(
+              { title: trimmed, listId: fallbackListId, priority: 2 },
+              optimistic
+            );
+            success(`Created "${trimmed}"`);
+          } catch (mutateErr) {
+            console.error("Local quick add failed:", mutateErr);
+            toast({
+              title: "Quick add failed",
+              message:
+                mutateErr instanceof Error
+                  ? mutateErr.message
+                  : "Could not create task",
+              type: "error",
+            });
+          }
+        }
+        return;
+      }
+
       try {
         const created = await quickAddTask({
           text: trimmed,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezone,
           listId: activeListId || undefined,
         });
         const taskItem = backendTaskToTaskItem(created);
@@ -1887,7 +2148,17 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         });
       }
     },
-    [isAuthenticated, activeFolder, activeList, activeListId, handleAddTask, success]
+    [
+      isAuthenticated,
+      activeFolder,
+      activeList,
+      activeListId,
+      handleAddTask,
+      success,
+      toast,
+      userId,
+      userLists,
+    ]
   );
 
   const handleUpdateTask = useCallback(

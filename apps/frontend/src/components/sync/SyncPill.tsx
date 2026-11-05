@@ -12,12 +12,10 @@ export interface SyncPillProps {
   onOpen: () => void;
 }
 
-type Tone = "saved" | "saving" | "offline" | "waiting" | "trouble" | "update";
+type Tone = "saved" | "saving" | "offline" | "waiting" | "trouble";
 
 function resolveTone(state: SyncState, pendingCount: number): Tone {
   switch (state) {
-    case "updateRequired":
-      return "update";
     case "offline":
       return "offline";
     case "backoff":
@@ -48,8 +46,6 @@ function labelFor(
       return copy.sync.waitingCount(pendingCount);
     case "trouble":
       return copy.sync.stuck;
-    case "update":
-      return copy.sync.newVersion;
     case "saved":
     default:
       return lastSyncAt == null ? copy.sync.settingUp : copy.sync.allSaved;
@@ -70,11 +66,6 @@ function ToneIcon({ tone }: { tone: Tone }) {
   }
   if (tone === "offline") {
     return <Moon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-warning" />;
-  }
-  if (tone === "update") {
-    return (
-      <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-accent" />
-    );
   }
   // waiting + trouble share the warning mark; waiting also carries a count badge.
   return (

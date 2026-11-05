@@ -18,7 +18,6 @@ import {
   pushBatch,
   RetryableError,
   SyncResyncRequired,
-  SyncUpdateRequired,
   type PushMutation,
 } from "./transport";
 import { applyPage } from "./apply";
@@ -226,7 +225,7 @@ export async function pullPhase(
 // (lastSyncAt). Concurrent calls join the in-flight run. No timers here:
 // backoff returns retryDelayMs and the caller (triggers.ts) schedules.
 
-export type RunSyncStatus = "ok" | "offline" | "backoff" | "updateRequired";
+export type RunSyncStatus = "ok" | "offline" | "backoff";
 
 export interface RunSyncOptions {
   // Bypass the concurrent-run guard and start a fresh run.
@@ -265,11 +264,6 @@ async function readCursor(userId: string): Promise<string> {
 async function refreshPendingCount(userId: string): Promise<void> {
   const pending = await getPending(userId);
   setStatus({ pendingCount: pending.length });
-}
-
-function failUpdate(err: unknown): RunSyncResult {
-  setStatus({ state: "updateRequired", error: errorMessage(err) });
-  return { status: "updateRequired" };
 }
 
 async function failTransient(
@@ -311,7 +305,7 @@ async function doResync(
     await refreshPendingCount(userId);
     return succeed(next);
   } catch (err) {
-    if (err instanceof SyncUpdateRequired) return failUpdate(err);
+    // 426 SyncUpdateRequired flows into backoff: keep syncing, retry later.
     return failTransient(userId, err);
   }
 }
@@ -333,7 +327,7 @@ async function doRunSync(
     await refreshPendingCount(userId);
     return succeed(next);
   } catch (err) {
-    if (err instanceof SyncUpdateRequired) return failUpdate(err);
+    // 426 SyncUpdateRequired flows into backoff: keep syncing, retry later.
     if (err instanceof SyncResyncRequired) return doResync(userId, deviceId);
     return failTransient(userId, err);
   }

@@ -6,7 +6,8 @@
 //   POST /api/v1/sync/push { mutations: [...] }
 //     -> { results: [{ id, status, version?, seq?, reason? }] }
 //   409 { resync: true } -> SyncResyncRequired (caller clears + restarts)
-//   426                   -> SyncUpdateRequired (user must refresh)
+//   426                   -> SyncUpdateRequired (engine retries with backoff;
+//                            no user-facing update prompt)
 //   429                   -> RetryableError with delayMs from Retry-After
 
 import { API_BASE_URL } from "../auth-client";

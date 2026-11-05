@@ -17,6 +17,7 @@ export default defineConfig({
     baseURL: "http://localhost:3000",
     trace: "retain-on-failure",
   },
+  projects: [{ name: "webkit", use: { browserName: "webkit" } }],
   webServer: [
     {
       // Fresh-ish backend DB per run: the file lives in the OS temp dir and
