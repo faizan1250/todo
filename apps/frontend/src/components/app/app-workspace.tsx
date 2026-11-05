@@ -2933,6 +2933,11 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             onAddTask={handleAddTask}
             onQuickAddTask={handleQuickAddTask}
             onOpenTemplates={() => setIsTemplatesOpen(true)}
+            userId={userId}
+            onUpdateTask={handleUpdateTask}
+            onDuplicateTask={handleDuplicateTask}
+            onArchiveTask={handleArchiveTask}
+            onMoveTask={handleMovePanelTask}
             isLoading={activeFilterId ? isLoadingFilter : (isLoadingTasks || isLoadingView)}
             showListName={PHASE4_VIEWS.has(activeList) || activeFilterId !== null}
             hasMore={activeFilterId ? filterHasMore : viewHasMore}
