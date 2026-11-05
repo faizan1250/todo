@@ -21,11 +21,7 @@ export function RepeatSummary({ rrule, mode = "fixed", anchorIso = null }: Repea
   const [next, setNext] = useState<Date[]>([]);
 
   useEffect(() => {
-    if (!rrule) {
-      setSummary(null);
-      setNext([]);
-      return;
-    }
+    if (!rrule) return;
     let live = true;
     Promise.all([import("@todo/shared"), import("./next-dates")])
       .then(([shared, nd]) => {

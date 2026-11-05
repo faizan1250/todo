@@ -29,8 +29,7 @@ describe("repeat presets", () => {
 describe("buildCustomRRule", () => {
   it("builds a simple daily rule", () => {
     const res = buildCustomRRule(
-      { interval: 1, unit: "day", weekdays: [], monthDay: null, ends: { kind: "never" } },
-      "fixed"
+      { interval: 1, unit: "day", weekdays: [], monthDay: null, ends: { kind: "never" } }
     );
     expect(res.ok).toBe(true);
     expect(res.rrule).toBe("FREQ=DAILY");
@@ -38,16 +37,14 @@ describe("buildCustomRRule", () => {
 
   it("builds weekly with weekday buttons", () => {
     const res = buildCustomRRule(
-      { interval: 2, unit: "week", weekdays: ["MO", "WE"], monthDay: null, ends: { kind: "never" } },
-      "fixed"
+      { interval: 2, unit: "week", weekdays: ["MO", "WE"], monthDay: null, ends: { kind: "never" } }
     );
     expect(res.rrule).toBe("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE");
   });
 
   it("builds monthly ordinal + count end", () => {
     const res = buildCustomRRule(
-      { interval: 1, unit: "month", weekdays: [], monthDay: 15, ends: { kind: "after_n", count: 6 } },
-      "fixed"
+      { interval: 1, unit: "month", weekdays: [], monthDay: 15, ends: { kind: "after_n", count: 6 } }
     );
     expect(res.rrule).toBe("FREQ=MONTHLY;BYMONTHDAY=15;COUNT=6");
   });
@@ -60,21 +57,18 @@ describe("buildCustomRRule", () => {
         weekdays: [],
         monthDay: null,
         ends: { kind: "on_date", untilDate: "2026-06-30" },
-      },
-      "fixed"
+      }
     );
     expect(res.rrule).toBe("FREQ=WEEKLY;UNTIL=20260630T000000Z");
   });
 
   it("rejects interval < 1 and count > 1000", () => {
     const bad = buildCustomRRule(
-      { interval: 0, unit: "day", weekdays: [], monthDay: null, ends: { kind: "never" } },
-      "fixed"
+      { interval: 0, unit: "day", weekdays: [], monthDay: null, ends: { kind: "never" } }
     );
     expect(bad.ok).toBe(false);
     const big = buildCustomRRule(
-      { interval: 1, unit: "day", weekdays: [], monthDay: null, ends: { kind: "after_n", count: 1001 } },
-      "fixed"
+      { interval: 1, unit: "day", weekdays: [], monthDay: null, ends: { kind: "after_n", count: 1001 } }
     );
     expect(big.ok).toBe(false);
     expect(big.error).toContain("1000");

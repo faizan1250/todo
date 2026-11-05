@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Sidebar } from "./sidebar";
 import { TaskPane } from "./task-pane";
 import { CalendarView } from "./calendar-view";
@@ -116,6 +116,12 @@ async function persistTaskComplete(
     return completeTask(id, completeSubtasks ? true : undefined);
   }
 }
+
+// Phase 3 premium Day 5: Undo-hold window for repeating-task completion.
+// The row looks done immediately, but the complete mutation only fires when
+// this window expires. Undo inside the window cancels the timer, so the
+// backend never sees the completion and no duplicate spawns.
+const REPEAT_HOLD_MS = 8000;
 
 // Count open (incomplete) subtasks recursively through the hierarchy tree.
 function countOpenSubtasks(subtasks: HierarchicalSubtask[]): number {
@@ -472,6 +478,20 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     id: string;
     openCount: number;
   } | null>(null);
+
+  // Pending Undo-hold timers for repeating-task completion (Day 5).
+  // Keyed by task id so Undo (or a reopen) can cancel the held mutation.
+  const pendingRepeatTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
+  // Drop held timers on unmount — a held mutation must never fire after the
+  // workspace is gone.
+  useEffect(() => {
+    const timers = pendingRepeatTimers.current;
+    return () => {
+      timers.forEach((t) => clearTimeout(t));
+      timers.clear();
+    };
+  }, []);
 
   // Library Modals State
   const [isTrashOpen, setIsTrashOpen] = useState(false);
@@ -1685,6 +1705,63 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   }, [tasks, activeList, activeListId, activeFolder]);
 
   // Task Handlers
+  // firePersistComplete runs the actual complete/reopen write and reconciles
+  // the server echo (version + spawned nextTask). Shared by the immediate
+  // path and the Undo-hold timer so both reconcile identically.
+  const firePersistComplete = useCallback(
+    (id: string, willComplete: boolean, withSubtasks: boolean) => {
+      if (!isAuthenticated || id.startsWith("temp-")) return;
+      // Phase 5 cutover 6c: offline-first via mutate (REST fallback inside
+      // the persist helpers). A null echo means the local write was
+      // accepted; the optimistic state above stands until sync pull.
+      const apiCall: Promise<TaskCompletionResult | BackendTask | null> =
+        willComplete
+          ? persistTaskComplete(userId, id, withSubtasks)
+          : persistTaskReopen(userId, id);
+      apiCall
+        .then((updated) => {
+          if (updated === null) return;
+          setTasks((prev) => {
+            const mapped = prev.map((t) =>
+              t.id === id
+                ? {
+                    ...t,
+                    version: updated.version,
+                    rawStatus: updated.status,
+                    updatedAt: "Just now",
+                  }
+                : t
+            );
+            // When completing a recurring task, seamlessly add nextTask into state
+            if (updated.nextTask) {
+              const nextItem = backendTaskToTaskItem(updated.nextTask);
+              if (!mapped.some((t) => t.id === nextItem.id)) {
+                return [nextItem, ...mapped];
+              }
+            }
+            return mapped;
+          });
+        })
+        .catch((err) => {
+          console.error("Failed to update task completion:", err);
+          // Revert state
+          setTasks((prev) =>
+            prev.map((t) => (t.id === id ? { ...t, completed: !willComplete } : t))
+          );
+          if (willComplete) {
+            setStreakCount((s) => Math.max(1, s - 1));
+            setIsStreakActive(false);
+          }
+          toast({
+            title: "Action failed",
+            message: err instanceof Error ? err.message : "Failed to toggle task",
+            type: "error",
+          });
+        });
+    },
+    [isAuthenticated, userId, toast]
+  );
+
   // runToggleComplete performs the actual toggle; handleToggleComplete below
   // gates completion of a parent with open subtasks behind a one-time confirm.
   const runToggleComplete = useCallback(
@@ -1693,6 +1770,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       if (!target) return;
 
       const willComplete = !target.completed;
+      const isRepeating = Boolean(target.recurrenceId || target.recurrenceRule);
 
       setTasks((prev) =>
         prev.map((t) =>
@@ -1712,6 +1790,61 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         setStreakTaskTitle(target.title);
         setIsStreakActive(true);
 
+        if (isRepeating) {
+          // Day 5 Undo-hold: the row looks done now, but the complete
+          // mutation only fires when the toast window expires. Undo cancels
+          // the timer, so no backend write happens and no duplicate spawns.
+          const prevTimer = pendingRepeatTimers.current.get(id);
+          if (prevTimer) clearTimeout(prevTimer);
+          const rrule = target.recurrenceRule?.rrule ?? null;
+          const anchorIso = target.dueAt ?? null;
+          const showHoldToast = (nextLabel: string | null) => {
+            toast({
+              title: "Done",
+              message: nextLabel
+                ? `Next: ${nextLabel}`
+                : `"${target.title}" marked done.`,
+              type: "success",
+              actionLabel: "Undo",
+              durationMs: REPEAT_HOLD_MS,
+              onAction: () => {
+                const pending = pendingRepeatTimers.current.get(id);
+                if (pending) {
+                  clearTimeout(pending);
+                  pendingRepeatTimers.current.delete(id);
+                }
+                setTasks((prev) =>
+                  prev.map((t) =>
+                    t.id === id ? { ...t, completed: false, updatedAt: "Undone" } : t
+                  )
+                );
+                setStreakCount((s) => Math.max(1, s - 1));
+                // Held mutation never fired: nothing to invert server-side.
+              },
+            });
+          };
+          if (rrule) {
+            // Lazy chunk: the rrule parser stays out of the main bundle.
+            void Promise.all([
+              import("@/components/repeat/next-dates"),
+              import("@/components/repeat/rrule-presets"),
+            ])
+              .then(([{ getNextDate }, { formatNextDateLabel }]) => {
+                const next = getNextDate(rrule, { anchorIso });
+                showHoldToast(next ? formatNextDateLabel(next) : null);
+              })
+              .catch(() => showHoldToast(null));
+          } else {
+            showHoldToast(null);
+          }
+          pendingRepeatTimers.current.set(
+            id,
+            setTimeout(() => {
+              pendingRepeatTimers.current.delete(id);
+              firePersistComplete(id, true, withSubtasks);
+            }, REPEAT_HOLD_MS)
+          );
+        } else {
         // Phase 2 premium 1b (pilot): capture the before-image and push the
         // inverse so Undo replays it via mutate(). Falls back to
         // persistTaskReopen below when the stack misses.
@@ -1756,7 +1889,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             }
           },
         });
+        }
       } else {
+        // A reopen inside the hold window cancels the held complete mutation.
+        const pending = pendingRepeatTimers.current.get(id);
+        if (pending) {
+          clearTimeout(pending);
+          pendingRepeatTimers.current.delete(id);
+        }
         toast({
           message: `"${target.title}" marked active.`,
           actionLabel: "Undo",
@@ -1782,57 +1922,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         });
       }
 
-      if (isAuthenticated && !id.startsWith("temp-")) {
-        // Phase 5 cutover 6c: offline-first via mutate (REST fallback inside
-        // the persist helpers). A null echo means the local write was
-        // accepted; the optimistic state above stands until sync pull.
-        const apiCall: Promise<TaskCompletionResult | BackendTask | null> =
-          willComplete
-            ? persistTaskComplete(userId, id, withSubtasks)
-            : persistTaskReopen(userId, id);
-        apiCall
-          .then((updated) => {
-            if (updated === null) return;
-            setTasks((prev) => {
-              const mapped = prev.map((t) =>
-                t.id === id
-                  ? {
-                      ...t,
-                      version: updated.version,
-                      rawStatus: updated.status,
-                      updatedAt: "Just now",
-                    }
-                  : t
-              );
-              // When completing a recurring task, seamlessly add nextTask into state
-              if (updated.nextTask) {
-                const nextItem = backendTaskToTaskItem(updated.nextTask);
-                if (!mapped.some((t) => t.id === nextItem.id)) {
-                  return [nextItem, ...mapped];
-                }
-              }
-              return mapped;
-            });
-          })
-          .catch((err) => {
-            console.error("Failed to update task completion:", err);
-            // Revert state
-            setTasks((prev) =>
-              prev.map((t) => (t.id === id ? { ...t, completed: !willComplete } : t))
-            );
-            if (willComplete) {
-              setStreakCount((s) => Math.max(1, s - 1));
-              setIsStreakActive(false);
-            }
-            toast({
-              title: "Action failed",
-              message: err instanceof Error ? err.message : "Failed to toggle task",
-              type: "error",
-            });
-          });
+      // Immediate write for every path except a repeating completion, whose
+      // mutation is held until the Undo toast window expires (see above).
+      if (!(willComplete && isRepeating)) {
+        firePersistComplete(id, willComplete, withSubtasks);
       }
     },
-    [tasks, isAuthenticated, userId, toast]
+    [tasks, isAuthenticated, userId, toast, firePersistComplete]
   );
 
   // Gate: completing a parent with open subtasks asks once whether to

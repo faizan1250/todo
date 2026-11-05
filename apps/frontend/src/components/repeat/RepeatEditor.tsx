@@ -66,17 +66,17 @@ export function RepeatEditor({
   const draftRrule = useMemo(() => {
     if (preset === "none") return null;
     if (preset === "custom") {
-      const built = buildCustomRRule(custom, mode);
+      const built = buildCustomRRule(custom);
       return built.ok ? built.rrule ?? null : null;
     }
     return presetRrule(preset);
-  }, [preset, custom, mode]);
+  }, [preset, custom]);
 
   const draftInvalidReason = useMemo(() => {
     if (preset !== "custom") return null;
-    const built = buildCustomRRule(custom, mode);
+    const built = buildCustomRRule(custom);
     return built.ok ? null : (built.error ?? "Invalid repeat.");
-  }, [preset, custom, mode]);
+  }, [preset, custom]);
 
   const patchCustom = (patch: Partial<RepeatCustomConfig>) => {
     setCustom((c) => ({ ...c, ...patch }));

@@ -107,7 +107,7 @@ export interface BuildResult {
   error?: string;
 }
 
-export function buildCustomRRule(config: RepeatCustomConfig, _mode: RepeatMode): BuildResult {
+export function buildCustomRRule(config: RepeatCustomConfig): BuildResult {
   const interval = Math.floor(config.interval);
   if (!Number.isFinite(interval) || interval < 1) {
     return { ok: false, error: "Repeat every must be at least 1." };
