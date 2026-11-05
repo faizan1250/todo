@@ -261,4 +261,136 @@ export const syncRoutes = new Elysia({ prefix: "/api/v1/sync" })
         limit: t.Optional(t.Number()),
       }),
     }
+  )
+  .get(
+    "/devices",
+    async ({ user }) => {
+      const rows = await db
+        .select({
+          id: schema.devices.id,
+          name: schema.devices.name,
+          platform: schema.devices.platform,
+          lastSeenAt: schema.devices.lastSeenAt,
+          lastSyncAt: schema.devices.lastSyncAt,
+        })
+        .from(schema.devices)
+        .where(eq(schema.devices.userId, user.id))
+        .orderBy(desc(schema.devices.createdAt), desc(schema.devices.id));
+
+      return {
+        devices: rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          platform: r.platform,
+          lastSeenAt: r.lastSeenAt ? r.lastSeenAt.getTime() : null,
+          lastSyncAt: r.lastSyncAt ? r.lastSyncAt.getTime() : null,
+        })),
+      };
+    },
+    { auth: true }
+  )
+  .post(
+    "/devices",
+    async ({ user, body, status }) => {
+      const platform = body.platform ?? "web";
+      const now = new Date();
+
+      const toDTO = (r: {
+        id: string;
+        name: string | null;
+        platform: "web" | "ios" | "android";
+        lastSeenAt: Date | null;
+        lastSyncAt: Date | null;
+      }) => ({
+        id: r.id,
+        name: r.name,
+        platform: r.platform,
+        lastSeenAt: r.lastSeenAt ? r.lastSeenAt.getTime() : null,
+        lastSyncAt: r.lastSyncAt ? r.lastSyncAt.getTime() : null,
+      });
+
+      const lookup = async () => {
+        const rows = await db
+          .select({
+            id: schema.devices.id,
+            userId: schema.devices.userId,
+          })
+          .from(schema.devices)
+          .where(eq(schema.devices.id, body.deviceId));
+        return rows[0];
+      };
+
+      const existing = await lookup();
+      if (existing && existing.userId !== user.id) {
+        return status(403, { error: "Forbidden" });
+      }
+
+      if (existing) {
+        await db
+          .update(schema.devices)
+          .set({ name: body.name, platform, lastSeenAt: now })
+          .where(
+            and(
+              eq(schema.devices.id, body.deviceId),
+              eq(schema.devices.userId, user.id)
+            )
+          );
+      } else {
+        try {
+          await db.insert(schema.devices).values({
+            id: body.deviceId,
+            userId: user.id,
+            name: body.name,
+            platform,
+            lastSeenAt: now,
+          });
+        } catch {
+          // Lost an insert race: re-check ownership instead of leaking.
+          const raced = await lookup();
+          if (!raced || raced.userId !== user.id) {
+            return status(403, { error: "Forbidden" });
+          }
+          await db
+            .update(schema.devices)
+            .set({ name: body.name, platform, lastSeenAt: now })
+            .where(
+              and(
+                eq(schema.devices.id, body.deviceId),
+                eq(schema.devices.userId, user.id)
+              )
+            );
+        }
+      }
+
+      const rows = await db
+        .select({
+          id: schema.devices.id,
+          name: schema.devices.name,
+          platform: schema.devices.platform,
+          lastSeenAt: schema.devices.lastSeenAt,
+          lastSyncAt: schema.devices.lastSyncAt,
+        })
+        .from(schema.devices)
+        .where(
+          and(
+            eq(schema.devices.id, body.deviceId),
+            eq(schema.devices.userId, user.id)
+          )
+        );
+      const row = rows[0];
+      if (!row) {
+        return status(403, { error: "Forbidden" });
+      }
+      return toDTO(row);
+    },
+    {
+      auth: true,
+      body: t.Object({
+        deviceId: t.String({ minLength: 1, maxLength: 128 }),
+        name: t.String({ minLength: 1, maxLength: 64 }),
+        platform: t.Optional(
+          t.Union([t.Literal("web"), t.Literal("ios"), t.Literal("android")])
+        ),
+      }),
+    }
   );
