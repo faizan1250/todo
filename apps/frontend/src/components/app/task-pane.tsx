@@ -24,6 +24,27 @@ import {
   Bookmark,
   MoreHorizontal,
 } from "lucide-react";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { InsertionLine, SortableTaskRow, TaskRow } from "./task-row";
+import { isNoopMove, moveNeighbors } from "@/lib/tasks/reorder";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { v7 as uuidv7 } from "uuid";
@@ -44,10 +65,101 @@ import {
   type ParsedTaskResult,
 } from "@/lib/api";
 import { formatEstimate, formatDueDate } from "@/lib/adapters";
-import { TaskRow } from "./task-row";
 import { TaskRowSkeletonList } from "./task-skeleton";
 import { EmptyState } from "./empty-state";
 import type { TaskItem, ListId, FolderId, Priority } from "./types";
+
+/** Target of a drag-reorder drop. sectionId undefined = keep current section. */
+export interface ReorderTarget {
+  sectionId: string | null | undefined;
+  afterId: string | null;
+  beforeId: string | null;
+}
+
+// dnd-kit container ids. "flat" = ungrouped list (no sections exist);
+// "unsectioned" = the no-section group when sections exist.
+const FLAT_CONTAINER = "flat";
+const UNSECTIONED_CONTAINER = "unsectioned";
+const sectionContainerId = (sectionId: string) => `section:${sectionId}`;
+const containerSectionId = (containerId: string): string | null | undefined => {
+  if (containerId === FLAT_CONTAINER) return undefined;
+  if (containerId === UNSECTIONED_CONTAINER) return null;
+  return containerId.startsWith("section:") ? containerId.slice("section:".length) : undefined;
+};
+
+// Whole-group end-drop zones (drop anywhere on card padding/header → end of
+// that group). One droppable per group, so ids never collide.
+const endDropId = (containerId: string) => `drop::${containerId}::end`;
+const parseEndDropId = (id: string): string | null => {
+  const prefix = "drop::";
+  const suffix = "::end";
+  if (!id.startsWith(prefix) || !id.endsWith(suffix)) return null;
+  return id.slice(prefix.length, -suffix.length);
+};
+
+interface ResolvedDrop {
+  containerId: string;
+  /** Final order of the target container with the dragged id placed. */
+  resultIds: string[];
+  /** Row under the cursor (null = group end zone). */
+  overTaskId: string | null;
+  placeBefore: boolean;
+}
+
+/** Pure drop resolution shared by onDragOver (insertion line) and onDragEnd. */
+function resolveDrop(
+  containers: Map<string, TaskItem[]>,
+  taskContainer: Map<string, string>,
+  activeId: string,
+  overId: string
+): ResolvedDrop | null {
+  const endTarget = parseEndDropId(overId);
+  if (endTarget) {
+    const ids = (containers.get(endTarget) ?? []).map((t) => t.id).filter((id) => id !== activeId);
+    return { containerId: endTarget, resultIds: [...ids, activeId], overTaskId: null, placeBefore: false };
+  }
+  const targetContainer = taskContainer.get(overId);
+  if (!targetContainer) return null;
+  const ids = (containers.get(targetContainer) ?? []).map((t) => t.id);
+  if (taskContainer.get(activeId) === targetContainer) {
+    const from = ids.indexOf(activeId);
+    const to = ids.indexOf(overId);
+    if (from < 0 || to < 0 || from === to) return null;
+    const next = [...ids];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return { containerId: targetContainer, resultIds: next, overTaskId: overId, placeBefore: to < from };
+  }
+  const without = ids.filter((id) => id !== activeId);
+  const at = Math.max(0, ids.indexOf(overId));
+  return {
+    containerId: targetContainer,
+    resultIds: [...without.slice(0, at), activeId, ...without.slice(at)],
+    overTaskId: overId,
+    placeBefore: true,
+  };
+}
+
+/** Group card wrapper that accepts drops onto its padding/header (→ end of group). */
+function EndDropZone({
+  containerId,
+  className,
+  children,
+}: {
+  containerId: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: endDropId(containerId) });
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(className, isOver && "ring-2 ring-[#FD91CC]/50")}
+    >
+      {children}
+    </div>
+  );
+}
 
 interface TaskPaneProps {
   tasks: TaskItem[];
@@ -74,6 +186,8 @@ interface TaskPaneProps {
   onDuplicateTask?: (id: string) => void;
   onArchiveTask?: (id: string) => void;
   onMoveTask?: (taskId: string, listId: string, sectionId: string | null) => void;
+  /** Drag-reorder drop. sectionId undefined = same section, null = unsectioned. */
+  onReorderTask?: (taskId: string, target: ReorderTarget) => void;
   isLoading?: boolean;
   showListName?: boolean;
   selectedTaskIds?: Set<string>;
@@ -102,6 +216,7 @@ export function TaskPane({
   onDuplicateTask,
   onArchiveTask,
   onMoveTask,
+  onReorderTask,
   isLoading = false,
   showListName = false,
   selectedTaskIds,
@@ -389,6 +504,122 @@ export function TaskPane({
 
     return { unsectionedTasks: unsectioned, sectionTasksMap: map };
   }, [tasksForGrouping, effectiveSections]);
+
+  // ---- Drag-reorder (dnd-kit) ----
+  // One sortable container per group: "flat" when no sections exist, otherwise
+  // "unsectioned" + one per section. Cross-group drops move sectionId too.
+  const containers = useMemo(() => {
+    const map = new Map<string, TaskItem[]>();
+    if (effectiveSections.length === 0) {
+      map.set(FLAT_CONTAINER, tasksForGrouping);
+    } else {
+      map.set(UNSECTIONED_CONTAINER, unsectionedTasks);
+      for (const s of effectiveSections) {
+        map.set(sectionContainerId(s.id), sectionTasksMap.get(s.id) ?? []);
+      }
+    }
+    return map;
+  }, [effectiveSections, tasksForGrouping, unsectionedTasks, sectionTasksMap]);
+
+  const taskContainer = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [cid, list] of containers) {
+      for (const t of list) map.set(t.id, cid);
+    }
+    return map;
+  }, [containers]);
+
+  const dndSensors = useSensors(
+    // Desktop: small distance gate so row clicks never start a drag.
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    // Touch: 250ms press-and-hold so scroll never fights the drag.
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [dropMark, setDropMark] = useState<ResolvedDrop | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const keyboardDrag = useRef(false);
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const id = String(event.active.id);
+    setActiveId(id);
+    const isKeyboard = event.activatorEvent instanceof KeyboardEvent;
+    keyboardDrag.current = isKeyboard;
+    const cid = taskContainer.get(id);
+    const list = cid ? containers.get(cid) ?? [] : [];
+    const pos = list.findIndex((t) => t.id === id) + 1;
+    const title = tasks.find((t) => t.id === id)?.title ?? "task";
+    setAnnouncement(
+      isKeyboard
+        ? `Picked up '${title}', position ${pos} of ${list.length}. Arrow keys to reorder, Space to drop, Escape to cancel.`
+        : `Picked up '${title}', position ${pos} of ${list.length}.`
+    );
+  };
+
+  const handleDragOver = (event: DragOverEvent) => {
+    const id = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId || overId === id) {
+      setDropMark(null);
+      return;
+    }
+    const res = resolveDrop(containers, taskContainer, id, overId);
+    setDropMark(res);
+    if (res && keyboardDrag.current) {
+      const { toIndex } = moveNeighbors(res.resultIds, id);
+      const title = tasks.find((t) => t.id === id)?.title ?? "task";
+      setAnnouncement(
+        `Moved '${title}' to position ${toIndex + 1} of ${res.resultIds.length}. Space to drop, Escape to cancel.`
+      );
+    }
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const id = String(event.active.id);
+    setActiveId(null);
+    setDropMark(null);
+    keyboardDrag.current = false;
+    if (!onReorderTask) return;
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId) {
+      setAnnouncement("Reorder cancelled.");
+      return;
+    }
+    if (overId === id) return; // dropped back on itself: silent no-op
+    const res = resolveDrop(containers, taskContainer, id, overId);
+    if (!res) {
+      setAnnouncement("Reorder cancelled.");
+      return;
+    }
+    const sourceContainer = taskContainer.get(id);
+    const sourceIds = sourceContainer
+      ? (containers.get(sourceContainer) ?? []).map((t) => t.id)
+      : [];
+    if (sourceContainer === res.containerId && isNoopMove(sourceIds, res.resultIds)) return;
+    const { afterId, beforeId, toIndex } = moveNeighbors(res.resultIds, id);
+    const sectionId =
+      sourceContainer === res.containerId ? undefined : containerSectionId(res.containerId);
+    onReorderTask(id, { sectionId, afterId, beforeId });
+    const title = tasks.find((t) => t.id === id)?.title ?? "task";
+    const sectionName =
+      res.containerId.startsWith("section:")
+        ? effectiveSections.find((s) => sectionContainerId(s.id) === res.containerId)?.name
+        : null;
+    setAnnouncement(
+      `Moved '${title}' to position ${toIndex + 1} of ${res.resultIds.length}${
+        sectionName ? ` in ${sectionName}` : ""
+      }.`
+    );
+  };
+
+  const handleDragCancel = () => {
+    setActiveId(null);
+    setDropMark(null);
+    keyboardDrag.current = false;
+    setAnnouncement("Reorder cancelled.");
+  };
 
   // Main task creation handler (rapid keyboard entry supported)
   const handleCreateTask = async (e?: React.FormEvent) => {
@@ -683,33 +914,72 @@ export function TaskPane({
     setMenuState({ taskId: task.id, x: anchor.x, y: anchor.y });
   };
 
-  // Shared row renderer so every container gets menu + keyboard plumbing.
-  const renderTaskRow = (task: TaskItem, ordered: TaskItem[]) => (
-    <TaskRow
-      key={task.id}
-      task={task}
-      depth={taskDepthMap.get(task.id) ?? 1}
-      isSelected={selectedTaskId === task.id}
-      isBulkSelected={selectedTaskIds?.has(task.id)}
-      hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-      showListName={showListName}
-      onSelect={onSelectTask}
-      onToggleComplete={onToggleComplete}
-      onDelete={onDeleteTask}
-      onContextMenuTask={handleContextMenuTask}
-      onIndentTask={onUpdateTask ? (id, dir) => handleIndentTask(id, dir, ordered) : undefined}
-      onToggleBulkSelect={
-        onToggleSelectTask
-          ? (id, shiftKey) =>
-              onToggleSelectTask(
-                id,
-                shiftKey,
-                filteredTasks.map((t) => t.id)
-              )
-          : undefined
-      }
-    />
-  );
+  // Shared row renderer. Sortable when the workspace provided onReorderTask
+  // (done-group rows stay plain — completed items don't reorder).
+  const renderTaskRow = (task: TaskItem, ordered: TaskItem[], containerId?: string) => {
+    const row = (
+      <TaskRow
+        key={task.id}
+        task={task}
+        depth={taskDepthMap.get(task.id) ?? 1}
+        isSelected={selectedTaskId === task.id}
+        isBulkSelected={selectedTaskIds?.has(task.id)}
+        hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+        showListName={showListName}
+        onSelect={onSelectTask}
+        onToggleComplete={onToggleComplete}
+        onDelete={onDeleteTask}
+        onContextMenuTask={handleContextMenuTask}
+        onIndentTask={onUpdateTask ? (id, dir) => handleIndentTask(id, dir, ordered) : undefined}
+        onToggleBulkSelect={
+          onToggleSelectTask
+            ? (id, shiftKey) =>
+                onToggleSelectTask(
+                  id,
+                  shiftKey,
+                  filteredTasks.map((t) => t.id)
+                )
+            : undefined
+        }
+      />
+    );
+    if (!onReorderTask || !containerId) return row;
+    const mark =
+      dropMark && dropMark.containerId === containerId && dropMark.overTaskId === task.id
+        ? dropMark.placeBefore
+          ? ("before" as const)
+          : ("after" as const)
+        : null;
+    return (
+      <SortableTaskRow
+        key={task.id}
+        task={task}
+        depth={taskDepthMap.get(task.id) ?? 1}
+        isSelected={selectedTaskId === task.id}
+        isBulkSelected={selectedTaskIds?.has(task.id)}
+        hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+        showListName={showListName}
+        onSelect={onSelectTask}
+        onToggleComplete={onToggleComplete}
+        onDelete={onDeleteTask}
+        onContextMenuTask={handleContextMenuTask}
+        onIndentTask={onUpdateTask ? (id, dir) => handleIndentTask(id, dir, ordered) : undefined}
+        onToggleBulkSelect={
+          onToggleSelectTask
+            ? (id, shiftKey) =>
+                onToggleSelectTask(
+                  id,
+                  shiftKey,
+                  filteredTasks.map((t) => t.id)
+                )
+            : undefined
+        }
+        insertion={mark}
+      />
+    );
+  };
+
+  const activeTask = activeId ? tasks.find((t) => t.id === activeId) ?? null : null;
 
   const menuTask = menuState ? tasks.find((t) => t.id === menuState.taskId) ?? null : null;
 
@@ -1177,6 +1447,14 @@ export function TaskPane({
         )}
 
         {/* Task Rows List with Optional Section Grouping */}
+        <DndContext
+          sensors={dndSensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
+        >
         {isLoading ? (
           <TaskRowSkeletonList count={5} />
         ) : filteredTasks.length === 0 ? (
@@ -1228,9 +1506,22 @@ export function TaskPane({
           /* Render Flat Task List when no sections exist */
           <div className="space-y-3">
             {tasksForGrouping.length > 0 && (
-              <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-                {tasksForGrouping.map((task) => renderTaskRow(task, tasksForGrouping))}
-              </div>
+              <EndDropZone
+                containerId={FLAT_CONTAINER}
+                className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden"
+              >
+                <SortableContext
+                  items={tasksForGrouping.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {tasksForGrouping.map((task) =>
+                    renderTaskRow(task, tasksForGrouping, FLAT_CONTAINER)
+                  )}
+                  {dropMark?.containerId === FLAT_CONTAINER && !dropMark.overTaskId && (
+                    <InsertionLine />
+                  )}
+                </SortableContext>
+              </EndDropZone>
             )}
             {renderDoneGroup()}
           </div>
@@ -1246,9 +1537,22 @@ export function TaskPane({
                     {unsectionedTasks.length}
                   </span>
                 </div>
-                <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-                  {unsectionedTasks.map((task) => renderTaskRow(task, unsectionedTasks))}
-                </div>
+                <EndDropZone
+                  containerId={UNSECTIONED_CONTAINER}
+                  className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden"
+                >
+                  <SortableContext
+                    items={unsectionedTasks.map((t) => t.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    {unsectionedTasks.map((task) =>
+                      renderTaskRow(task, unsectionedTasks, UNSECTIONED_CONTAINER)
+                    )}
+                    {dropMark?.containerId === UNSECTIONED_CONTAINER && !dropMark.overTaskId && (
+                      <InsertionLine />
+                    )}
+                  </SortableContext>
+                </EndDropZone>
               </div>
             )}
 
@@ -1260,9 +1564,10 @@ export function TaskPane({
               const isAddingTaskHere = activeSectionForNewTask === section.id;
 
               return (
-                <div
+                <EndDropZone
                   key={section.id}
-                  className="rounded-xl border border-[#E4E8F2] bg-white/70 p-3 shadow-xs dark:border-[#132E74] dark:bg-[#082363]/60 transition-all"
+                  containerId={sectionContainerId(section.id)}
+                  className="rounded-xl border border-[#E4E8F2] bg-white/70 p-3 shadow-xs dark:border-[#132E74] dark:bg-[#082363]/60 transition-all motion-reduce:transition-none"
                 >
                   {/* Collapsible Section Header */}
                   <div className="flex items-center justify-between gap-2 pb-2">
@@ -1474,20 +1779,52 @@ export function TaskPane({
                       {sectionTasks.length === 0 ? (
                         <div className="py-3 text-center text-xs text-[#5B6478]/70 dark:text-[#9BB0D3]/60 italic">
                           No tasks in this section yet. Click &quot;Add task&quot; to create one.
+                          {dropMark?.containerId === sectionContainerId(section.id) && (
+                            <InsertionLine />
+                          )}
                         </div>
                       ) : (
                         <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-                          {sectionTasks.map((task) => renderTaskRow(task, sectionTasks))}
+                          <SortableContext
+                            items={sectionTasks.map((t) => t.id)}
+                            strategy={verticalListSortingStrategy}
+                          >
+                            {sectionTasks.map((task) =>
+                              renderTaskRow(task, sectionTasks, sectionContainerId(section.id))
+                            )}
+                            {dropMark?.containerId === sectionContainerId(section.id) &&
+                              !dropMark.overTaskId && <InsertionLine />}
+                          </SortableContext>
                         </div>
                       )}
                     </div>
                   )}
-                </div>
+                </EndDropZone>
               );
             })}
             {renderDoneGroup()}
           </div>
         )}
+          <DragOverlay dropAnimation={null}>
+            {activeTask && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none rounded-xl bg-white shadow-[0_8px_24px_rgba(9,49,141,0.28)] ring-1 ring-[#09318D]/30 motion-safe:transition-shadow motion-safe:duration-150 motion-reduce:transition-none dark:bg-[#082363] dark:ring-[#FD91CC]/40"
+              >
+                <TaskRow
+                  task={activeTask}
+                  depth={taskDepthMap.get(activeTask.id) ?? 1}
+                  onSelect={() => {}}
+                  onToggleComplete={() => {}}
+                  onDelete={() => {}}
+                />
+              </div>
+            )}
+          </DragOverlay>
+          <div role="status" aria-live="polite" className="sr-only">
+            {announcement}
+          </div>
+        </DndContext>
 
         {/* Bottom [+ Add Section] Button (When viewing a specific backend list) */}
         {activeListId && !isAddingSection && (
