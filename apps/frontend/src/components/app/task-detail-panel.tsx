@@ -772,9 +772,15 @@ export function TaskDetailPanel({
           <input
             type="text"
             value={task.title}
+            maxLength={500}
             onChange={(e) => handleTitleChange(e.target.value)}
             className="mt-1 w-full rounded-lg border border-[#E4E8F2] bg-white px-3 py-2 text-sm font-semibold text-[#0B1220] placeholder:text-[#5B6478]/50 focus:border-[#09318D] focus:outline-none focus:ring-2 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
           />
+          {task.title.length > 450 && (
+            <div className="mt-1 text-right text-[11px] font-mono text-[#5B6478] dark:text-[#9BB0D3]">
+              {task.title.length} / 500
+            </div>
+          )}
         </div>
 
         {/* Horizontal Attribute Pills Bar */}
