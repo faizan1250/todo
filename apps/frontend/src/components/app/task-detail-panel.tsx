@@ -27,6 +27,7 @@ import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
 import {
   getPlaces,
+  createPlace,
   getSections,
   moveTask,
   createTaskReminder,
@@ -58,6 +59,8 @@ import { MarkdownNotesEditor } from "./markdown-notes-editor";
 import { TaskActionsMenu } from "./task-actions-menu";
 import { useToast } from "./toast-system";
 import { RepeatEditor } from "@/components/repeat/RepeatEditor";
+import { PlacePicker, SavedPlacesModal, type PlacePick } from "@/components/places";
+import { copy } from "@/lib/copy";
 import { SaveTemplateModal } from "./save-template-modal";
 
 interface TaskDetailPanelProps {
@@ -201,6 +204,8 @@ export function TaskDetailPanel({
     "due" | "priority" | "folder" | "move" | "recurrence" | "estimate" | "location" | null
   >(null);
   const [places, setPlaces] = useState<BackendPlace[]>([]);
+  const [isManagePlacesOpen, setIsManagePlacesOpen] = useState(false);
+  const [isSavingPlace, setIsSavingPlace] = useState(false);
   // Move-to menu state (list search + per-list section step)
   const [moveSearch, setMoveSearch] = useState("");
   const [moveListId, setMoveListId] = useState<string | null>(null);
@@ -212,7 +217,7 @@ export function TaskDetailPanel({
   const didMountRef = useRef(true);
   const [customMinutes, setCustomMinutes] = useState("");
   const [isAddingReminder, setIsAddingReminder] = useState(false);
-  const { toast } = useToast();
+  const { toast, success } = useToast();
   const pillsBarRef = useRef<HTMLDivElement>(null);
 
   // Close open picker on click outside
@@ -414,17 +419,40 @@ export function TaskDetailPanel({
     });
   };
 
-  const handleManualLocationChange = (name: string, lat?: number | null, lng?: number | null) => {
+  const handlePickCustomSpot = (pick: PlacePick) => {
     onUpdateTask({
       ...task,
       placeId: null,
-      locationName: name || null,
-      lat: lat ?? task.lat ?? null,
-      lng: lng ?? task.lng ?? null,
-      radiusM: task.radiusM ?? 200,
+      locationName: pick.name || null,
+      lat: pick.lat,
+      lng: pick.lng,
+      radiusM: pick.radiusM,
       locationTrigger: task.locationTrigger || "arrive",
       updatedAt: "Just now",
     });
+  };
+
+  const handleSavePlace = async (pick: PlacePick) => {
+    setIsSavingPlace(true);
+    try {
+      const created = await createPlace({
+        name: pick.name,
+        lat: pick.lat,
+        lng: pick.lng,
+        radiusM: pick.radiusM,
+      });
+      setPlaces((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      handleSelectPlace(created);
+      success(copy.scheduling.places.saved);
+    } catch (err) {
+      toast({
+        title: "Could not save place",
+        message: err instanceof Error ? err.message : "Please try again",
+        type: "error",
+      });
+    } finally {
+      setIsSavingPlace(false);
+    }
   };
 
   const handleLocationTriggerChange = (trigger: "arrive" | "leave" | null) => {
@@ -981,12 +1009,21 @@ export function TaskDetailPanel({
                 <ChevronDown className="h-3 w-3 opacity-60" />
               </button>
               {openPicker === "location" && (
-                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[220px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[260px] max-w-[300px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
                   {places.length > 0 && (
                     <div>
-                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                        Saved Places
-                      </label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                          Saved Places
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setIsManagePlacesOpen(true)}
+                          className="text-[11px] font-semibold text-emerald-700 hover:underline dark:text-emerald-400 cursor-pointer"
+                        >
+                          {copy.scheduling.places.managePlaces}
+                        </button>
+                      </div>
                       <div className="mt-1 space-y-1 max-h-28 overflow-y-auto">
                         {places.map((place) => (
                           <button
@@ -1011,16 +1048,18 @@ export function TaskDetailPanel({
                     </div>
                   )}
 
-                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] space-y-1.5">
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Location Name
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Office, Grocery Store"
-                      value={task.locationName || ""}
-                      onChange={(e) => handleManualLocationChange(e.target.value)}
-                      className="w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                  <div className={cn(places.length > 0 && "border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]")}>
+                    <PlacePicker
+                      initialName={task.locationName}
+                      initialLat={task.lat}
+                      initialLng={task.lng}
+                      initialRadiusM={task.radiusM}
+                      onPick={(pick) => {
+                        handlePickCustomSpot(pick);
+                        setOpenPicker(null);
+                      }}
+                      onSave={handleSavePlace}
+                      isSaving={isSavingPlace}
                     />
 
                     <div className="grid grid-cols-2 gap-1.5 pt-1">
@@ -1450,6 +1489,15 @@ export function TaskDetailPanel({
         defaultName={task.title}
         onClose={() => setIsSaveTemplateOpen(false)}
         onSave={handleSaveTemplate}
+      />
+
+      {/* Saved Places Management */}
+      <SavedPlacesModal
+        isOpen={isManagePlacesOpen}
+        onClose={() => setIsManagePlacesOpen(false)}
+        places={places}
+        onChanged={setPlaces}
+        onSelect={handleSelectPlace}
       />
     </aside>
   );
