@@ -314,6 +314,13 @@ describe("Frontend Phase 3 Smart Scheduling & Quick Add Integration", () => {
   });
 
   describe("TaskDetailPanel SSR rendering with scheduling pills & reminders", () => {
+    // Fixture dates stay anchored to the real today: the dates pill now
+    // renders a live formatWhen label instead of echoing dueDate.
+    const atToday = (h: number, m = 0): string => {
+      const d = new Date();
+      d.setHours(h, m, 0, 0);
+      return d.toISOString();
+    };
     const scheduledTask: TaskItem = {
       id: "task-panel-1",
       title: "Quarterly Tax Review",
@@ -323,9 +330,9 @@ describe("Frontend Phase 3 Smart Scheduling & Quick Add Integration", () => {
       folder: "personal",
       tags: ["finance"],
       dueDate: "Today",
-      dueAt: "2026-11-04T18:00:00.000Z",
-      startAt: "2026-11-04T09:00:00.000Z",
-      deadlineAt: "2026-11-04T23:59:00.000Z",
+      dueAt: atToday(18),
+      startAt: atToday(9),
+      deadlineAt: atToday(23, 59),
       allDay: false,
       estimateMin: 90,
       estimateTotal: 90,
@@ -338,7 +345,7 @@ describe("Frontend Phase 3 Smart Scheduling & Quick Add Integration", () => {
           kind: "relative",
           relativeTo: "due",
           offsetMin: -60,
-          remindAt: "2026-11-04T17:00:00.000Z",
+          remindAt: atToday(17),
         },
       ],
       subtasks: [],
