@@ -18,6 +18,42 @@ export const copy = {
     weakPassword: "Please choose a stronger password.",
     signingIn: "Signing you in...",
     creatingAccount: "Creating your account...",
+    // invite
+    inviteCodeLabel: "Invite code",
+    inviteCodeHint: "Ask the person who invited you.",
+    inviteValid: "Looks good.",
+    inviteInvalid: "That code is not valid.",
+    inviteChecking: "Checking...",
+    // check email
+    checkEmailTitle: "Check your email",
+    checkEmailSubtitle: "We sent a link to",
+    openMail: "Open your email",
+    resend: "Send again",
+    resendCooldown: "Send again in",
+    wrongEmail: "Wrong email? Change it",
+    didntGetIt: "Did not get it? Check spam, or send again.",
+    // forgot/reset
+    forgotTitle: "Forgot your password?",
+    forgotSubtitle: "Enter your email and we will send a link.",
+    sendLink: "Send me a link",
+    forgotConfirm: "If that email exists, we sent a link.",
+    resetTitle: "Set a new password",
+    resetExpired: "This link has expired. Send me a new one.",
+    resetSuccess: "Password updated. Sign in again.",
+    // verify email
+    verifyTitle: "Email verified",
+    verifySubtitle: "Redirecting you now.",
+    // two factor
+    twoFactorTitle: "Extra security check",
+    twoFactorSubtitle: "Enter the 6-digit code from your app.",
+    useEmergency: "Use an emergency code instead",
+    rememberDevice: "Remember this device for 30 days",
+    verifyButton: "Verify",
+    // sign in extras
+    magicLink: "Email me a sign-in link",
+    google: "Google",
+    apple: "Apple",
+    capsLock: "Caps Lock is on",
   },
   onboarding: {
     welcomeTitle: "Let's set up your space",
