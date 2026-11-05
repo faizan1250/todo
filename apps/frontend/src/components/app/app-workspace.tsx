@@ -2002,13 +2002,16 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const handleToggleSubtask = useCallback(
     (subtaskId: string, completed: boolean) => {
       if (isAuthenticated && !subtaskId.startsWith("st-") && !subtaskId.startsWith("temp-")) {
-        const apiCall = completed ? completeTask(subtaskId) : reopenTask(subtaskId);
-        apiCall.catch((err) => {
+        // Offline-first via mutate (complete/reopen), REST fallback.
+        const persist = completed
+          ? persistTaskComplete(userId, subtaskId)
+          : persistTaskReopen(userId, subtaskId);
+        persist.catch((err) => {
           console.error("Failed to toggle subtask on backend:", err);
         });
       }
     },
-    [isAuthenticated]
+    [isAuthenticated, userId]
   );
 
   const handleAddSubtask = useCallback(
@@ -2017,28 +2020,56 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         activeListId || userLists.find((l) => l.isInbox)?.id || userLists[0]?.id;
 
       if (isAuthenticated && targetBackendListId && !parentId.startsWith("temp-") && !parentId.startsWith("task-")) {
-        createTask({
-          title,
-          parentId,
-          listId: targetBackendListId,
-          priority: 1,
-        }).catch((err) => {
-          console.error("Failed to create subtask on backend:", err);
-        });
+        const doRestCreate = () => {
+          createTask({
+            title,
+            parentId,
+            listId: targetBackendListId,
+            priority: 1,
+          }).catch((err) => {
+            console.error("Failed to create subtask on backend:", err);
+          });
+        };
+        if (userId) {
+          // Offline-first subtask create (tasks entity with parentId).
+          // Falls back to REST when the parent row is unknown locally.
+          mutate(userId, {
+            entity: "tasks",
+            op: "create",
+            entityId: uuidv7(),
+            patch: {
+              title,
+              parentId,
+              listId: targetBackendListId,
+              priority: 1,
+            },
+          }).catch(() => doRestCreate());
+        } else {
+          doRestCreate();
+        }
       }
     },
-    [isAuthenticated, activeListId, userLists]
+    [isAuthenticated, activeListId, userLists, userId]
   );
 
   const handleDeleteSubtask = useCallback(
     (subtaskId: string) => {
       if (isAuthenticated && !subtaskId.startsWith("st-") && !subtaskId.startsWith("temp-")) {
-        deleteTask(subtaskId).catch((err) => {
-          console.error("Failed to delete subtask on backend:", err);
-        });
+        const doRestDelete = () => {
+          deleteTask(subtaskId).catch((err) => {
+            console.error("Failed to delete subtask on backend:", err);
+          });
+        };
+        if (userId) {
+          mutate(userId, { entity: "tasks", op: "delete", entityId: subtaskId }).catch(() =>
+            doRestDelete()
+          );
+        } else {
+          doRestDelete();
+        }
       }
     },
-    [isAuthenticated]
+    [isAuthenticated, userId]
   );
 
   const handleAddChecklistItem = useCallback(
@@ -2049,48 +2080,93 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         !selectedTaskId.startsWith("temp-") &&
         !selectedTaskId.startsWith("task-")
       ) {
-        createChecklistItem(selectedTaskId, text)
-          .then((createdItem) => {
-            setTasks((prev) =>
-              prev.map((t) => {
-                if (t.id !== selectedTaskId) return t;
-                const updatedList = t.checklist.map((ci) =>
-                  ci.text === text && ci.id.startsWith("ci-")
-                    ? { ...ci, id: createdItem.id }
-                    : ci
-                );
-                return { ...t, checklist: updatedList };
-              })
-            );
+        const taskId = selectedTaskId;
+        const reconcileId = (id: string) => {
+          setTasks((prev) =>
+            prev.map((t) => {
+              if (t.id !== taskId) return t;
+              const updatedList = t.checklist.map((ci) =>
+                ci.text === text && ci.id.startsWith("ci-")
+                  ? { ...ci, id }
+                  : ci
+              );
+              return { ...t, checklist: updatedList };
+            })
+          );
+        };
+        const doRestCreate = () => {
+          createChecklistItem(taskId, text)
+            .then((createdItem) => {
+              reconcileId(createdItem.id);
+            })
+            .catch((err) => {
+              console.error("Failed to create checklist item on backend:", err);
+            });
+        };
+        if (userId) {
+          // Offline-first checklist create; reconcile the optimistic temp
+          // id with the client-generated id (server echo arrives via sync).
+          const newId = uuidv7();
+          mutate(userId, {
+            entity: "checklistItems",
+            op: "create",
+            entityId: newId,
+            patch: { taskId, text },
           })
-          .catch((err) => {
-            console.error("Failed to create checklist item on backend:", err);
-          });
+            .then(() => {
+              reconcileId(newId);
+            })
+            .catch(() => doRestCreate());
+        } else {
+          doRestCreate();
+        }
       }
     },
-    [isAuthenticated, selectedTaskId]
+    [isAuthenticated, selectedTaskId, userId]
   );
 
   const handleToggleChecklistItem = useCallback(
     (itemId: string, done: boolean) => {
       if (isAuthenticated && !itemId.startsWith("ci-")) {
-        updateChecklistItem(itemId, { done }).catch((err) => {
-          console.error("Failed to update checklist item on backend:", err);
-        });
+        const doRestUpdate = () => {
+          updateChecklistItem(itemId, { done }).catch((err) => {
+            console.error("Failed to update checklist item on backend:", err);
+          });
+        };
+        if (userId) {
+          // done-toggle is an update op (no complete op for checklistItems).
+          mutate(userId, {
+            entity: "checklistItems",
+            op: "update",
+            entityId: itemId,
+            patch: { done },
+          }).catch(() => doRestUpdate());
+        } else {
+          doRestUpdate();
+        }
       }
     },
-    [isAuthenticated]
+    [isAuthenticated, userId]
   );
 
   const handleDeleteChecklistItem = useCallback(
     (itemId: string) => {
       if (isAuthenticated && !itemId.startsWith("ci-")) {
-        deleteChecklistItem(itemId).catch((err) => {
-          console.error("Failed to delete checklist item on backend:", err);
-        });
+        const doRestDelete = () => {
+          deleteChecklistItem(itemId).catch((err) => {
+            console.error("Failed to delete checklist item on backend:", err);
+          });
+        };
+        if (userId) {
+          mutate(userId, { entity: "checklistItems", op: "delete", entityId: itemId }).catch(() =>
+            doRestDelete()
+          );
+        } else {
+          doRestDelete();
+        }
       }
     },
-    [isAuthenticated]
+    [isAuthenticated, userId]
   );
 
   const handleUpdateTags = useCallback(
