@@ -112,6 +112,22 @@ export const copy = {
     deleteAccount: "Delete account",
     deleteConfirm: "This cannot be undone. Type your email to confirm.",
   },
+  // Task words used across lists, Groups, and Trash.
+  tasks: {
+    group: "Group",
+    moveToTrash: "Move to Trash",
+    restoreFromTrash: "Restore",
+    archiveNote: "Hidden for now",
+    templateSentence: "Save it as a reusable task.",
+    bulkSelect: "Select several",
+    subtask: "Sub-task",
+    duplicateVerb: "Make a copy",
+    restoredToInbox: "Its list was deleted, so we put it in your Inbox.",
+    completeWithSubtasks: (n: number): string =>
+      n === 1 ? "Also complete the sub-task?" : `Also complete the ${n} sub-tasks?`,
+    deleteListConfirm: (name: string): string =>
+      `"${name}" is now in Trash. You can bring it back.`,
+  },
   // Save status wording. Short lines a young reader can follow.
   sync: {
     allSaved: "All changes saved",
