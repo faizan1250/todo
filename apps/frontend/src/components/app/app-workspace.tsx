@@ -6,6 +6,7 @@ import { Sidebar } from "./sidebar";
 import { TaskPane } from "./task-pane";
 import { CalendarView } from "./calendar-view";
 import { PlannerView } from "./planner-view";
+import { BoardView } from "./board-view";
 import { TaskDetailPanel } from "./task-detail-panel";
 import { StreakCelebration } from "./streak-celebration";
 import { CommandPalette } from "./command-palette";
@@ -26,6 +27,8 @@ import {
   getViewsCounts,
   getViewItems,
   getCalendar,
+  getBoard,
+  moveBoardTask,
   createTask,
   quickAddTask,
   updateTask,
@@ -300,6 +303,11 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [isLoadingCalendar, setIsLoadingCalendar] = useState(false);
   const [includeDone, setIncludeDone] = useState(false);
 
+  // Board state
+  const [boardData, setBoardData] = useState<import("@/lib/api").BackendBoardResponse | null>(null);
+  const [isLoadingBoard, setIsLoadingBoard] = useState(false);
+  const [boardGroupBy, setBoardGroupBy] = useState<string>("section");
+
   // Modals state for Lists & Folders
   const [isListDialogOpen, setIsListDialogOpen] = useState(false);
   const [listDialogMode, setListDialogMode] = useState<"create" | "edit">("create");
@@ -367,6 +375,29 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       cancelled = true;
     };
   }, [viewMode, isAuthenticated, calendarMonth, includeDone]);
+
+  // Board fetch
+  useEffect(() => {
+    if (viewMode !== "board") return;
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    const run = async () => {
+      setIsLoadingBoard(true);
+      try {
+        const res = await getBoard({ list_id: activeListId || undefined, group_by: boardGroupBy });
+        if (!cancelled) setBoardData(res);
+      } catch (err) {
+        console.error("Failed to load board:", err);
+        if (!cancelled) setBoardData(null);
+      } finally {
+        if (!cancelled) setIsLoadingBoard(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, isAuthenticated, activeListId, boardGroupBy]);
 
   // Container CRUD handlers
   const handleCreateList = useCallback((folderId?: string | null) => {
@@ -1787,6 +1818,25 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     }
   }, [activeList, viewCursor, viewHasMore]);
 
+  const handleMoveBoardTask = useCallback(
+    async (taskId: string, column: string, afterId?: string, beforeId?: string) => {
+      if (!isAuthenticated) return;
+      try {
+        await moveBoardTask({ taskId, column, afterId, beforeId });
+        const res = await getBoard({ list_id: activeListId || undefined, group_by: boardGroupBy });
+        setBoardData(res);
+      } catch (err) {
+        console.error("Failed to move board task:", err);
+        toast({
+          title: "Move failed",
+          message: err instanceof Error ? err.message : "Could not move task",
+          type: "error",
+        });
+      }
+    },
+    [isAuthenticated, activeListId, boardGroupBy, toast]
+  );
+
   // Cycle folders for mobile nav
   const handleCycleFolder = useCallback(() => {
     const folders: (FolderId | null)[] = [null, "engineering", "design", "personal"];
@@ -1855,8 +1905,24 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           >
             Planner
           </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("board")}
+            className={`rounded-md px-3 py-1 text-sm ${viewMode === "board" ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]" : "text-[#5B6478] hover:bg-[#F4F6FB] dark:text-[#9BB0D3] dark:hover:bg-[#0A2A6B]"}`}
+          >
+            Board
+          </button>
         </div>
-        {viewMode === "planner" ? (
+        {viewMode === "board" ? (
+          <BoardView
+            columns={boardData?.columns ?? []}
+            isLoading={isLoadingBoard}
+            groupBy={boardGroupBy}
+            onGroupByChange={(g) => setBoardGroupBy(g)}
+            onMoveTask={handleMoveBoardTask}
+            className="flex-1"
+          />
+        ) : viewMode === "planner" ? (
           <PlannerView className="flex-1" />
         ) : viewMode === "calendar" ? (
           <CalendarView
