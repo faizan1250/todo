@@ -23,8 +23,12 @@ import { searchRoutes } from "./routes/search";
 import { calendarRoutes } from "./routes/calendar";
 import { boardRoutes } from "./routes/board";
 import { plannerRoutes } from "./routes/planner";
+import { syncRoutes } from "./routes/sync";
+import { adminRoutes } from "./routes/admin";
+import { wsRoutes } from "./routes/ws";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
+import { setServer } from "./utils/sync-publisher";
 
 export const app = new Elysia()
   .use(
@@ -83,6 +87,9 @@ export const app = new Elysia()
   .use(calendarRoutes)
   .use(boardRoutes)
   .use(plannerRoutes)
+  .use(syncRoutes)
+  .use(adminRoutes)
+  .use(wsRoutes)
   .get(
     "/health",
     () => ({
@@ -113,6 +120,7 @@ const PORT = Number(process.env.PORT) || 3001;
 
 if (import.meta.main) {
   app.listen(PORT);
+  setServer(app.server);
   console.log(`Backend server running on http://localhost:${app.server?.port ?? PORT}`);
 }
 
