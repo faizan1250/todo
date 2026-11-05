@@ -5,6 +5,35 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { PenLine, Eye, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+/**
+ * Markdown link href allowlist.
+ *
+ * The preview renderer below builds React elements from parsed markdown, so
+ * all text lands in escaped text nodes (there is no HTML string to run
+ * through DOMPurify — it stays available for any future HTML-string sink).
+ * The link `href` is the single raw-markdown value that reaches the DOM, and
+ * a `javascript:` URL there would execute on click. Only http(s) and mailto
+ * targets render as anchors; anything else falls back to plain label text.
+ * Returns the safe href, or null when the target must not become a link.
+ */
+const SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+
+function sanitizeMarkdownHref(raw: string): string | null {
+  const href = raw.trim();
+  if (!href) return null;
+  try {
+    const url = new URL(href, "https://notes.local");
+    // No explicit scheme: URL resolved against the base. Only same-doc
+    // fragments and root-relative paths are meaningful inside notes.
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
+      return href.startsWith("/") || href.startsWith("#") ? href : null;
+    }
+    return SAFE_LINK_PROTOCOLS.has(url.protocol) ? href : null;
+  } catch {
+    return null;
+  }
+}
+
 interface MarkdownNotesEditorProps {
   initialNotes?: string | null;
   onSave: (notes: string) => void;
@@ -64,17 +93,23 @@ function renderInlineMarkdown(text: string): React.ReactNode {
     // Check for links [label](url)
     const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/);
     if (linkMatch) {
-      tokens.push(
-        <a
-          key={keyIndex++}
-          href={linkMatch[2]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[#09318D] underline hover:text-[#0D41B4] dark:text-[#FFA8D7] dark:hover:text-white"
-        >
-          {linkMatch[1]}
-        </a>
-      );
+      const safeHref = sanitizeMarkdownHref(linkMatch[2]);
+      if (safeHref) {
+        tokens.push(
+          <a
+            key={keyIndex++}
+            href={safeHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#09318D] underline hover:text-[#0D41B4] dark:text-[#FFA8D7] dark:hover:text-white"
+          >
+            {linkMatch[1]}
+          </a>
+        );
+      } else {
+        // Unsafe scheme (e.g. javascript:) — render the label as inert text.
+        tokens.push(linkMatch[1]);
+      }
       remaining = remaining.slice(linkMatch[0].length);
       continue;
     }
