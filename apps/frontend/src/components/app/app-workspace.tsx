@@ -36,6 +36,7 @@ import {
   getCalendar,
   getBoard,
   moveBoardTask,
+  moveTask,
   createTask,
   quickAddTask,
   parseNaturalLanguageText,
@@ -1277,6 +1278,45 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
     },
     [activeFilterId, success, toast]
+  );
+
+  // Single-task move from the detail panel (mirrors handleBulkMove for one
+  // task, plus an optional section). Offline-first mutate with REST fallback.
+  const handleMovePanelTask = useCallback(
+    async (taskId: string, listId: string, sectionId: string | null) => {
+      const targetList = userLists.find((l) => l.id === listId);
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, listId, sectionId, updatedAt: "Just now" } : t
+        )
+      );
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        const patch = { listId, sectionId };
+        const doRestMove = () => moveTask(taskId, patch);
+        try {
+          if (userId) {
+            await mutate(userId, { entity: "tasks", op: "move", entityId: taskId, patch });
+          } else {
+            await doRestMove();
+          }
+          success(`Moved to ${targetList?.name || "list"}`);
+        } catch (err) {
+          console.error("Failed to move task:", err);
+          try {
+            await doRestMove();
+            success(`Moved to ${targetList?.name || "list"}`);
+          } catch (restErr) {
+            console.error("Failed to move task on backend:", restErr);
+            toast({
+              title: "Move failed",
+              message: restErr instanceof Error ? restErr.message : "Could not move task",
+              type: "error",
+            });
+          }
+        }
+      }
+    },
+    [isAuthenticated, userLists, userId, success, toast]
   );
 
   const handleMoveFilter = useCallback(
@@ -2908,9 +2948,11 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           task={selectedTask}
           isOpen={!!selectedTask}
           folders={userFolders}
+          lists={userLists}
           onClose={() => setSelectedTaskId(null)}
           onUpdateTask={handleUpdateTask}
           onDeleteTask={handleDeleteTask}
+          onMoveTask={handleMovePanelTask}
           onDuplicateTask={handleDuplicateTask}
           onArchiveTask={handleArchiveTask}
           onSkipTask={handleSkipTask}
