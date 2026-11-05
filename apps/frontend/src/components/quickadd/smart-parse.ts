@@ -322,7 +322,7 @@ export function applySuggestion(
   insert: string
 ): TextEdit {
   const before = text.slice(0, triggerStart);
-  let after = text.slice(caret);
+  const after = text.slice(caret);
   let finalInsert = insert;
   if (after && !after.startsWith(" ") && !finalInsert.endsWith(" ")) {
     finalInsert += " ";
