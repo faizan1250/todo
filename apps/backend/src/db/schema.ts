@@ -54,9 +54,13 @@ export const users = sqliteTable("user", {
   locale: text("locale").notNull().default("en"),
   weekStartsOn: integer("week_starts_on").notNull().default(1), // 0=Sun, 1=Mon
   preferences: text("preferences", { mode: "json" }).$type<Preferences>().default({}),
+  seq: integer("seq").notNull().default(0),
+  fieldTs: text("field_ts", { mode: "json" }),
   createdAt: ts("created_at").notNull().$defaultFn(() => new Date()),
   updatedAt: ts("updated_at").notNull().$defaultFn(() => new Date()),
-});
+},
+(t) => [index("user_seq_idx").on(t.id, t.seq)]
+);
 
 export const sessions = sqliteTable(
   "session",
@@ -122,6 +126,8 @@ export const devices = sqliteTable(
       keys: { p256dh: string; auth: string };
     }>(),
     lastSeenAt: ts("last_seen_at"),
+    lastSyncSeq: integer("last_sync_seq"),
+    lastSyncAt: ts("last_sync_at"),
     createdAt: ts("created_at").notNull().$defaultFn(() => new Date()),
   },
   (t) => [index("device_user_idx").on(t.userId)]
@@ -144,19 +150,23 @@ export const folders = sqliteTable(
   "folders",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     color: text("color"),
     icon: text("icon"),
     position: text("position").notNull(), // fractional index
   },
-  (t) => [index("folder_user_idx").on(t.userId, t.position)]
+  (t) => [index("folder_user_idx").on(t.userId, t.position), index("folder_user_seq_idx").on(t.userId, t.seq)]
 );
 
 export const lists = sqliteTable(
   "lists",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), // owner
     folderId: text("folder_id").references(() => folders.id, { onDelete: "set null" }),
     name: text("name").notNull(),
@@ -167,19 +177,21 @@ export const lists = sqliteTable(
     archivedAt: ts("archived_at"),
     position: text("position").notNull(),
   },
-  (t) => [index("list_user_idx").on(t.userId, t.position), index("list_folder_idx").on(t.folderId)]
+  (t) => [index("list_user_idx").on(t.userId, t.position), index("list_folder_idx").on(t.folderId), index("list_user_seq_idx").on(t.userId, t.seq)]
 );
 
 export const sections = sqliteTable(
   "sections",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     listId: text("list_id").notNull().references(() => lists.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     position: text("position").notNull(),
   },
-  (t) => [index("section_list_idx").on(t.listId, t.position)]
+  (t) => [index("section_list_idx").on(t.listId, t.position), index("section_user_seq_idx").on(t.userId, t.seq)]
 );
 
 /* =====================================================
@@ -189,6 +201,8 @@ export const recurrences = sqliteTable(
   "recurrences",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     rrule: text("rrule").notNull(), // e.g. "FREQ=WEEKLY;BYDAY=MO"
     mode: text("mode", { enum: ["fixed", "after_completion"] }).notNull().default("fixed"),
@@ -199,26 +213,30 @@ export const recurrences = sqliteTable(
     completedCount: integer("completed_count").notNull().default(0),
     active: bool("active").notNull().default(true),
   },
-  (t) => [index("recurrence_user_idx").on(t.userId)]
+  (t) => [index("recurrence_user_idx").on(t.userId), index("recurrence_user_seq_idx").on(t.userId, t.seq)]
 );
 
 export const places = sqliteTable(
   "places",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     lat: real("lat").notNull(),
     lng: real("lng").notNull(),
     radiusM: integer("radius_m").notNull().default(200),
   },
-  (t) => [index("place_user_idx").on(t.userId)]
+  (t) => [index("place_user_idx").on(t.userId), index("place_user_seq_idx").on(t.userId, t.seq)]
 );
 
 export const tasks = sqliteTable(
   "tasks",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), // creator
     listId: text("list_id").notNull().references(() => lists.id, { onDelete: "cascade" }),
     sectionId: text("section_id").references(() => sections.id, { onDelete: "set null" }),
@@ -268,6 +286,7 @@ export const tasks = sqliteTable(
     index("task_done_user_completed_idx")
       .on(t.userId, t.completedAt)
       .where(sql`deleted_at IS NULL AND archived_at IS NULL AND status = 'done'`),
+    index("task_user_seq_idx").on(t.userId, t.seq),
   ]
 );
 
@@ -275,19 +294,23 @@ export const checklistItems = sqliteTable(
   "checklist_items",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
     text: text("text").notNull(),
     done: bool("done").notNull().default(false),
     position: text("position").notNull(),
   },
-  (t) => [index("checklist_task_idx").on(t.taskId, t.position)]
+  (t) => [index("checklist_task_idx").on(t.taskId, t.position), index("checklist_user_seq_idx").on(t.userId, t.seq)]
 );
 
 export const tags = sqliteTable(
   "tags",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     color: text("color"),
@@ -296,6 +319,7 @@ export const tags = sqliteTable(
     uniqueIndex("tags_user_name_unique")
       .on(t.userId, sql`${t.name} COLLATE NOCASE`)
       .where(sql`deleted_at IS NULL`),
+    index("tag_user_seq_idx").on(t.userId, t.seq),
   ]
 );
 
@@ -312,12 +336,14 @@ export const templates = sqliteTable(
   "templates",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     // Task tree snapshot: title, notes, priority, subtasks, checklist, tags
     payload: text("payload", { mode: "json" }).$type<TemplatePayload>().notNull(),
   },
-  (t) => [index("template_user_idx").on(t.userId)]
+  (t) => [index("template_user_idx").on(t.userId), index("template_user_seq_idx").on(t.userId, t.seq)]
 );
 
 export type TemplatePayload = {
@@ -334,6 +360,8 @@ export const reminders = sqliteTable(
   "reminders",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
     kind: text("kind", { enum: ["absolute", "relative"] }).notNull(),
@@ -345,6 +373,7 @@ export const reminders = sqliteTable(
   (t) => [
     index("reminder_due_idx").on(t.firedAt, t.remindAt), // scheduler scan
     index("reminder_task_idx").on(t.taskId),
+    index("reminder_user_seq_idx").on(t.userId, t.seq),
   ]
 );
 
@@ -370,6 +399,8 @@ export const savedFilters = sqliteTable(
   "saved_filters",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     icon: text("icon"),
@@ -380,13 +411,15 @@ export const savedFilters = sqliteTable(
     position: text("position").notNull(),
     pinned: bool("pinned").notNull().default(false),
   },
-  (t) => [index("saved_filters_user_pos_idx").on(t.userId, t.position)]
+  (t) => [index("saved_filters_user_pos_idx").on(t.userId, t.position), index("saved_filters_user_seq_idx").on(t.userId, t.seq)]
 );
 
 export const timeBlocks = sqliteTable(
   "time_blocks",
   {
     ...base(),
+    seq: integer("seq").notNull().default(0),
+    fieldTs: text("field_ts", { mode: "json" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
     title: text("title"),
@@ -396,6 +429,40 @@ export const timeBlocks = sqliteTable(
   },
   (t) => [
     index("time_blocks_user_start_idx").on(t.userId, t.startAt),
+    index("time_blocks_user_seq_idx").on(t.userId, t.seq),
     check("time_blocks_time_check", sql`end_at > start_at`),
   ]
 );
+
+/* =====================================================
+   PHASE 5: SYNC
+   ===================================================== */
+export const syncState = sqliteTable("sync_state", {
+  seq: integer("seq").notNull().default(0),
+  minValidSeq: integer("min_valid_seq").notNull().default(0),
+  epoch: text("epoch").notNull(),
+  minClientVersion: text("min_client_version"),
+});
+
+export const processedMutations = sqliteTable(
+  "processed_mutations",
+  {
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    id: text("id").notNull(),
+    deviceId: text("device_id"),
+    status: text("status").notNull(),
+    result: text("result"),
+    createdAt: ts("created_at"),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.id] })]
+);
+
+export const syncConflicts = sqliteTable("sync_conflicts", {
+  id: uuid(),
+  entity: text("entity").notNull(),
+  entityId: text("entity_id").notNull(),
+  field: text("field").notNull(),
+  losingValue: text("losing_value"),
+  winningValue: text("winning_value"),
+  at: ts("at"),
+});
