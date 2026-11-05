@@ -1322,3 +1322,91 @@ export async function getViewItems(
   const qs = query.toString();
   return apiFetch<BackendViewItemsResponse>(`/api/v1/views/${encodeURIComponent(key)}${qs ? `?${qs}` : ""}`);
 }
+
+// -------------------------------------------------------------
+// Saved Filters API (/api/v1/filters)
+// -------------------------------------------------------------
+
+export async function getFilters(): Promise<BackendSavedFilter[]> {
+  return apiFetch<BackendSavedFilter[]>("/api/v1/filters");
+}
+
+export async function getFilterSchema(): Promise<BackendFilterSchema> {
+  return apiFetch<BackendFilterSchema>("/api/v1/filters/schema");
+}
+
+export async function createFilter(data: {
+  name: string;
+  icon?: string;
+  color?: string;
+  query: unknown;
+  sort?: Array<{ by: string; order: "asc" | "desc" }>;
+  groupBy?: string;
+  pinned?: boolean;
+}): Promise<BackendSavedFilter> {
+  return apiFetch<BackendSavedFilter>("/api/v1/filters", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateFilter(
+  id: string,
+  data: {
+    name?: string;
+    icon?: string | null;
+    color?: string | null;
+    query?: unknown;
+    sort?: Array<{ by: string; order: "asc" | "desc" }> | null;
+    groupBy?: string | null;
+    pinned?: boolean;
+  }
+): Promise<BackendSavedFilter> {
+  return apiFetch<BackendSavedFilter>(`/api/v1/filters/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteFilter(id: string): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(`/api/v1/filters/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function moveFilter(
+  id: string,
+  data: { afterId?: string; beforeId?: string }
+): Promise<BackendSavedFilter> {
+  return apiFetch<BackendSavedFilter>(`/api/v1/filters/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getFilterTasks(
+  id: string,
+  params?: { cursor?: string; limit?: number; tz?: string }
+): Promise<BackendFilteredTasksResponse> {
+  const query = new URLSearchParams();
+  if (params?.cursor) query.set("cursor", params.cursor);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendFilteredTasksResponse>(`/api/v1/filters/${encodeURIComponent(id)}/tasks${qs ? `?${qs}` : ""}`);
+}
+
+export async function previewFilter(data: {
+  query: unknown;
+  sort?: Array<{ by: string; order: "asc" | "desc" }>;
+}, params?: { cursor?: string; limit?: number; tz?: string }): Promise<BackendFilteredTasksResponse> {
+  const query = new URLSearchParams();
+  if (params?.cursor) query.set("cursor", params.cursor);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendFilteredTasksResponse>(`/api/v1/filters/preview${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
