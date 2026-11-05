@@ -16,6 +16,7 @@ import { reminderRoutes } from "./routes/reminders";
 import { recurrenceRoutes } from "./routes/recurrences";
 import { parseRoutes } from "./routes/parse";
 import { placeRoutes } from "./routes/places";
+import { geocodeRoutes } from "./routes/geocode";
 import { geofenceRoutes } from "./routes/geofences";
 import { viewRoutes } from "./routes/views";
 import { filterRoutes } from "./routes/filters";
@@ -85,6 +86,7 @@ export const app = new Elysia()
   .use(recurrenceRoutes)
   .use(parseRoutes)
   .use(placeRoutes)
+  .use(geocodeRoutes)
   .use(geofenceRoutes)
   .use(viewRoutes)
   .use(filterRoutes)
