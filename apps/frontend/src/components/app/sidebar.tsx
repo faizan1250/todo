@@ -69,6 +69,15 @@ interface SidebarProps {
   trashCount?: number;
   templateCount?: number;
 
+  // Saved Filters
+  savedFilters?: Array<{ id: string; name: string; icon?: string | null; color?: string | null; pinned: boolean }>;
+  activeFilterId?: string | null;
+  onSelectFilter?: (id: string) => void;
+  onNewFilter?: () => void;
+  onEditFilter?: (id: string) => void;
+  onDeleteFilter?: (id: string) => void;
+  onMoveFilter?: (id: string, dir: "up" | "down") => void;
+
   className?: string;
 }
 
@@ -119,6 +128,13 @@ export function Sidebar({
   onOpenTemplates,
   trashCount,
   templateCount,
+  savedFilters = [],
+  activeFilterId = null,
+  onSelectFilter,
+  onNewFilter,
+  onEditFilter,
+  onDeleteFilter,
+  onMoveFilter,
   className,
 }: SidebarProps) {
   // Folder expanded state
@@ -780,6 +796,108 @@ export function Sidebar({
                 No root lists
               </div>
             )}
+          </nav>
+        </div>
+
+        {/* Saved Filters Section */}
+        <div>
+          {!isCollapsed && (
+            <div className="flex items-center justify-between px-2 pb-2 text-[11px] font-bold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]/80">
+              <span>Filters</span>
+              {onNewFilter && (
+                <button
+                  type="button"
+                  onClick={onNewFilter}
+                  className="flex h-5 w-5 items-center justify-center rounded text-[#5B6478] hover:bg-[#E4E8F2] hover:text-[#09318D] transition-colors focus-ring-pink dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-[#FFA8D7] cursor-pointer"
+                  title="New Filter"
+                  aria-label="New Filter"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+          <nav className="space-y-1" aria-label="Saved Filters">
+            {savedFilters.length === 0 && !isCollapsed && (
+              <div className="px-2 py-1 text-[11px] text-[#5B6478]/70 dark:text-[#9BB0D3]/60 italic">
+                No filters yet
+              </div>
+            )}
+            {savedFilters.map((f, idx) => {
+              const isActive = activeFilterId === f.id;
+              return (
+                <div key={f.id} className="flex items-center gap-1 group/filter">
+                  <button
+                    type="button"
+                    onClick={() => onSelectFilter?.(f.id)}
+                    title={isCollapsed ? f.name : undefined}
+                    className={cn(
+                      "flex flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium transition-all duration-150 cursor-pointer focus-ring-pink",
+                      isActive
+                        ? "bg-[#09318D] text-white shadow-xs dark:bg-[#0D41B4] dark:text-white"
+                        : "text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] dark:text-[#9BB0D3] dark:hover:bg-[#082363] dark:hover:text-white",
+                      isCollapsed && "justify-center px-0"
+                    )}
+                  >
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: f.color || "#09318D" }}
+                    />
+                    {!isCollapsed && (
+                      <span className="flex-1 text-left truncate">{f.name}</span>
+                    )}
+                  </button>
+                  {!isCollapsed && (
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover/filter:opacity-100">
+                      {onMoveFilter && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => onMoveFilter(f.id, "up")}
+                            disabled={idx === 0}
+                            className="flex h-5 w-5 items-center justify-center rounded text-[#5B6478] hover:bg-[#E4E8F2] disabled:opacity-30 cursor-pointer"
+                            aria-label="Move up"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onMoveFilter(f.id, "down")}
+                            disabled={idx === savedFilters.length - 1}
+                            className="flex h-5 w-5 items-center justify-center rounded text-[#5B6478] hover:bg-[#E4E8F2] disabled:opacity-30 cursor-pointer"
+                            aria-label="Move down"
+                          >
+                            ↓
+                          </button>
+                        </>
+                      )}
+                      {onEditFilter && (
+                        <button
+                          type="button"
+                          onClick={() => onEditFilter(f.id)}
+                          className="flex h-5 w-5 items-center justify-center rounded text-[#5B6478] hover:bg-[#E4E8F2] cursor-pointer"
+                          aria-label="Edit filter"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                      )}
+                      {onDeleteFilter && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(`Delete filter "${f.name}"?`)) onDeleteFilter(f.id);
+                          }}
+                          className="flex h-5 w-5 items-center justify-center rounded text-red-600 hover:bg-red-50 cursor-pointer"
+                          aria-label="Delete filter"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </nav>
         </div>
 

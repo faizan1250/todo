@@ -15,6 +15,7 @@ import { MobileNav } from "./mobile-nav";
 import { ToastProvider, useToast } from "./toast-system";
 import { ListDialog } from "./list-dialog";
 import { FolderDialog } from "./folder-dialog";
+import { FilterDialog } from "./filter-dialog";
 import { BulkActionToolbar } from "./bulk-action-toolbar";
 import { TrashModal } from "./trash-modal";
 import { TemplatesModal } from "./templates-modal";
@@ -49,6 +50,14 @@ import {
   deleteList,
   archiveList,
   deleteFolder,
+  getFilters,
+  createFilter,
+  updateFilter,
+  deleteFilter,
+  moveFilter,
+  getFilterTasks,
+  previewFilter,
+  type BackendSavedFilter,
   type BackendList,
   type BackendFolder,
   type BackendTask,
@@ -318,6 +327,17 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [folderDialogMode, setFolderDialogMode] = useState<"create" | "edit">("create");
   const [folderToEdit, setFolderToEdit] = useState<BackendFolder | null>(null);
 
+  // Saved filters state
+  const [savedFilters, setSavedFilters] = useState<BackendSavedFilter[]>([]);
+  const [activeFilterId, setActiveFilterId] = useState<string | null>(null);
+  const [filterTasks, setFilterTasks] = useState<TaskItem[]>([]);
+  const [filterCursor, setFilterCursor] = useState<string | null>(null);
+  const [filterHasMore, setFilterHasMore] = useState(false);
+  const [isLoadingFilter, setIsLoadingFilter] = useState(false);
+  const [isFilterDialogOpen, setIsFilterDialogOpen] = useState(false);
+  const [filterDialogMode, setFilterDialogMode] = useState<"create" | "edit">("create");
+  const [filterToEdit, setFilterToEdit] = useState<BackendSavedFilter | null>(null);
+
   const prefList = auth?.profile?.preferences?.defaultListId as ListId | undefined;
   const effectiveDefaultList: ListId =
     prefList && ["today", "upcoming", "backlog", "completed"].includes(prefList)
@@ -546,6 +566,23 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     } catch (err) {
       console.error("Failed to load containers:", err);
     }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let isMounted = true;
+    getFilters()
+      .then((res) => {
+        if (!isMounted) return;
+        setSavedFilters(res);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error("Failed to load filters:", err);
+      });
+    return () => {
+      isMounted = false;
+    };
   }, [isAuthenticated]);
 
   useEffect(() => {
@@ -951,6 +988,125 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       setTasks((prev) => [mapped, ...prev]);
       setSelectedTaskId(mapped.id);
       success("Template instantiated into list!");
+    },
+    [success]
+  );
+
+  const handleNewFilter = useCallback(() => {
+    setFilterDialogMode("create");
+    setFilterToEdit(null);
+    setIsFilterDialogOpen(true);
+  }, []);
+
+  const handleEditFilter = useCallback(
+    (id: string) => {
+      const f = savedFilters.find((x) => x.id === id) || null;
+      setFilterDialogMode("edit");
+      setFilterToEdit(f);
+      setIsFilterDialogOpen(true);
+    },
+    [savedFilters]
+  );
+
+  const handleDeleteFilter = useCallback(
+    async (id: string) => {
+      try {
+        await deleteFilter(id);
+        setSavedFilters((prev) => prev.filter((f) => f.id !== id));
+        if (activeFilterId === id) {
+          setActiveFilterId(null);
+          setFilterTasks([]);
+        }
+        success("Deleted filter");
+      } catch (err) {
+        console.error("Failed to delete filter:", err);
+        toast({
+          title: "Delete failed",
+          message: err instanceof Error ? err.message : "Could not delete filter",
+          type: "error",
+        });
+      }
+    },
+    [activeFilterId, success, toast]
+  );
+
+  const handleMoveFilter = useCallback(
+    async (id: string, dir: "up" | "down") => {
+      const idx = savedFilters.findIndex((f) => f.id === id);
+      if (idx < 0) return;
+      const targetIdx = dir === "up" ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= savedFilters.length) return;
+      const other = savedFilters[targetIdx];
+      try {
+        // move after/before
+        if (dir === "up") {
+          await moveFilter(id, { beforeId: other.id });
+        } else {
+          await moveFilter(id, { afterId: other.id });
+        }
+        // reload
+        const res = await getFilters();
+        setSavedFilters(res);
+      } catch (err) {
+        console.error("Failed to move filter:", err);
+        toast({
+          title: "Move failed",
+          message: err instanceof Error ? err.message : "Could not move filter",
+          type: "error",
+        });
+      }
+    },
+    [savedFilters, toast]
+  );
+
+  const handleSelectFilter = useCallback(
+    async (id: string) => {
+      setActiveFilterId(id);
+      setIsLoadingFilter(true);
+      try {
+        const res = await getFilterTasks(id, { limit: 50 });
+        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+        setFilterTasks(mapped);
+        setFilterCursor(res.nextCursor);
+        setFilterHasMore(res.hasMore);
+      } catch (err) {
+        console.error("Failed to load filter tasks:", err);
+        setFilterTasks([]);
+      } finally {
+        setIsLoadingFilter(false);
+      }
+    },
+    []
+  );
+
+  const handleLoadMoreFilter = useCallback(async () => {
+    if (!activeFilterId || !filterCursor || !filterHasMore) return;
+    setIsLoadingFilter(true);
+    try {
+      const res = await getFilterTasks(activeFilterId, { cursor: filterCursor, limit: 50 });
+      const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+      setFilterTasks((prev) => [...prev, ...mapped]);
+      setFilterCursor(res.nextCursor);
+      setFilterHasMore(res.hasMore);
+    } catch (err) {
+      console.error("Failed to load more filter tasks:", err);
+    } finally {
+      setIsLoadingFilter(false);
+    }
+  }, [activeFilterId, filterCursor, filterHasMore]);
+
+  const handleFilterSuccess = useCallback(
+    (saved: BackendSavedFilter) => {
+      setSavedFilters((prev) => {
+        const idx = prev.findIndex((f) => f.id === saved.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = saved;
+          return next;
+        }
+        return [...prev, saved];
+      });
+      success(`Saved filter "${saved.name}"`);
     },
     [success]
   );
@@ -1878,6 +2034,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onDeleteFolder={handleDeleteFolder}
         onOpenTrash={() => setIsTrashOpen(true)}
         onOpenTemplates={() => setIsTemplatesOpen(true)}
+        savedFilters={[...savedFilters].sort((a, b) => Number(b.pinned) - Number(a.pinned))}
+        activeFilterId={activeFilterId}
+        onSelectFilter={handleSelectFilter}
+        onNewFilter={handleNewFilter}
+        onEditFilter={handleEditFilter}
+        onDeleteFilter={handleDeleteFilter}
+        onMoveFilter={handleMoveFilter}
         className="hidden md:flex"
       />
 
@@ -1937,10 +2100,10 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           />
         ) : (
           <TaskPane
-            tasks={tasks}
+            tasks={activeFilterId ? filterTasks : tasks}
             activeList={activeList}
             activeListId={activeListId}
-            activeListName={activeListName}
+            activeListName={activeFilterId ? (savedFilters.find((f) => f.id === activeFilterId)?.name) : activeListName}
             activeFolder={activeFolder}
             folders={userFolders}
             selectedTaskId={selectedTaskId}
@@ -1951,10 +2114,10 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             onDeleteTask={handleDeleteTask}
             onAddTask={handleAddTask}
             onQuickAddTask={handleQuickAddTask}
-            isLoading={isLoadingTasks || isLoadingView}
-            hasMore={viewHasMore}
-            isLoadingMore={isLoadingView}
-            onLoadMore={handleLoadMoreView}
+            isLoading={activeFilterId ? isLoadingFilter : (isLoadingTasks || isLoadingView)}
+            hasMore={activeFilterId ? filterHasMore : viewHasMore}
+            isLoadingMore={activeFilterId ? isLoadingFilter : isLoadingView}
+            onLoadMore={activeFilterId ? handleLoadMoreFilter : handleLoadMoreView}
           />
         )}
       </div>
@@ -2030,6 +2193,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       />
 
       {/* List Dialog Modal */}
+      <FilterDialog
+        isOpen={isFilterDialogOpen}
+        onClose={() => setIsFilterDialogOpen(false)}
+        mode={filterDialogMode}
+        filterToEdit={filterToEdit}
+        onSuccess={handleFilterSuccess}
+      />
+
       <ListDialog
         isOpen={isListDialogOpen}
         onClose={() => setIsListDialogOpen(false)}
