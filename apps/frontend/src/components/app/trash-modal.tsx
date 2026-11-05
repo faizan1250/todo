@@ -20,18 +20,19 @@ import {
   getTrash,
   restoreTrash,
   hardDeleteTrash,
-  emptyTrash,
-  type TrashGroupedResponse,
+  emptyTrash,  type TrashGroupedResponse,
   type BackendTask,
   type BackendList,
   type BackendFolder,
   type BackendSection,
 } from "@/lib/api";
+import { restoreFromTrash } from "../sync/conflict-actions";
 
 export interface TrashModalProps {
   isOpen: boolean;
   onClose: () => void;
   onItemRestored?: (type: "task" | "list" | "folder" | "section", id: string) => void;
+  userId?: string | null;
 }
 
 type TrashTab = "all" | "task" | "list" | "folder" | "section";
@@ -65,7 +66,7 @@ function formatRelativeTime(dateInput: string | number | null | undefined): stri
   });
 }
 
-export function TrashModal({ isOpen, onClose, onItemRestored }: TrashModalProps) {
+export function TrashModal({ isOpen, onClose, onItemRestored, userId = null }: TrashModalProps) {
   const [activeTab, setActiveTab] = useState<TrashTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -221,7 +222,16 @@ export function TrashModal({ isOpen, onClose, onItemRestored }: TrashModalProps)
   const handleRestore = async (item: UnifiedTrashItem) => {
     setPendingItemId(item.id);
     try {
-      await restoreTrash(item.type, item.id);
+      // Phase 5 follow-up: offline-first restore for tasks via the shared
+      // helper (mutate restore op), REST fallback when there is no userId
+      // or Dexie throws. Other entity types stay on REST.
+      if (item.type === "task" && userId) {
+        await restoreFromTrash(userId, "tasks", item.id).catch(() =>
+          restoreTrash(item.type, item.id)
+        );
+      } else {
+        await restoreTrash(item.type, item.id);
+      }
       // Remove restored item from local state
       setTrashData((prev) => {
         if (item.type === "task") {

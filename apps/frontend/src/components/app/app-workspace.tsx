@@ -22,6 +22,7 @@ import { TemplatesModal } from "./templates-modal";
 import { useAuth } from "@/components/auth";
 import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
+import { restoreFromTrash } from "../sync/conflict-actions";
 import {
   getLists,
   getFolders,
@@ -1018,7 +1019,17 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onAction: async () => {
           try {
             if (isAuthenticated) {
-              await Promise.all(ids.map((id) => restoreTrash("task", id)));
+              // Offline-first restore (mutate op) with REST fallback.
+              // Local-only ids never left the device, so they stay REST.
+              await Promise.all(
+                ids.map((id) =>
+                  userId && !id.startsWith("temp-") && !id.startsWith("task-")
+                    ? restoreFromTrash(userId, "tasks", id).catch(() =>
+                        restoreTrash("task", id)
+                      )
+                    : restoreTrash("task", id)
+                )
+              );
             }
             setTasks((prev) => [...deletedTasks, ...prev]);
             success(`Restored ${ids.length} ${ids.length === 1 ? "task" : "tasks"}`);
@@ -1042,7 +1053,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         type: "error",
       });
     }
-  }, [isAuthenticated, selectedTaskId, selectedTaskIds, tasks, success, toast]);
+  }, [isAuthenticated, selectedTaskId, selectedTaskIds, tasks, success, toast, userId]);
 
   // Trash & Template callback handlers
   const handleItemRestored = useCallback(
@@ -1935,8 +1946,30 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
 
       if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        // Phase 5 follow-up: offline-first archive. archivedAt is a mutable
+        // task field in the sync registry (TASK_FIELDS + date-parsed, not
+        // server-owned), so archive/unarchive mirror as update patches with
+        // the local ms convention. REST remains the fallback when there is
+        // no userId or Dexie throws (e.g. unknown local row).
+        const archiveOp: Promise<unknown> = userId
+          ? mutate(userId, {
+              entity: "tasks",
+              op: "update",
+              entityId: taskId,
+              patch: { archivedAt: Date.now() },
+            }).catch(() => archiveTask(taskId))
+          : archiveTask(taskId);
+        const unarchiveOp = (): Promise<unknown> =>
+          userId
+            ? mutate(userId, {
+                entity: "tasks",
+                op: "update",
+                entityId: taskId,
+                patch: { archivedAt: null },
+              }).catch(() => unarchiveTask(taskId))
+            : unarchiveTask(taskId);
         try {
-          await archiveTask(taskId);
+          await archiveOp;
           toast({
             title: "Task archived",
             message: `"${target.title}" moved to archive.`,
@@ -1944,7 +1977,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             onAction: () => {
               setTasks((prev) => [target, ...prev]);
               setSelectedTaskId(target.id);
-              unarchiveTask(taskId).catch((err) => {
+              unarchiveOp().catch((err) => {
                 console.error("Failed to unarchive task:", err);
                 setTasks((prev) => prev.filter((t) => t.id !== taskId));
                 toast({
@@ -1976,7 +2009,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         });
       }
     },
-    [tasks, selectedTaskId, isAuthenticated, toast]
+    [tasks, selectedTaskId, isAuthenticated, userId, toast]
   );
 
   const handleSaveAsTemplate = useCallback(
@@ -2585,6 +2618,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         isOpen={isTrashOpen}
         onClose={() => setIsTrashOpen(false)}
         onItemRestored={handleItemRestored}
+        userId={userId}
       />
 
       {/* Templates Modal */}

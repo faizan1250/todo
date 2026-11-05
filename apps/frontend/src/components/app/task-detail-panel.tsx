@@ -18,8 +18,14 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatEstimate, formatDateWithTime } from "@/lib/adapters";
+import { v7 as uuidv7 } from "uuid";
+import { mutate } from "@/lib/data/mutate";
 import {
   getPlaces,
+  createTaskReminder,
+  deleteTaskReminder,
+  snoozeReminder,
+  dismissReminder,
   type BackendFolder,
   type BackendPlace,
 } from "@/lib/api";
@@ -364,19 +370,40 @@ export function TaskDetailPanel({
   };
 
   // Reminders Handlers
+  // Phase 5 follow-up: reminders persist via the reminders sync entity
+  // (offline-first mutate, REST fallback) — not via the task update, which
+  // has no reminders field server-side. FIELD_MAP whitelist: taskId, kind,
+  // relativeTo, offsetMin, remindAt, firedAt. Snooze = update remindAt +
+  // clear firedAt; dismiss = update firedAt (mirrors the REST sub-ops).
+  // There is no generic reminder-update REST endpoint, so plain updates
+  // only exist as snooze/dismiss with their sub-op as the fallback.
+  // Local-only tasks and `rem-` optimistic ids never left the device, so
+  // they skip server persistence.
+  const isBackendTaskId =
+    !task.id.startsWith("temp-") && !task.id.startsWith("task-");
+  const isLocalReminderId = (id: string) => id.startsWith("rem-");
+
   const handleAddReminder = (reminder: {
     kind: "absolute" | "relative";
     relativeTo?: "due" | "start" | "deadline" | null;
     offsetMin?: number | null;
     remindAt?: string | null;
   }) => {
+    const remindAt =
+      reminder.remindAt ||
+      (task.dueAt ? new Date(task.dueAt).toISOString() : new Date().toISOString());
+    const kind = reminder.kind;
+    const relativeTo = reminder.relativeTo ?? "due";
+    const offsetMin = reminder.offsetMin ?? 0;
+    const newId =
+      userId && isBackendTaskId ? uuidv7() : `rem-${new Date().getTime()}`;
     const newReminderItem: ReminderItem = {
-      id: `rem-${new Date().getTime()}`,
+      id: newId,
       taskId: task.id,
-      kind: reminder.kind,
-      relativeTo: reminder.relativeTo ?? "due",
-      offsetMin: reminder.offsetMin ?? 0,
-      remindAt: reminder.remindAt || (task.dueAt ? new Date(task.dueAt).toISOString() : new Date().toISOString()),
+      kind,
+      relativeTo,
+      offsetMin,
+      remindAt,
       firedAt: null,
     };
     const currentReminders = task.reminders || [];
@@ -386,6 +413,34 @@ export function TaskDetailPanel({
       updatedAt: "Just now",
     });
     setIsAddingReminder(false);
+
+    if (!isBackendTaskId) return;
+    const doRestCreate = () => {
+      createTaskReminder(task.id, { kind, relativeTo, offsetMin, remindAt })
+        .then((created) => {
+          onUpdateTask({
+            ...task,
+            reminders: [
+              ...currentReminders,
+              { ...newReminderItem, id: created.id },
+            ],
+            updatedAt: "Just now",
+          });
+        })
+        .catch((err) => {
+          console.error("Failed to create reminder on backend:", err);
+        });
+    };
+    if (userId) {
+      mutate(userId, {
+        entity: "reminders",
+        op: "create",
+        entityId: newId,
+        patch: { taskId: task.id, kind, relativeTo, offsetMin, remindAt },
+      }).catch(doRestCreate);
+    } else {
+      doRestCreate();
+    }
   };
 
   const handleDeleteReminder = (reminderId: string) => {
@@ -395,29 +450,81 @@ export function TaskDetailPanel({
       reminders: currentReminders.filter((r) => r.id !== reminderId),
       updatedAt: "Just now",
     });
+
+    if (!isBackendTaskId || isLocalReminderId(reminderId)) return;
+    const doRestDelete = () => {
+      deleteTaskReminder(reminderId).catch((err) => {
+        console.error("Failed to delete reminder on backend:", err);
+      });
+    };
+    if (userId) {
+      mutate(userId, {
+        entity: "reminders",
+        op: "delete",
+        entityId: reminderId,
+      }).catch(doRestDelete);
+    } else {
+      doRestDelete();
+    }
   };
 
   const handleSnoozeReminder = (reminderId: string, minutes = 15) => {
     const currentReminders = task.reminders || [];
-    const targetTime = new Date(new Date().getTime() + minutes * 60 * 1000).toISOString();
+    const targetTime = new Date(new Date().getTime() + minutes * 60 * 1000);
+    const targetIso = targetTime.toISOString();
     onUpdateTask({
       ...task,
       reminders: currentReminders.map((r) =>
-        r.id === reminderId ? { ...r, remindAt: targetTime, firedAt: null } : r
+        r.id === reminderId ? { ...r, remindAt: targetIso, firedAt: null } : r
       ),
       updatedAt: "Just now",
     });
+
+    if (!isBackendTaskId || isLocalReminderId(reminderId)) return;
+    const doRestSnooze = () => {
+      snoozeReminder(reminderId, targetTime.getTime()).catch((err) => {
+        console.error("Failed to snooze reminder on backend:", err);
+      });
+    };
+    if (userId) {
+      mutate(userId, {
+        entity: "reminders",
+        op: "update",
+        entityId: reminderId,
+        patch: { remindAt: targetIso, firedAt: null },
+      }).catch(doRestSnooze);
+    } else {
+      doRestSnooze();
+    }
   };
 
   const handleDismissReminder = (reminderId: string) => {
     const currentReminders = task.reminders || [];
+    const nowIso = new Date().toISOString();
     onUpdateTask({
       ...task,
       reminders: currentReminders.map((r) =>
-        r.id === reminderId ? { ...r, firedAt: new Date().toISOString() } : r
+        r.id === reminderId ? { ...r, firedAt: nowIso } : r
       ),
       updatedAt: "Just now",
     });
+
+    if (!isBackendTaskId || isLocalReminderId(reminderId)) return;
+    const doRestDismiss = () => {
+      dismissReminder(reminderId).catch((err) => {
+        console.error("Failed to dismiss reminder on backend:", err);
+      });
+    };
+    if (userId) {
+      mutate(userId, {
+        entity: "reminders",
+        op: "update",
+        entityId: reminderId,
+        patch: { firedAt: nowIso },
+      }).catch(doRestDismiss);
+    } else {
+      doRestDismiss();
+    }
   };
 
   // Subtask Handlers
