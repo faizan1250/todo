@@ -129,6 +129,21 @@ export const copy = {
     deleteListConfirm: (name: string): string =>
       `"${name}" is now in Trash. You can bring it back.`,
   },
+  // Scheduling words for repeat, reminders, estimates, and place alerts.
+  scheduling: {
+    repeat: "Repeat",
+    repeatAfterDone: "When I finish it",
+    noSpecificTime: "No specific time",
+    oneHourBefore: "1 hour before",
+    estimatePrompt: "How long will it take?",
+    remindLater: "Remind me later",
+    arrive: "When I arrive",
+    leave: "When I leave",
+    skipThisTime: "Skip this time",
+    overdue: "Overdue",
+    overdueByDays: (n: number): string =>
+      n === 1 ? "Overdue by 1 day" : `Overdue by ${n} days`,
+  },
   // Save status wording. Short lines a young reader can follow.
   sync: {
     allSaved: "All changes saved",
