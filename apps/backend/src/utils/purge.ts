@@ -8,6 +8,8 @@ export interface PurgeResult {
   lists: number;
   folders: number;
   total: number;
+  processedMutations: number;
+  syncConflicts: number;
 }
 
 /**
@@ -106,8 +108,69 @@ export async function purgeOldSoftDeleted(
   }
 
   const total = totalTasks + totalSections + totalLists + totalFolders;
+
+  // Advance min_valid_seq so stale cursors that may have missed hard-deleted
+  // rows get a clean 409 resync instead of silently missing deletes.
+  if (total > 0) {
+    const state = db.select().from(schema.syncState).get();
+    if (state) {
+      await db
+        .update(schema.syncState)
+        .set({ minValidSeq: state.seq });
+    }
+  }
+
+  // Purge old sync bookkeeping rows (35-day retention).
+  const syncCutoff = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000);
+
+  let processedMutations = 0;
+  while (true) {
+    const batch = await db
+      .select({ userId: schema.processedMutations.userId, id: schema.processedMutations.id })
+      .from(schema.processedMutations)
+      .where(lt(schema.processedMutations.createdAt, syncCutoff))
+      .limit(batchSize);
+
+    if (batch.length === 0) break;
+
+    await db.transaction(async (tx) => {
+      for (const row of batch) {
+        await tx
+          .delete(schema.processedMutations)
+          .where(
+            and(
+              eq(schema.processedMutations.userId, row.userId),
+              eq(schema.processedMutations.id, row.id)
+            )
+          );
+      }
+    });
+
+    processedMutations += batch.length;
+    if (batch.length < batchSize) break;
+  }
+
+  let syncConflicts = 0;
+  while (true) {
+    const batch = await db
+      .select({ id: schema.syncConflicts.id })
+      .from(schema.syncConflicts)
+      .where(lt(schema.syncConflicts.at, syncCutoff))
+      .limit(batchSize);
+
+    if (batch.length === 0) break;
+    const ids = batch.map((r) => r.id);
+
+    await db.transaction(async (tx) => {
+      await tx.delete(schema.syncConflicts).where(inArray(schema.syncConflicts.id, ids));
+    });
+
+    syncConflicts += ids.length;
+    if (ids.length < batchSize) break;
+  }
+
   console.log(
-    `[Purge] Soft-deleted purge before ${threshold.toISOString()}: tasks=${totalTasks}, sections=${totalSections}, lists=${totalLists}, folders=${totalFolders}, total=${total}`
+    `[Purge] Soft-deleted purge before ${threshold.toISOString()}: tasks=${totalTasks}, sections=${totalSections}, lists=${totalLists}, folders=${totalFolders}, total=${total}, processedMutations=${processedMutations}, syncConflicts=${syncConflicts}`
   );
 
   return {
@@ -116,5 +179,7 @@ export async function purgeOldSoftDeleted(
     lists: totalLists,
     folders: totalFolders,
     total,
+    processedMutations,
+    syncConflicts,
   };
 }

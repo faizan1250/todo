@@ -17,11 +17,12 @@ export const syncRoutes = new Elysia({ prefix: "/api/v1/sync" })
       }
 
       const cursor = query.cursor ?? "";
+      const isFirstSync = cursor === "";
 
       let epoch: string;
       let seq: number;
 
-      if (cursor === "") {
+      if (isFirstSync) {
         epoch = syncState.epoch;
         seq = 0;
       } else {
@@ -47,10 +48,13 @@ export const syncRoutes = new Elysia({ prefix: "/api/v1/sync" })
         return status(426, { error: "Please refresh to get the latest update." });
       }
 
+      // First sync (no cursor) is itself a full sync: start from seq 0 and
+      // skip staleness checks. Only enforce the epoch check when the
+      // client actually sent an epoch.
       if (
         epoch !== syncState.epoch ||
-        seq < syncState.minValidSeq ||
-        seq > syncState.seq
+        (!isFirstSync &&
+          (seq < syncState.minValidSeq || seq > syncState.seq))
       ) {
         return status(409, { resync: true });
       }
