@@ -29,11 +29,13 @@ export function TimeZoneBanner() {
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
-    try {
-      setDeviceTz(Intl.DateTimeFormat().resolvedOptions().timeZone);
-    } catch {
-      setDeviceTz(null);
-    }
+    queueMicrotask(() => {
+      try {
+        setDeviceTz(Intl.DateTimeFormat().resolvedOptions().timeZone);
+      } catch {
+        setDeviceTz(null);
+      }
+    });
   }, []);
 
   const accountTz = profile?.timezone ?? null;

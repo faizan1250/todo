@@ -61,11 +61,13 @@ export function PlacePicker({
 
   useEffect(() => {
     if (query.trim().length < 2) {
-      setResults([]);
-      setIsSearching(false);
+      queueMicrotask(() => {
+        setResults([]);
+        setIsSearching(false);
+      });
       return;
     }
-    setIsSearching(true);
+    queueMicrotask(() => setIsSearching(true));
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => {
       searchGeocode(query)
