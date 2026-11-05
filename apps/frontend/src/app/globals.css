@@ -1,11 +1,12 @@
 @import "tailwindcss";
 
 :root {
-  /* Brand Primitives */
+  /* Brand Primitives — blue / pink scales */
   --blue-950: #051A4D;
   --blue-900: #07256C;
   --blue-700: #09318D;
   --blue-600: #0D41B4;
+  --blue-500: #1E5BCB;
   --blue-50: #F2F5FC;
   --pink-500: #FD91CC;
   --pink-400: #FFA8D7;
@@ -13,17 +14,32 @@
   --white: #FFFFFF;
   --ink: #0B1220;
   --muted: #5B6478;
+  --border-color: #E4E8F2;
+
+  /* Semantic tokens — light mode */
+  --bg: #FFFFFF;
+  --bg-soft: #F2F5FC;
+  --surface: #FFFFFF;
+  --fg: #0B1220;
+  --fg-muted: #5B6478;
   --border: #E4E8F2;
+  --primary: #0D41B4;
+  --primary-hover: #09318D;
+  --on-primary: #FFFFFF;
+  --accent: #FD91CC;
+  --on-accent: #051A4D;
+  --ring: #FD91CC;
+  --success: #16A34A;
+  --warning: #D97706;
+  --danger: #DC2626;
 
-  /* Semantic Theme Tokens - Light Mode */
-  --background: #FFFFFF;
-  --foreground: #0B1220;
-  --card: #FFFFFF;
-  --card-foreground: #0B1220;
-  --surface-subtle: #F2F5FC;
-  --focus-ring: #FD91CC;
+  /* Radii */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
 
-  /* Layered Shadows */
+  /* Layered blue-tinted shadows */
   --shadow-blue-card: 0 4px 20px -2px rgba(9, 49, 141, 0.08), 0 2px 6px -1px rgba(9, 49, 141, 0.04);
   --shadow-blue-lift: 0 10px 30px -4px rgba(9, 49, 141, 0.12), 0 4px 10px -2px rgba(9, 49, 141, 0.06);
 }
@@ -33,62 +49,101 @@
   --color-blue-900: var(--blue-900);
   --color-blue-700: var(--blue-700);
   --color-blue-600: var(--blue-600);
+  --color-blue-500: var(--blue-500);
   --color-blue-50: var(--blue-50);
   --color-pink-500: var(--pink-500);
   --color-pink-400: var(--pink-400);
   --color-pink-100: var(--pink-100);
   --color-white: var(--white);
-  --color-ink: var(--ink);
-  --color-muted: var(--muted);
+
+  --color-bg: var(--bg);
+  --color-bg-soft: var(--bg-soft);
+  --color-surface: var(--surface);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
   --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-on-primary: var(--on-primary);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
 
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-surface-subtle: var(--surface-subtle);
+  --font-sans: var(--font-plus-jakarta), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), monospace;
 
-  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: var(--font-geist-mono), monospace;
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+}
+
+.dark {
+  --bg: #051A4D;
+  --bg-soft: #082363;
+  --surface: #082363;
+  --fg: #F8FAFC;
+  --fg-muted: #9BB0D3;
+  --border: #132E74;
+  --primary: #1E5BCB;
+  --primary-hover: #0D41B4;
+  --on-primary: #FFFFFF;
+  --accent: #FD91CC;
+  --on-accent: #051A4D;
+  --ring: #FD91CC;
+  --success: #22C55E;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+
+  --shadow-blue-card: 0 4px 20px -2px rgba(0, 0, 0, 0.45), 0 2px 6px -1px rgba(0, 0, 0, 0.35);
+  --shadow-blue-lift: 0 10px 30px -4px rgba(0, 0, 0, 0.55), 0 4px 10px -2px rgba(0, 0, 0, 0.4);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #051A4D;
-    --foreground: #F8FAFC;
-    --ink: #F8FAFC;
-    --muted: #9BB0D3;
+  :root:not(.light) {
+    --bg: #051A4D;
+    --bg-soft: #082363;
+    --surface: #082363;
+    --fg: #F8FAFC;
+    --fg-muted: #9BB0D3;
     --border: #132E74;
-    --card: #082363;
-    --card-foreground: #F8FAFC;
-    --surface-subtle: #092B7D;
-    --focus-ring: #FD91CC;
+    --primary: #1E5BCB;
+    --primary-hover: #0D41B4;
+    --on-primary: #FFFFFF;
+    --accent: #FD91CC;
+    --on-accent: #051A4D;
+    --ring: #FD91CC;
+    --success: #22C55E;
+    --warning: #F59E0B;
+    --danger: #EF4444;
+
     --shadow-blue-card: 0 4px 20px -2px rgba(0, 0, 0, 0.45), 0 2px 6px -1px rgba(0, 0, 0, 0.35);
     --shadow-blue-lift: 0 10px 30px -4px rgba(0, 0, 0, 0.55), 0 4px 10px -2px rgba(0, 0, 0, 0.4);
   }
 }
 
-.dark {
-  --background: #051A4D;
-  --foreground: #F8FAFC;
-  --ink: #F8FAFC;
-  --muted: #9BB0D3;
-  --border: #132E74;
-  --card: #082363;
-  --card-foreground: #F8FAFC;
-  --surface-subtle: #092B7D;
-  --focus-ring: #FD91CC;
-  --shadow-blue-card: 0 4px 20px -2px rgba(0, 0, 0, 0.45), 0 2px 6px -1px rgba(0, 0, 0, 0.35);
-  --shadow-blue-lift: 0 10px 30px -4px rgba(0, 0, 0, 0.55), 0 4px 10px -2px rgba(0, 0, 0, 0.4);
-}
-
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-plus-jakarta), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   line-height: 1.6;
+}
+
+/* Surface utilities */
+.surface-hero {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--blue-950) 100%);
+  color: var(--on-primary);
+  box-shadow: var(--shadow-blue-lift);
+}
+.surface-mesh {
+  background-image:
+    radial-gradient(at 0% 0%, rgba(13, 65, 180, 0.12) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(253, 145, 204, 0.12) 0px, transparent 50%);
 }
 
 /* Visible pink focus ring */
@@ -98,14 +153,13 @@ body {
 }
 .focus-ring-pink:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--pink-500);
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--pink-500);
 }
 
 /* Layered blue-tinted shadows */
 .shadow-soft-blue {
   box-shadow: var(--shadow-blue-card);
 }
-
 .shadow-lift-blue {
   box-shadow: var(--shadow-blue-lift);
 }

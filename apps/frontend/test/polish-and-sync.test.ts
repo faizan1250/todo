@@ -307,8 +307,7 @@ describe("Frontend Phase 1 Polish & Profile Sync", () => {
       );
 
       expect(html).toContain('role="alert"');
-      expect(html).toContain("Backend Offline (:3001)");
-      expect(html).toContain("Running in local resilient mode");
+      expect(html).toContain("You&#x27;re offline. Your changes will sync when you&#x27;re back.");
       expect(html).toContain("Retry");
     });
 
