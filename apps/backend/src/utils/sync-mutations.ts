@@ -163,7 +163,55 @@ const DATE_FIELDS_BY_ENTITY: Record<string, Set<string>> = {
   user: new Set([]),
 };
 
-async function applySimpleMutation(tx: any, userId: string, m: Mutation, entity: string, now: Date, editedAt: number): Promise<MutationResult> {
+interface ConflictDraft {
+  entity: string;
+  entityId: string;
+  field: string;
+  losingValue: string | null;
+  winningValue: string | null;
+  userId: string;
+  deviceId: string | null;
+  at: Date;
+}
+
+function safeStringify(val: unknown): string | null {
+  if (val === undefined) return null;
+  try {
+    const s = JSON.stringify(val);
+    return s ?? null;
+  } catch {
+    try {
+      return String(val);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function draftConflict(
+  pending: ConflictDraft[],
+  entity: string,
+  entityId: string,
+  field: string,
+  losing: unknown,
+  winning: unknown,
+  userId: string,
+  deviceId: string | null,
+  at: Date
+): void {
+  pending.push({
+    entity,
+    entityId,
+    field,
+    losingValue: safeStringify(losing),
+    winningValue: safeStringify(winning),
+    userId,
+    deviceId,
+    at,
+  });
+}
+
+async function applySimpleMutation(tx: any, userId: string, deviceId: string | null, m: Mutation, entity: string, now: Date, editedAt: number, pending: ConflictDraft[]): Promise<MutationResult> {
   const table = ENTITY_TABLE[entity];
   const fieldMap = FIELD_MAP[entity];
   const dateFields = DATE_FIELDS_BY_ENTITY[entity];
@@ -308,7 +356,10 @@ async function applySimpleMutation(tx: any, userId: string, m: Mutation, entity:
         const canon = fieldMap[k];
         // LWW
         const ts = existing.fieldTs?.[canon] ?? 0;
-        if (ts > editedAt) continue;
+        if (ts > editedAt) {
+          draftConflict(pending, entity, m.entityId, canon, patch[k], existing[canon], userId, deviceId, now);
+          continue;
+        }
         updates[canon] = patch[k];
         newFieldTs[canon] = editedAt;
       }
@@ -466,7 +517,7 @@ const SIMPLE_ENTITIES = new Set([
   "user",
 ]);
 
-async function applyMutation(tx: any, userId: string, m: Mutation): Promise<MutationResult> {
+async function applyMutation(tx: any, userId: string, deviceId: string | null, m: Mutation, pending: ConflictDraft[]): Promise<MutationResult> {
   const entity = normalizeEntity(m.entity);
   const now = new Date();
   const editedAt = clampEditedAt(m.editedAt);
@@ -476,7 +527,7 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
   }
 
   if (entity !== "tasks") {
-    return await applySimpleMutation(tx, userId, m, entity, now, editedAt);
+    return await applySimpleMutation(tx, userId, deviceId, m, entity, now, editedAt, pending);
   }
 
   switch (m.op) {
@@ -666,6 +717,8 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
           updates.parentId = nextParentId;
           updates.listId = nextListId;
           newFieldTs[fieldKey] = editedAt;
+        } else {
+          draftConflict(pending, entity, m.entityId, fieldKey, patch.parentId ?? null, existing.parentId, userId, deviceId, now);
         }
       }
 
@@ -688,6 +741,8 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
             shouldUpdateDescendantList = true;
             updates.listId = nextListId;
             newFieldTs.listId = editedAt;
+          } else {
+            draftConflict(pending, entity, m.entityId, "listId", patch.listId, existing.listId, userId, deviceId, now);
           }
         }
       }
@@ -710,6 +765,8 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
           }
           updates.sectionId = val;
           newFieldTs.sectionId = editedAt;
+        } else {
+          draftConflict(pending, entity, m.entityId, "sectionId", patch.sectionId, existing.sectionId, userId, deviceId, now);
         }
       }
 
@@ -718,7 +775,10 @@ async function applyMutation(tx: any, userId: string, m: Mutation): Promise<Muta
       for (const [canon, val] of Object.entries(patch)) {
         if (skip.has(canon)) continue;
         const ts = (existing.fieldTs?.[canon] ?? 0);
-        if (ts > editedAt) continue;
+        if (ts > editedAt) {
+          draftConflict(pending, entity, m.entityId, canon, val, (existing as Record<string, unknown>)[canon], userId, deviceId, now);
+          continue;
+        }
         // validate place
         if (canon === "placeId" && val) {
           const place = tx.select().from(schema.places).where(and(eq(schema.places.id, val), eq(schema.places.userId, userId), isNull(schema.places.deletedAt))).get();
@@ -1078,7 +1138,24 @@ export async function processMutations(
     }
 
     const result = await db.transaction(async (tx) => {
-      const r = await applyMutation(tx, userId, mutation);
+      const pending: ConflictDraft[] = [];
+      const r = await applyMutation(tx, userId, deviceId, mutation, pending);
+      if (r.status === "applied") {
+        for (const c of pending) {
+          tx.insert(schema.syncConflicts)
+            .values({
+              entity: c.entity,
+              entityId: c.entityId,
+              field: c.field,
+              losingValue: c.losingValue,
+              winningValue: c.winningValue,
+              at: c.at,
+              userId: c.userId,
+              deviceId: c.deviceId,
+            })
+            .run();
+        }
+      }
       tx.insert(schema.processedMutations)
         .values({
           userId,
