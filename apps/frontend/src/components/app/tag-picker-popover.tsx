@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useState, useEffect, useRef, useMemo } from "react";
-import { Tag as TagIcon, Check, Plus, X, Search, Loader2 } from "lucide-react";
+import { Tag as TagIcon, Check, Plus, X, Search, Loader2, Pencil, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   TACTILE_COLOR_SWATCHES,
@@ -11,11 +11,14 @@ import {
 import {
   getTags,
   createTag,
+  updateTag,
+  deleteTag,
   replaceTaskTags,
   type BackendTag,
 } from "@/lib/api";
 import { mutate } from "@/lib/data/mutate";
 import { v7 as uuidv7 } from "uuid";
+import { useToast } from "./toast-system";
 
 interface TagPickerPopoverProps {
   taskId: string;
@@ -44,6 +47,9 @@ export function TagPickerPopover({
   const [isLoading, setIsLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [selectedColor, setSelectedColor] = useState<ColorSwatch>(TACTILE_COLOR_SWATCHES[0]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const { toast, success } = useToast();
 
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -130,6 +136,42 @@ export function TagPickerPopover({
     return allTags.some((t) => t.name.toLowerCase() === q);
   }, [allTags, searchQuery]);
 
+  // Name to surface in the duplicate-name guard (only while typing).
+  const duplicateNameHint = useMemo(() => {
+    const q = searchQuery.trim();
+    if (!q) return null;
+    const hit = allTags.find((t) => t.name.toLowerCase() === q.toLowerCase());
+    return hit ? hit.name : null;
+  }, [allTags, searchQuery]);
+
+  // Persist a whole-set tag-id replacement: offline-first setTags sync op,
+  // REST remains the fallback when there is no userId or Dexie throws.
+  const persistTagIds = async (nextIds: string[]) => {
+    if (taskId.startsWith("temp-") || taskId.startsWith("task-")) return;
+    if (userId) {
+      try {
+        await mutate(userId, {
+          entity: "tasks",
+          op: "setTags",
+          entityId: taskId,
+          patch: { tagIds: nextIds },
+        });
+      } catch {
+        try {
+          await replaceTaskTags(taskId, nextIds);
+        } catch (err) {
+          console.error("Failed to replace task tags on backend:", err);
+        }
+      }
+    } else {
+      try {
+        await replaceTaskTags(taskId, nextIds);
+      } catch (err) {
+        console.error("Failed to replace task tags on backend:", err);
+      }
+    }
+  };
+
   const handleToggleTag = async (tag: { id?: string; name: string }) => {
     const isCurrentlyActive = activeTags.some(
       (t) => t.toLowerCase() === tag.name.toLowerCase()
@@ -151,38 +193,178 @@ export function TagPickerPopover({
     // Optimistic UI update
     onTagsUpdated(nextNames, nextIds);
 
-    // Offline-first tag attach/detach via the tasks setTags sync op
-    // (whole-set LWW, patch { tagIds: nextIds }). REST remains the fallback
-    // when there is no userId or Dexie throws.
-    if (tag.id && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+    if (tag.id) {
+      await persistTagIds(nextIds);
+    }
+  };
+
+  const handleRenameTag = async (tag: { id?: string; name: string }) => {
+    const trimmed = editingName.trim();
+    const oldName = tag.name;
+    setEditingId(null);
+    setEditingName("");
+    if (!trimmed || trimmed.toLowerCase() === oldName.toLowerCase()) return;
+    if (!tag.id || tag.id.startsWith("tag-")) return;
+    if (
+      allTags.some(
+        (t) => t.id !== tag.id && t.name.toLowerCase() === trimmed.toLowerCase()
+      )
+    ) {
+      toast({
+        title: "Tag exists",
+        message: `You already have a tag called "${trimmed}"`,
+        type: "error",
+      });
+      return;
+    }
+
+    // Optimistic rename everywhere it surfaces
+    setAvailableTags((prev) =>
+      prev.map((t) => (t.id === tag.id ? { ...t, name: trimmed } : t))
+    );
+    if (activeTags.some((t) => t.toLowerCase() === oldName.toLowerCase())) {
+      onTagsUpdated(
+        activeTags.map((t) =>
+          t.toLowerCase() === oldName.toLowerCase() ? trimmed : t
+        ),
+        [...activeTagIds]
+      );
+    }
+
+    const doRestRename = async () => {
+      try {
+        await updateTag(tag.id as string, { name: trimmed });
+      } catch (err) {
+        console.error("Failed to rename tag on backend:", err);
+      }
+    };
+    if (userId) {
+      try {
+        await mutate(userId, {
+          entity: "tags",
+          op: "update",
+          entityId: tag.id,
+          patch: { name: trimmed },
+        });
+      } catch {
+        await doRestRename();
+      }
+    } else {
+      await doRestRename();
+    }
+    success(`Renamed tag to "${trimmed}"`);
+  };
+
+  const handleUndoDeleteTag = async (snap: { name: string; color: string }) => {
+    const name = snap.name;
+    if (
+      availableTags.some((t) => t.name.toLowerCase() === name.toLowerCase())
+    ) {
+      return;
+    }
+    let newId: string;
+    try {
       if (userId) {
-        try {
-          await mutate(userId, {
-            entity: "tasks",
-            op: "setTags",
-            entityId: taskId,
-            patch: { tagIds: nextIds },
-          });
-        } catch {
-          try {
-            await replaceTaskTags(taskId, nextIds);
-          } catch (err) {
-            console.error("Failed to replace task tags on backend:", err);
-          }
-        }
+        newId = uuidv7();
+        await mutate(userId, {
+          entity: "tags",
+          op: "create",
+          entityId: newId,
+          patch: { name, color: snap.color },
+        });
       } else {
-        try {
-          await replaceTaskTags(taskId, nextIds);
-        } catch (err) {
-          console.error("Failed to replace task tags on backend:", err);
-        }
+        const created = await createTag({ name, color: snap.color });
+        newId = created.id;
+      }
+    } catch {
+      try {
+        const created = await createTag({ name, color: snap.color });
+        newId = created.id;
+      } catch (err) {
+        console.error("Failed to restore tag on backend:", err);
+        return;
       }
     }
+    const restored: BackendTag = {
+      id: newId,
+      userId: userId ?? "",
+      name,
+      color: snap.color,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      version: 1,
+    };
+    setAvailableTags((prev) => [...prev, restored]);
+    onTagsUpdated([...activeTags, name], [...activeTagIds, newId]);
+    await persistTagIds([...activeTagIds, newId]);
+  };
+
+  const handleDeleteTag = async (tag: { id?: string; name: string; color?: string | null }) => {
+    setEditingId(null);
+    // Synthetic local-only tags were never persisted: just detach.
+    if (!tag.id || tag.id.startsWith("tag-")) {
+      const nextNames = activeTags.filter(
+        (t) => t.toLowerCase() !== tag.name.toLowerCase()
+      );
+      const nextIds = activeTagIds.filter((id) => id !== tag.id);
+      onTagsUpdated(nextNames, nextIds);
+      await persistTagIds(nextIds);
+      return;
+    }
+    const tagId = tag.id;
+    const snap = { name: tag.name, color: tag.color || TACTILE_COLOR_SWATCHES[0].hex };
+    const wasAttached = activeTags.some(
+      (t) => t.toLowerCase() === tag.name.toLowerCase()
+    );
+    const nextNames = activeTags.filter(
+      (t) => t.toLowerCase() !== tag.name.toLowerCase()
+    );
+    const nextIds = activeTagIds.filter((id) => id !== tagId);
+
+    // Optimistic removal from the pool and the task
+    setAvailableTags((prev) => prev.filter((t) => t.id !== tagId));
+    if (wasAttached) {
+      onTagsUpdated(nextNames, nextIds);
+      await persistTagIds(nextIds);
+    }
+
+    const doRestDelete = async () => {
+      try {
+        await deleteTag(tagId);
+      } catch (err) {
+        console.error("Failed to delete tag on backend:", err);
+      }
+    };
+    if (userId) {
+      try {
+        await mutate(userId, { entity: "tags", op: "delete", entityId: tagId });
+      } catch {
+        await doRestDelete();
+      }
+    } else {
+      await doRestDelete();
+    }
+    toast({
+      title: "Tag deleted",
+      message: `"${snap.name}" was removed${wasAttached ? " from this task" : ""}.`,
+      actionLabel: "Undo",
+      onAction: () => {
+        void handleUndoDeleteTag(snap);
+      },
+    });
   };
 
   const handleCreateNewTag = async () => {
     const trimmed = searchQuery.trim();
     if (!trimmed || isCreating) return;
+    if (allTags.some((t) => t.name.toLowerCase() === trimmed.toLowerCase())) {
+      toast({
+        title: "Tag exists",
+        message: `You already have a tag called "${trimmed}"`,
+        type: "error",
+      });
+      return;
+    }
 
     setIsCreating(true);
 
@@ -324,6 +506,13 @@ export function TagPickerPopover({
             )}
           </div>
 
+          {/* Duplicate-name guard: typing an existing name explains why no create row appears */}
+          {!isLoading && duplicateNameHint && (
+            <div className="px-2 pt-1 text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
+              You already have a tag called &quot;{duplicateNameHint}&quot;
+            </div>
+          )}
+
           {/* Tags List */}
           <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
             {isLoading && (
@@ -344,27 +533,82 @@ export function TagPickerPopover({
                 const isActive = activeTags.some(
                   (at) => at.toLowerCase() === t.name.toLowerCase()
                 );
+                const rowKey = t.id || t.name;
+                const isEditing = editingId === rowKey;
                 return (
-                  <button
-                    key={t.id || t.name}
-                    type="button"
-                    onClick={() => handleToggleTag(t)}
+                  <div
+                    key={rowKey}
                     className={cn(
-                      "flex w-full items-center justify-between rounded-md px-2 py-1 text-xs font-medium transition-colors cursor-pointer",
+                      "group flex w-full items-center gap-1 rounded-md px-1 py-0.5 text-xs font-medium transition-colors",
                       isActive
                         ? "bg-[#09318D]/10 text-[#09318D] font-bold dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
                         : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-[#E4E8F2] dark:hover:bg-[#082363]"
                     )}
                   >
-                    <div className="flex items-center gap-1.5 truncate">
-                      <span
-                        className="h-2 w-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: t.color || "#09318D" }}
+                    {isEditing ? (
+                      <input
+                        autoFocus
+                        type="text"
+                        value={editingName}
+                        maxLength={100}
+                        onChange={(e) => setEditingName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleRenameTag(t);
+                          if (e.key === "Escape") {
+                            setEditingId(null);
+                            setEditingName("");
+                          }
+                        }}
+                        onBlur={() => void handleRenameTag(t)}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`Rename tag ${t.name}`}
+                        className="min-w-0 flex-1 rounded border border-[#09318D] bg-white px-1.5 py-0.5 text-xs text-[#0B1220] focus:outline-none dark:border-[#FD91CC] dark:bg-[#082363] dark:text-white"
                       />
-                      <span className="truncate">{t.name}</span>
-                    </div>
-                    {isActive && <Check className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />}
-                  </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleTag(t)}
+                        title={isActive ? `Remove tag ${t.name}` : `Add tag ${t.name}`}
+                        className="flex min-w-0 flex-1 items-center justify-between gap-1 rounded px-1 py-0.5 text-left cursor-pointer"
+                      >
+                        <div className="flex min-w-0 items-center gap-1.5 truncate">
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: t.color || "#09318D" }}
+                          />
+                          <span className="truncate">{t.name}</span>
+                        </div>
+                        {isActive && <Check className="h-3.5 w-3.5 shrink-0 text-[#09318D] dark:text-[#FD91CC]" />}
+                      </button>
+                    )}
+                    {!isEditing && (
+                      <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                        {t.id && !t.id.startsWith("tag-") && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingId(rowKey);
+                              setEditingName(t.name);
+                            }}
+                            title={`Rename tag ${t.name}`}
+                            aria-label={`Rename tag ${t.name}`}
+                            className="rounded p-1 text-[#5B6478] hover:bg-[#E4E8F2] hover:text-[#09318D] dark:text-[#9BB0D3] dark:hover:bg-[#082363] cursor-pointer"
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteTag(t)}
+                          title={`Delete tag ${t.name}`}
+                          aria-label={`Delete tag ${t.name}`}
+                          className="rounded p-1 text-[#5B6478] hover:bg-rose-50 hover:text-rose-600 dark:text-[#9BB0D3] dark:hover:bg-rose-950/40 dark:hover:text-rose-400 cursor-pointer"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 );
               })}
           </div>
