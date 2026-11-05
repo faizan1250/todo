@@ -4,6 +4,7 @@ import * as React from "react";
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { Sidebar } from "./sidebar";
 import { TaskPane } from "./task-pane";
+import { CalendarView } from "./calendar-view";
 import { TaskDetailPanel } from "./task-detail-panel";
 import { StreakCelebration } from "./streak-celebration";
 import { CommandPalette } from "./command-palette";
@@ -23,6 +24,7 @@ import {
   getTask,
   getViewsCounts,
   getViewItems,
+  getCalendar,
   createTask,
   quickAddTask,
   updateTask,
@@ -53,7 +55,7 @@ import {
   priorityUiToBackend,
   taskItemToBackendUpdateInput,
 } from "@/lib/adapters";
-import type { TaskItem, ListId, FolderId, Priority } from "./types";
+import type { TaskItem, ListId, FolderId, Priority, ViewMode } from "./types";
 
 const INITIAL_WORKSPACE_TASKS: TaskItem[] = [
   {
@@ -289,6 +291,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [viewHasMore, setViewHasMore] = useState(false);
   const [isLoadingView, setIsLoadingView] = useState(false);
   const [selectedListOverride, setSelectedListOverride] = useState<ListId | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
+  const [calendarItems, setCalendarItems] = useState<
+    import("@/lib/api").BackendCalendarItem[]
+  >([]);
+  const [isLoadingCalendar, setIsLoadingCalendar] = useState(false);
+  const [includeDone, setIncludeDone] = useState(false);
 
   // Modals state for Lists & Folders
   const [isListDialogOpen, setIsListDialogOpen] = useState(false);
@@ -328,6 +337,35 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [streakCount, setStreakCount] = useState(5);
   const [isStreakActive, setIsStreakActive] = useState(false);
   const [streakTaskTitle, setStreakTaskTitle] = useState("");
+
+  // Calendar fetch
+  useEffect(() => {
+    if (viewMode !== "calendar") return;
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    const run = async () => {
+      setIsLoadingCalendar(true);
+      try {
+        const year = calendarMonth.getFullYear();
+        const monthIndex = calendarMonth.getMonth();
+        const first = new Date(year, monthIndex, 1);
+        const last = new Date(year, monthIndex + 1, 0);
+        const from = first.toISOString().slice(0, 10);
+        const to = last.toISOString().slice(0, 10);
+        const res = await getCalendar({ from, to, include_done: includeDone });
+        if (!cancelled) setCalendarItems(res.items ?? []);
+      } catch (err) {
+        console.error("Failed to load calendar:", err);
+        if (!cancelled) setCalendarItems([]);
+      } finally {
+        if (!cancelled) setIsLoadingCalendar(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, isAuthenticated, calendarMonth, includeDone]);
 
   // Container CRUD handlers
   const handleCreateList = useCallback((folderId?: string | null) => {
@@ -1792,27 +1830,58 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         className="hidden md:flex"
       />
 
-      {/* Main Task Pane */}
-      <TaskPane
-        tasks={tasks}
-        activeList={activeList}
-        activeListId={activeListId}
-        activeListName={activeListName}
-        activeFolder={activeFolder}
-        folders={userFolders}
-        selectedTaskId={selectedTaskId}
-        selectedTaskIds={selectedTaskIds}
-        onToggleSelectTask={handleToggleSelectTask}
-        onSelectTask={(task) => setSelectedTaskId(task.id)}
-        onToggleComplete={handleToggleComplete}
-        onDeleteTask={handleDeleteTask}
-        onAddTask={handleAddTask}
-        onQuickAddTask={handleQuickAddTask}
-        isLoading={isLoadingTasks || isLoadingView}
-        hasMore={viewHasMore}
-        isLoadingMore={isLoadingView}
-        onLoadMore={handleLoadMoreView}
-      />
+      {/* Main Task Pane / Calendar View */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-[#E4E8F2] bg-white px-4 py-2 dark:border-[#132E74] dark:bg-[#051A4D]">
+          <button
+            type="button"
+            onClick={() => setViewMode("list")}
+            className={`rounded-md px-3 py-1 text-sm ${viewMode === "list" ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]" : "text-[#5B6478] hover:bg-[#F4F6FB] dark:text-[#9BB0D3] dark:hover:bg-[#0A2A6B]"}`}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("calendar")}
+            className={`rounded-md px-3 py-1 text-sm ${viewMode === "calendar" ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]" : "text-[#5B6478] hover:bg-[#F4F6FB] dark:text-[#9BB0D3] dark:hover:bg-[#0A2A6B]"}`}
+          >
+            Calendar
+          </button>
+        </div>
+        {viewMode === "calendar" ? (
+          <CalendarView
+            items={calendarItems}
+            isLoading={isLoadingCalendar}
+            month={calendarMonth}
+            onMonthChange={setCalendarMonth}
+            onSelectTask={(id) => setSelectedTaskId(id)}
+            includeDone={includeDone}
+            onToggleIncludeDone={setIncludeDone}
+            className="flex-1"
+          />
+        ) : (
+          <TaskPane
+            tasks={tasks}
+            activeList={activeList}
+            activeListId={activeListId}
+            activeListName={activeListName}
+            activeFolder={activeFolder}
+            folders={userFolders}
+            selectedTaskId={selectedTaskId}
+            selectedTaskIds={selectedTaskIds}
+            onToggleSelectTask={handleToggleSelectTask}
+            onSelectTask={(task) => setSelectedTaskId(task.id)}
+            onToggleComplete={handleToggleComplete}
+            onDeleteTask={handleDeleteTask}
+            onAddTask={handleAddTask}
+            onQuickAddTask={handleQuickAddTask}
+            isLoading={isLoadingTasks || isLoadingView}
+            hasMore={viewHasMore}
+            isLoadingMore={isLoadingView}
+            onLoadMore={handleLoadMoreView}
+          />
+        )}
+      </div>
 
       {/* Collapsible Task Detail Panel */}
       {selectedTask && (

@@ -8,6 +8,8 @@ export type SystemViewId =
   | "no-date"
   | "all";
 
+export type ViewMode = "list" | "calendar";
+
 export type ListId = SystemViewId | (string & {});
 
 export type FolderId = "engineering" | "design" | "personal" | (string & {});
