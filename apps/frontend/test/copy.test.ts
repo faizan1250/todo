@@ -67,10 +67,10 @@ describe("copy dictionary", () => {
     }
   });
 
-  it("exports a copy object with auth, onboarding, and account sections", () => {
-    const { copy } = require("../src/lib/copy");
-    expect(copy.auth).toBeDefined();
-    expect(copy.onboarding).toBeDefined();
-    expect(copy.account).toBeDefined();
+  it("exports a copy object with auth, onboarding, and account sections", async () => {
+    const mod = await import("../src/lib/copy");
+    expect(mod.copy.auth).toBeDefined();
+    expect(mod.copy.onboarding).toBeDefined();
+    expect(mod.copy.account).toBeDefined();
   });
 });
