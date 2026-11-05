@@ -1319,6 +1319,73 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     [isAuthenticated, userLists, userId, success, toast]
   );
 
+  // Drag-reorder drop from the task pane (dnd-kit). Optimistic splice in both
+  // the main list and the filter list (whichever holds the task), then an
+  // offline-first mutate "move" with afterId/beforeId — the server recomputes
+  // position authoritatively and repairs collisions. REST is the fallback.
+  // sectionId undefined = same-section reorder; null = move to unsectioned.
+  const handleReorderTask = useCallback(
+    async (
+      taskId: string,
+      target: { sectionId: string | null | undefined; afterId: string | null; beforeId: string | null }
+    ) => {
+      const spliceInto = (prev: TaskItem[]): TaskItem[] => {
+        const from = prev.findIndex((t) => t.id === taskId);
+        if (from < 0) return prev;
+        const moving = prev[from];
+        const moved: TaskItem = {
+          ...moving,
+          ...(target.sectionId !== undefined ? { sectionId: target.sectionId } : null),
+          updatedAt: "Just now",
+        };
+        const without = prev.filter((t) => t.id !== taskId);
+        let at: number;
+        if (target.beforeId) {
+          const i = without.findIndex((t) => t.id === target.beforeId);
+          at = i < 0 ? without.length : i;
+        } else if (target.afterId) {
+          const i = without.findIndex((t) => t.id === target.afterId);
+          at = i < 0 ? without.length : i + 1;
+        } else {
+          // Sole-member scope (e.g. dropped into an empty section): keep the
+          // row where the grouping puts it; the move still persists sectionId.
+          at = from < without.length ? from : without.length;
+        }
+        return [...without.slice(0, at), moved, ...without.slice(at)];
+      };
+      setTasks(spliceInto);
+      setFilterTasks(spliceInto);
+      if (isAuthenticated && !taskId.startsWith("temp-") && !taskId.startsWith("task-")) {
+        const patch: Record<string, unknown> = {
+          afterId: target.afterId,
+          beforeId: target.beforeId,
+        };
+        if (target.sectionId !== undefined) patch["sectionId"] = target.sectionId;
+        const doRestMove = () => moveTask(taskId, patch);
+        try {
+          if (userId) {
+            await mutate(userId, { entity: "tasks", op: "move", entityId: taskId, patch });
+          } else {
+            await doRestMove();
+          }
+        } catch (err) {
+          console.error("Failed to reorder task:", err);
+          try {
+            await doRestMove();
+          } catch (restErr) {
+            console.error("Failed to reorder task on backend:", restErr);
+            toast({
+              title: "Move failed",
+              message: restErr instanceof Error ? restErr.message : "Could not move task",
+              type: "error",
+            });
+          }
+        }
+      }
+    },
+    [isAuthenticated, userId, toast]
+  );
+
   const handleMoveFilter = useCallback(
     async (id: string, dir: "up" | "down") => {
       const idx = savedFilters.findIndex((f) => f.id === id);
@@ -2938,6 +3005,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             onDuplicateTask={handleDuplicateTask}
             onArchiveTask={handleArchiveTask}
             onMoveTask={handleMovePanelTask}
+            onReorderTask={handleReorderTask}
             isLoading={activeFilterId ? isLoadingFilter : (isLoadingTasks || isLoadingView)}
             showListName={PHASE4_VIEWS.has(activeList) || activeFilterId !== null}
             hasMore={activeFilterId ? filterHasMore : viewHasMore}
