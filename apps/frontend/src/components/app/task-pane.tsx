@@ -21,6 +21,7 @@ import {
   Tag,
   Repeat,
   Clock,
+  Bookmark,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -67,6 +68,7 @@ interface TaskPaneProps {
   hasMore?: boolean;
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
+  onOpenTemplates?: () => void;
 }
 
 export function TaskPane({
@@ -89,6 +91,7 @@ export function TaskPane({
   hasMore = false,
   isLoadingMore = false,
   onLoadMore,
+  onOpenTemplates,
 }: TaskPaneProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "completed">("all");
@@ -625,6 +628,18 @@ export function TaskPane({
               <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-[#E4E8F2] bg-[#F2F5FC] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#5B6478] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3]">
                 ↵ Enter
               </kbd>
+            )}
+            {onOpenTemplates && (
+              <button
+                type="button"
+                onClick={onOpenTemplates}
+                title="New from template"
+                aria-label="New from template"
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#E4E8F2] bg-[#F2F5FC]/60 px-2 py-1 text-[11px] font-semibold text-[#5B6478] transition-colors hover:border-[#09318D]/40 hover:text-[#09318D] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC]/50 dark:hover:text-[#FFA8D7] cursor-pointer"
+              >
+                <Bookmark className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Template</span>
+              </button>
             )}
           </div>
 
