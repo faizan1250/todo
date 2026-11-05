@@ -43,6 +43,7 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { InsertionLine, SortableTaskRow, TaskRow } from "./task-row";
 import { isNoopMove, moveNeighbors } from "@/lib/tasks/reorder";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +76,10 @@ export interface ReorderTarget {
   afterId: string | null;
   beforeId: string | null;
 }
+
+// Rows are h-14 (56px); lists longer than this virtualize (flat only).
+const VIRTUALIZE_AFTER = 200;
+const VIRTUAL_ROW_PX = 56;
 
 // dnd-kit container ids. "flat" = ungrouped list (no sections exist);
 // "unsectioned" = the no-section group when sections exist.
@@ -274,7 +279,7 @@ export function TaskPane({
 
   const quickAddContainerRef = useRef<HTMLDivElement>(null);
   const quickAddInputRef = useRef<HTMLInputElement>(null);
-  const newSectionInputRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);  const newSectionInputRef = useRef<HTMLInputElement>(null);
   const editSectionInputRef = useRef<HTMLInputElement>(null);
   const sectionTaskInputRef = useRef<HTMLInputElement>(null);
 
@@ -541,6 +546,17 @@ export function TaskPane({
   const [dropMark, setDropMark] = useState<ResolvedDrop | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const keyboardDrag = useRef(false);
+
+  // Virtualize long flat lists (fixed 56px rows). Grouped lists keep a normal
+  // render — headers stay sticky-friendly and section drops stay measurable.
+  const shouldVirtualize =
+    effectiveSections.length === 0 && tasksForGrouping.length > VIRTUALIZE_AFTER;
+  const rowVirtualizer = useVirtualizer({
+    count: tasksForGrouping.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => VIRTUAL_ROW_PX,
+    overscan: 8,
+  });
 
   const handleDragStart = (event: DragStartEvent) => {
     const id = String(event.active.id);
@@ -916,7 +932,12 @@ export function TaskPane({
 
   // Shared row renderer. Sortable when the workspace provided onReorderTask
   // (done-group rows stay plain — completed items don't reorder).
-  const renderTaskRow = (task: TaskItem, ordered: TaskItem[], containerId?: string) => {
+  const renderTaskRow = (
+    task: TaskItem,
+    ordered: TaskItem[],
+    containerId?: string,
+    wrapperStyle?: React.CSSProperties
+  ) => {
     const row = (
       <TaskRow
         key={task.id}
@@ -975,6 +996,7 @@ export function TaskPane({
             : undefined
         }
         insertion={mark}
+        wrapperStyle={wrapperStyle}
       />
     );
   };
@@ -1018,7 +1040,7 @@ export function TaskPane({
   };
 
   return (
-    <div className="flex flex-1 flex-col overflow-y-auto bg-[#F2F5FC]/40 dark:bg-[#051A4D]/40">
+    <div ref={scrollRef} className="flex flex-1 flex-col overflow-y-auto bg-[#F2F5FC]/40 dark:bg-[#051A4D]/40">
       {/* Workspace Header Toolbar */}
       <div className="border-b border-[#E4E8F2] bg-white px-4 py-4 sm:px-6 dark:border-[#132E74] dark:bg-[#051A4D]">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1514,11 +1536,37 @@ export function TaskPane({
                   items={tasksForGrouping.map((t) => t.id)}
                   strategy={verticalListSortingStrategy}
                 >
-                  {tasksForGrouping.map((task) =>
-                    renderTaskRow(task, tasksForGrouping, FLAT_CONTAINER)
-                  )}
-                  {dropMark?.containerId === FLAT_CONTAINER && !dropMark.overTaskId && (
-                    <InsertionLine />
+                  {shouldVirtualize ? (
+                    <div
+                      style={{
+                        height: rowVirtualizer.getTotalSize(),
+                        position: "relative",
+                      }}
+                    >
+                      {rowVirtualizer.getVirtualItems().map((vi) => {
+                        const task = tasksForGrouping[vi.index];
+                        if (!task) return null;
+                        return renderTaskRow(task, tasksForGrouping, FLAT_CONTAINER, {
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          transform: `translateY(${vi.start}px)`,
+                        });
+                      })}
+                      {dropMark?.containerId === FLAT_CONTAINER && !dropMark.overTaskId && (
+                        <InsertionLine />
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      {tasksForGrouping.map((task) =>
+                        renderTaskRow(task, tasksForGrouping, FLAT_CONTAINER)
+                      )}
+                      {dropMark?.containerId === FLAT_CONTAINER && !dropMark.overTaskId && (
+                        <InsertionLine />
+                      )}
+                    </>
                   )}
                 </SortableContext>
               </EndDropZone>
