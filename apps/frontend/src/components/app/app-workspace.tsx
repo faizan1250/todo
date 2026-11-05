@@ -1843,8 +1843,13 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         return;
       }
 
-      // N -> Quick-focus task creation
-      if (e.key.toLowerCase() === "n" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // N / Q -> Quick-focus task creation
+      if (
+        (e.key.toLowerCase() === "n" || e.key.toLowerCase() === "q") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
         e.preventDefault();
         const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
         input?.focus();
