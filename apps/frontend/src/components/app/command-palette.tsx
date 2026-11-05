@@ -17,9 +17,18 @@ import {
   Keyboard,
   Bookmark,
   Trash2,
+  Loader2,
+  Tag,
+  List as ListIcon,
+  Filter,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ListId, FolderId } from "./types";
+import { search } from "@/lib/api";
+import type {
+  BackendSearchResponse,
+  BackendSearchTaskResult,
+} from "@/lib/api";
 
 export interface CommandAction {
   id: string;
@@ -43,6 +52,45 @@ interface CommandPaletteProps {
   onOpenShortcuts?: () => void;
   onOpenTrash?: () => void;
   onOpenTemplates?: () => void;
+  onOpenTask?: (taskId: string) => void;
+}
+
+// Markers used by backend FTS snippet: char(1) / char(2)
+const MARK_START = "\u0001";
+const MARK_END = "\u0002";
+
+function parseHighlight(input: string): Array<{ text: string; mark: boolean }> {
+  const out: Array<{ text: string; mark: boolean }> = [];
+  let buf = "";
+  let inMark = false;
+  for (const ch of input) {
+    if (ch === MARK_START) {
+      if (buf) out.push({ text: buf, mark: inMark });
+      buf = "";
+      inMark = true;
+    } else if (ch === MARK_END) {
+      if (buf) out.push({ text: buf, mark: inMark });
+      buf = "";
+      inMark = false;
+    } else {
+      buf += ch;
+    }
+  }
+  if (buf) out.push({ text: buf, mark: inMark });
+  return out;
+}
+
+function Highlighted({ text }: { text: string }) {
+  const segments = parseHighlight(text || "");
+  return (
+    <>
+      {segments.map((seg, i) =>
+        seg.mark ? <mark key={i} className="bg-yellow-200/70 text-inherit dark:bg-yellow-500/30 rounded px-0.5">{seg.text}</mark> : (
+          <React.Fragment key={i}>{seg.text}</React.Fragment>
+        )
+      )}
+    </>
+  );
 }
 
 export function CommandPalette({
@@ -57,10 +105,15 @@ export function CommandPalette({
   onOpenShortcuts,
   onOpenTrash,
   onOpenTemplates,
+  onOpenTask,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const [results, setResults] = useState<BackendSearchResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Global Cmd+K / Ctrl+K keyboard shortcut listener
   useEffect(() => {
@@ -69,8 +122,6 @@ export function CommandPalette({
         e.preventDefault();
         if (isOpen) {
           onClose();
-        } else {
-          // Trigger handled outside or via prop
         }
       }
     };
@@ -91,12 +142,40 @@ export function CommandPalette({
   const handleClose = () => {
     setQuery("");
     setSelectedIndex(0);
+    setResults(null);
+    setError(null);
+    setLoading(false);
     onClose();
   };
 
+  // Debounced search
+  useEffect(() => {
+    if (!isOpen) return;
+    const q = query.trim();
+    if (!q) {
+      setResults(null);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    const timer = setTimeout(() => {
+      search({ q, types: "tasks,lists,tags,filters", limit: 20 })
+        .then((res) => {
+          setResults(res);
+          setLoading(false);
+        })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : "Search failed");
+          setLoading(false);
+        });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [query, isOpen]);
+
   const actions: CommandAction[] = useMemo(
     () => [
-      // Navigation
       {
         id: "nav-today",
         title: "Go to Today's Tasks",
@@ -173,7 +252,6 @@ export function CommandPalette({
           onOpenTrash?.();
         },
       },
-      // Folders
       {
         id: "folder-engineering",
         title: "Filter: Engineering Folder",
@@ -207,7 +285,6 @@ export function CommandPalette({
           onClose();
         },
       },
-      // Actions
       {
         id: "act-new-task",
         title: "Create New Task",
@@ -237,7 +314,7 @@ export function CommandPalette({
         subtitle: "Collapse or expand left sidebar",
         category: "Actions",
         icon: PanelLeft,
-        shortcut: "⌘\\",
+        shortcut: "\u2318\\",
         perform: () => {
           onToggleSidebar();
           onClose();
@@ -300,21 +377,65 @@ export function CommandPalette({
     );
   }, [actions, query]);
 
+  // Build navigable items for keyboard.
+  const navItems = useMemo(() => {
+    const items: Array<{ id: string; perform: () => void }> = [];
+    if (query.trim() && results) {
+      (results.tasks || []).forEach((t: BackendSearchTaskResult) => {
+        items.push({
+          id: `search-task-${t.id}`,
+          perform: () => {
+            onOpenTask?.(t.id);
+            handleClose();
+          },
+        });
+      });
+      (results.lists || []).forEach((l) => {
+        items.push({
+          id: `search-list-${l.id}`,
+          perform: () => {
+            handleClose();
+          },
+        });
+      });
+      (results.tags || []).forEach((t) => {
+        items.push({
+          id: `search-tag-${t.id}`,
+          perform: () => {
+            handleClose();
+          },
+        });
+      });
+      (results.filters || []).forEach((f) => {
+        items.push({
+          id: `search-filter-${f.id}`,
+          perform: () => {
+            handleClose();
+          },
+        });
+      });
+    }
+    filteredActions.forEach((a) => {
+      items.push({ id: a.id, perform: a.perform });
+    });
+    return items;
+  }, [query, results, filteredActions, onOpenTask]);
+
   // Keyboard navigation within list
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setSelectedIndex((prev) =>
-        prev < filteredActions.length - 1 ? prev + 1 : 0
+        navItems.length ? (prev < navItems.length - 1 ? prev + 1 : 0) : 0
       );
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIndex((prev) =>
-        prev > 0 ? prev - 1 : filteredActions.length - 1
+        navItems.length ? (prev > 0 ? prev - 1 : navItems.length - 1) : 0
       );
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const current = filteredActions[selectedIndex];
+      const current = navItems[selectedIndex];
       if (current) {
         current.perform();
       }
@@ -325,6 +446,8 @@ export function CommandPalette({
   };
 
   if (!isOpen) return null;
+
+  const hasQuery = !!query.trim();
 
   return (
     <div
@@ -350,85 +473,245 @@ export function CommandPalette({
               setQuery(e.target.value);
               setSelectedIndex(0);
             }}
-            placeholder="Type a command or search actions..."
+            placeholder="Type a command or search tasks..."
             className="w-full bg-transparent px-3 py-3.5 text-sm text-[#0B1220] placeholder:text-[#5B6478]/60 focus:outline-none dark:text-white dark:placeholder:text-[#9BB0D3]/60"
           />
-          <kbd className="rounded border border-[#E4E8F2] bg-[#F2F5FC] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#5B6478] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]">
+          {loading && <Loader2 className="h-4 w-4 animate-spin text-[#09318D] dark:text-[#FD91CC]" />}
+          <kbd className="ml-2 rounded border border-[#E4E8F2] bg-[#F2F5FC] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#5B6478] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]">
             ESC
           </kbd>
         </div>
 
         {/* Results List */}
         <div className="max-h-80 overflow-y-auto p-2 space-y-1">
-          {filteredActions.length === 0 ? (
+          {hasQuery && loading && !results && (
+            <div className="p-8 text-center text-xs text-[#5B6478] dark:text-[#9BB0D3]">Searching…</div>
+          )}
+
+          {hasQuery && error && (
+            <div className="p-8 text-center text-xs text-red-500">{error}</div>
+          )}
+
+          {hasQuery && !loading && !error && results && (
+            <>
+              {/* Tasks */}
+              {(results.tasks || []).length > 0 && (
+                <div className="mb-2">
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#5B6478] dark:text-[#9BB0D3]">Tasks</div>
+                  {(results.tasks || []).map((t: BackendSearchTaskResult, idx: number) => {
+                    const globalIdx = idx; // not exact but ok
+                    const isSelected = navItems.findIndex((n) => n.id === `search-task-${t.id}`) === selectedIndex;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => {
+                          onOpenTask?.(t.id);
+                          handleClose();
+                        }}
+                        onMouseEnter={() => {
+                          const i = navItems.findIndex((n) => n.id === `search-task-${t.id}`);
+                          if (i >= 0) setSelectedIndex(i);
+                        }}
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-xs transition-colors cursor-pointer",
+                          isSelected
+                            ? "bg-[#09318D] text-white dark:bg-[#0D41B4] shadow-xs"
+                            : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                        )}
+                      >
+                        <div className="min-w-0">
+                          <div className="font-semibold truncate">
+                            <Highlighted text={t.titleHl || t.title} />
+                          </div>
+                          {(t.notesHl || t.notes) && (
+                            <div className={cn("text-[10px] truncate", isSelected ? "text-white/80" : "text-[#5B6478] dark:text-[#9BB0D3]")}>
+                              <Highlighted text={t.notesHl || t.notes || ""} />
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Lists */}
+              {(results.lists || []).length > 0 && (
+                <div className="mb-2">
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#5B6478] dark:text-[#9BB0D3]">Lists</div>
+                  {(results.lists || []).map((l) => {
+                    const isSelected = navItems.findIndex((n) => n.id === `search-list-${l.id}`) === selectedIndex;
+                    return (
+                      <button
+                        key={l.id}
+                        type="button"
+                        onClick={handleClose}
+                        onMouseEnter={() => {
+                          const i = navItems.findIndex((n) => n.id === `search-list-${l.id}`);
+                          if (i >= 0) setSelectedIndex(i);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-xs transition-colors cursor-pointer",
+                          isSelected
+                            ? "bg-[#09318D] text-white dark:bg-[#0D41B4] shadow-xs"
+                            : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                        )}
+                      >
+                        <ListIcon className="h-3.5 w-3.5" />
+                        <span className="truncate">{l.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Tags */}
+              {(results.tags || []).length > 0 && (
+                <div className="mb-2">
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#5B6478] dark:text-[#9BB0D3]">Tags</div>
+                  {(results.tags || []).map((t) => {
+                    const isSelected = navItems.findIndex((n) => n.id === `search-tag-${t.id}`) === selectedIndex;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={handleClose}
+                        onMouseEnter={() => {
+                          const i = navItems.findIndex((n) => n.id === `search-tag-${t.id}`);
+                          if (i >= 0) setSelectedIndex(i);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-xs transition-colors cursor-pointer",
+                          isSelected
+                            ? "bg-[#09318D] text-white dark:bg-[#0D41B4] shadow-xs"
+                            : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                        )}
+                      >
+                        <Tag className="h-3.5 w-3.5" />
+                        <span className="truncate">{t.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Saved Filters */}
+              {(results.filters || []).length > 0 && (
+                <div className="mb-2">
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#5B6478] dark:text-[#9BB0D3]">Saved Filters</div>
+                  {(results.filters || []).map((f) => {
+                    const isSelected = navItems.findIndex((n) => n.id === `search-filter-${f.id}`) === selectedIndex;
+                    return (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={handleClose}
+                        onMouseEnter={() => {
+                          const i = navItems.findIndex((n) => n.id === `search-filter-${f.id}`);
+                          if (i >= 0) setSelectedIndex(i);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-xs transition-colors cursor-pointer",
+                          isSelected
+                            ? "bg-[#09318D] text-white dark:bg-[#0D41B4] shadow-xs"
+                            : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                        )}
+                      >
+                        <Filter className="h-3.5 w-3.5" />
+                        <span className="truncate">{f.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {(results.tasks || []).length === 0 &&
+                (results.lists || []).length === 0 &&
+                (results.tags || []).length === 0 &&
+                (results.filters || []).length === 0 && (
+                  <div className="p-8 text-center text-xs text-[#5B6478] dark:text-[#9BB0D3]">
+                    No results for &ldquo;{query}&rdquo;
+                  </div>
+                )}
+            </>
+          )}
+
+          {/* Actions (always when query) */}
+          {filteredActions.length > 0 && (
+            <div className="mb-2">
+              {hasQuery && (
+                <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#5B6478] dark:text-[#9BB0D3]">Actions</div>
+              )}
+              {filteredActions.map((action, idx) => {
+                const navIdx = navItems.findIndex((n) => n.id === action.id);
+                const isSelected = navIdx >= 0 && navIdx === selectedIndex;
+                const Icon = action.icon;
+                return (
+                  <button
+                    key={action.id}
+                    type="button"
+                    onClick={action.perform}
+                    onMouseEnter={() => {
+                      if (navIdx >= 0) setSelectedIndex(navIdx);
+                    }}
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-xs transition-colors cursor-pointer",
+                      isSelected
+                        ? "bg-[#09318D] text-white dark:bg-[#0D41B4] shadow-xs"
+                        : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
+                    )}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={cn(
+                          "flex h-7 w-7 items-center justify-center rounded-lg border",
+                          isSelected
+                            ? "border-white/30 bg-white/10 text-white"
+                            : "border-[#E4E8F2] bg-[#F2F5FC] text-[#09318D] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#FD91CC]"
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{action.title}</div>
+                        {action.subtitle && (
+                          <div
+                            className={cn(
+                              "text-[10px] truncate",
+                              isSelected ? "text-white/80" : "text-[#5B6478] dark:text-[#9BB0D3]"
+                            )}
+                          >
+                            {action.subtitle}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {action.shortcut && (
+                        <kbd
+                          className={cn(
+                            "rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold",
+                            isSelected
+                              ? "border-white/30 bg-white/20 text-white"
+                              : "border-[#E4E8F2] bg-[#F2F5FC] text-[#5B6478] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
+                          )}
+                        >
+                          {action.shortcut}
+                        </kbd>
+                      )}
+                      {isSelected && <ArrowRight className="h-3.5 w-3.5 text-white" />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {!hasQuery && filteredActions.length === 0 && (
             <div className="p-8 text-center text-xs text-[#5B6478] dark:text-[#9BB0D3]">
               No commands matching &ldquo;{query}&rdquo;
             </div>
-          ) : (
-            filteredActions.map((action, idx) => {
-              const isSelected = idx === selectedIndex;
-              const Icon = action.icon;
-
-              return (
-                <button
-                  key={action.id}
-                  type="button"
-                  onClick={action.perform}
-                  onMouseEnter={() => setSelectedIndex(idx)}
-                  className={cn(
-                    "flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-xs transition-colors cursor-pointer",
-                    isSelected
-                      ? "bg-[#09318D] text-white dark:bg-[#0D41B4] shadow-xs"
-                      : "text-[#0B1220] hover:bg-[#F2F5FC] dark:text-white dark:hover:bg-[#082363]"
-                  )}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      className={cn(
-                        "flex h-7 w-7 items-center justify-center rounded-lg border",
-                        isSelected
-                          ? "border-white/30 bg-white/10 text-white"
-                          : "border-[#E4E8F2] bg-[#F2F5FC] text-[#09318D] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#FD91CC]"
-                      )}
-                    >
-                      <Icon className="h-3.5 w-3.5" />
-                    </div>
-
-                    <div className="min-w-0">
-                      <div className="font-semibold truncate">{action.title}</div>
-                      {action.subtitle && (
-                        <div
-                          className={cn(
-                            "text-[10px] truncate",
-                            isSelected
-                              ? "text-white/80"
-                              : "text-[#5B6478] dark:text-[#9BB0D3]"
-                          )}
-                        >
-                          {action.subtitle}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    {action.shortcut && (
-                      <kbd
-                        className={cn(
-                          "rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold",
-                          isSelected
-                            ? "border-white/30 bg-white/20 text-white"
-                            : "border-[#E4E8F2] bg-[#F2F5FC] text-[#5B6478] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                        )}
-                      >
-                        {action.shortcut}
-                      </kbd>
-                    )}
-                    {isSelected && <ArrowRight className="h-3.5 w-3.5 text-white" />}
-                  </div>
-                </button>
-              );
-            })
           )}
         </div>
 

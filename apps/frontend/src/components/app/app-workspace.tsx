@@ -20,6 +20,7 @@ import {
   getLists,
   getFolders,
   getTasks,
+  getTask,
   getViewsCounts,
   getViewItems,
   createTask,
@@ -888,6 +889,29 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     setIsShortcutsOpen(true);
     externalOpenShortcuts?.();
   }, [externalOpenShortcuts]);
+
+  const handleOpenTaskFromSearch = useCallback(
+    async (taskId: string) => {
+      if (tasks.some((t) => t.id === taskId)) {
+        setSelectedTaskId(taskId);
+        return;
+      }
+      if (!isAuthenticated) {
+        setSelectedTaskId(taskId);
+        return;
+      }
+      try {
+        const fetched = await getTask(taskId, "subtasks,checklist,tags");
+        const mapped = backendTaskToTaskItem(fetched);
+        setTasks((prev) => (prev.some((t) => t.id === mapped.id) ? prev : [mapped, ...prev]));
+        setSelectedTaskId(mapped.id);
+      } catch (err) {
+        console.error("Failed to open task from search:", err);
+        setSelectedTaskId(taskId);
+      }
+    },
+    [tasks, isAuthenticated]
+  );
 
   // Derived Inbox list and active list name
   const inboxList = useMemo(() => {
@@ -1837,6 +1861,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onOpenShortcuts={handleOpenShortcuts}
         onOpenTrash={() => setIsTrashOpen(true)}
         onOpenTemplates={() => setIsTemplatesOpen(true)}
+        onOpenTask={handleOpenTaskFromSearch}
       />
 
       {/* Global Keyboard Shortcuts Modal */}
