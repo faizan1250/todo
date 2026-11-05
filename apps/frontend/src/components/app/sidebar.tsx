@@ -15,6 +15,10 @@ import {
   HelpCircle,
   ChevronDown,
   ChevronRight,
+  AlertTriangle,
+  Flag,
+  CalendarOff,
+  ListTodo,
   MoreHorizontal,
   Pencil,
   Trash2,
@@ -68,10 +72,23 @@ interface SidebarProps {
   className?: string;
 }
 
-const SMART_VIEWS: { id: "today" | "upcoming" | "completed"; label: string; icon: React.ElementType }[] = [
+type SystemViewKey =
+  | "today"
+  | "upcoming"
+  | "overdue"
+  | "priority"
+  | "no-date"
+  | "completed"
+  | "all";
+
+const SMART_VIEWS: { id: SystemViewKey; label: string; icon: React.ElementType }[] = [
   { id: "today", label: "Today", icon: Calendar },
   { id: "upcoming", label: "Upcoming", icon: Clock },
+  { id: "overdue", label: "Overdue", icon: AlertTriangle },
+  { id: "priority", label: "Priority", icon: Flag },
+  { id: "no-date", label: "No Date", icon: CalendarOff },
   { id: "completed", label: "Completed", icon: CheckCircle2 },
+  { id: "all", label: "All", icon: ListTodo },
 ];
 
 export function Sidebar({
