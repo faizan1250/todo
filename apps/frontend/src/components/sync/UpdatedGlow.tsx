@@ -23,13 +23,14 @@ export function UpdatedRowGlow({
   className,
 }: UpdatedRowGlowProps) {
   const [glowing, setGlowing] = useState(false);
-  const [fromDevice, setFromDevice] = useState(deviceName ?? "another device");
+  const [eventDevice, setEventDevice] = useState<string | null>(null);
+  const fromDevice = eventDevice ?? deviceName ?? "another device";
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeRemoteChanged((detail) => {
       if (detail.entity !== entity || detail.id !== id) return;
-      setFromDevice(detail.deviceName);
+      setEventDevice(detail.deviceName);
       setGlowing(true);
       if (timerRef.current !== null) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
@@ -43,10 +44,7 @@ export function UpdatedRowGlow({
     };
   }, [entity, id]);
 
-  // deviceName prop wins when it changes; event value wins on remote ping.
-  useEffect(() => {
-    if (deviceName != null) setFromDevice(deviceName);
-  }, [deviceName]);
+  // deviceName prop wins at rest; event value wins for 1.2s after a ping.
 
   return (
     <div
