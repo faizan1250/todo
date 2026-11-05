@@ -1,10 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { Check, Trash2, Calendar, Tag, CheckSquare, Repeat, Clock, MapPin, Flag, FileText, ListChecks } from "lucide-react";
+import { Check, Trash2, Calendar, Tag, CheckSquare, Repeat, Clock, MapPin, Flag, FileText, ListChecks, GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatEstimate } from "@/lib/adapters";
+import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
+import { useSortable } from "@dnd-kit/sortable";
 import type { TaskItem } from "./types";
+
+/** dnd-kit activator props for the row's drag handle (listeners stay on the handle only). */
+export interface TaskRowDragHandle {
+  attributes: DraggableAttributes;
+  listeners: DraggableSyntheticListeners;
+}
 
 interface TaskRowProps {
   task: TaskItem;
@@ -22,6 +30,10 @@ interface TaskRowProps {
   onContextMenuTask?: (task: TaskItem, anchor: { x: number; y: number }) => void;
   /** Tab (indent) / Shift+Tab (outdent). The pane owns the move. */
   onIndentTask?: (id: string, direction: "indent" | "outdent") => void;
+  /** dnd-kit grip handle. When present a reorder grip renders; row clicks are unaffected. */
+  dragHandle?: TaskRowDragHandle | null;
+  /** True while this row is the active drag source (dims the resting row). */
+  isDragging?: boolean;
 }
 
 export function TaskRow({
@@ -37,6 +49,8 @@ export function TaskRow({
   onToggleBulkSelect,
   onContextMenuTask,
   onIndentTask,
+  dragHandle = null,
+  isDragging = false,
 }: TaskRowProps) {
   const isSelectionMode = Boolean(hasBulkSelection || isBulkSelected);
 
@@ -103,10 +117,26 @@ export function TaskRow({
           : isSelected
           ? "bg-[#F2F5FC] dark:bg-[#082363]"
           : "hover:bg-[#F2F5FC]/60 dark:hover:bg-[#082363]/40",
-        task.completed && "opacity-70"
+        task.completed && "opacity-70",
+        isDragging && "opacity-40"
       )}
     >
       <div className="flex items-center gap-3 min-w-0 flex-1">
+        {/* Reorder grip — the ONLY drag activator, so row click/select never fights dragging.
+            Hover-revealed on desktop, always visible on touch (hover:none). */}
+        {dragHandle && (
+          <button
+            type="button"
+            aria-label={`Reorder task ${task.title}. Press Space to lift, arrow keys to move, Space to drop, Escape to cancel.`}
+            title="Drag to reorder"
+            onClick={(e) => e.stopPropagation()}
+            {...dragHandle.attributes}
+            {...dragHandle.listeners}
+            className="flex h-7 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded text-[#CAD5E8] transition-colors duration-150 hover:bg-[#F2F5FC] hover:text-[#09318D] focus-visible:text-[#09318D] active:cursor-grabbing dark:text-[#1F459E] dark:hover:bg-[#051A4D] dark:hover:text-[#FD91CC] dark:focus-visible:text-[#FD91CC] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-70 motion-reduce:transition-none"
+          >
+            <GripVertical className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
         {/* Multi-Select Checkbox Column - ONLY rendered when selection mode is active */}
         {isSelectionMode && onToggleBulkSelect && (
           <div className="flex items-center justify-center shrink-0">
@@ -307,6 +337,49 @@ export function TaskRow({
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Pink drop-position indicator rendered above/below the hovered row during a drag. */
+export function InsertionLine() {
+  return (
+    <div
+      aria-hidden="true"
+      className="mx-3 h-0.5 shrink-0 rounded-full bg-[#FD91CC] motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150 motion-reduce:animate-none"
+    />
+  );
+}
+
+export interface SortableTaskRowProps extends TaskRowProps {
+  /** Show the pink insertion line above/below this row while dragging. */
+  insertion?: "before" | "after" | null;
+  /** Virtualizer positioning (absolute translate). Merged onto the wrapper. */
+  wrapperStyle?: React.CSSProperties;
+}
+
+/**
+ * dnd-kit sortable wrapper around TaskRow. Uses a DragOverlay in the pane for
+ * the lifted preview, so no transform is applied here — the resting row only
+ * dims and the insertion line marks the drop spot.
+ */
+export function SortableTaskRow({
+  insertion = null,
+  wrapperStyle,
+  ...rowProps
+}: SortableTaskRowProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useSortable({
+    id: rowProps.task.id,
+  });
+  return (
+    <div ref={setNodeRef} style={wrapperStyle}>
+      {insertion === "before" && <InsertionLine />}
+      <TaskRow
+        {...rowProps}
+        isDragging={isDragging}
+        dragHandle={{ attributes, listeners }}
+      />
+      {insertion === "after" && <InsertionLine />}
     </div>
   );
 }
