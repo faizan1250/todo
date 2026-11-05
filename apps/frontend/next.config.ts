@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
+  // @todo/shared ships TS source; compile it for the browser (lazy chunk).
+  transpilePackages: ["@todo/shared"],
   turbopack: {
     rules: {
       "*.css": {

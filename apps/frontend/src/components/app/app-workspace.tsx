@@ -3112,6 +3112,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             activeListName={activeFilterId ? (savedFilters.find((f) => f.id === activeFilterId)?.name) : activeTag ? `# ${activeTag.name}` : activeListName}
             activeFolder={activeFolder}
             folders={userFolders}
+            lists={userLists}
+            tags={userTags}
             selectedTaskId={selectedTaskId}
             selectedTaskIds={selectedTaskIds}
             onToggleSelectTask={handleToggleSelectTask}

@@ -63,9 +63,37 @@ import {
   parseNaturalLanguageText,
   type BackendSection,
   type BackendFolder,
+  type BackendList,
+  type BackendTag,
   type ParsedTaskResult,
 } from "@/lib/api";
 import { formatEstimate, formatDueDate } from "@/lib/adapters";
+import {
+  ParsedChips,
+  SuggestMenu,
+  FirstTip,
+  InboxExamples,
+  buildSmartParse,
+  removeChipFromText,
+  resolveHourText,
+  getActiveTrigger,
+  filterSuggestions,
+  applySuggestion,
+  loadSharedParse,
+  summarizeChips,
+  safeTimezone,
+  EMPTY_SMART_PARSE,
+  EMPTY_INBOX_EXAMPLES,
+  PLACEHOLDER_EXAMPLES,
+  isSmartTypingEnabled,
+  setSmartTypingEnabled,
+  hasSeenSmartTip,
+  markSmartTipSeen,
+  type ListSummary,
+  type ParsedChip,
+  type SuggestItem,
+  type TriggerChar,
+} from "@/components/quickadd";
 import { TaskRowSkeletonList } from "./task-skeleton";
 import { EmptyState } from "./empty-state";
 import type { TaskItem, ListId, FolderId, Priority } from "./types";
@@ -191,6 +219,9 @@ interface TaskPaneProps {
   onDuplicateTask?: (id: string) => void;
   onArchiveTask?: (id: string) => void;
   onMoveTask?: (taskId: string, listId: string, sectionId: string | null) => void;
+  /** User lists/tags for smart quick-add (@list suggestions, unknown-list check). */
+  lists?: BackendList[];
+  tags?: BackendTag[];
   /** Drag-reorder drop. sectionId undefined = same section, null = unsectioned. */
   onReorderTask?: (taskId: string, target: ReorderTarget) => void;
   isLoading?: boolean;
@@ -222,6 +253,8 @@ export function TaskPane({
   onArchiveTask,
   onMoveTask,
   onReorderTask,
+  lists = [],
+  tags = [],
   isLoading = false,
   showListName = false,
   selectedTaskIds,
@@ -266,6 +299,19 @@ export function TaskPane({
   const [isQuickAddFocused, setIsQuickAddFocused] = useState(false);
   const [openPicker, setOpenPicker] = useState<"due" | "priority" | "folder" | null>(null);
 
+  // Smart quick-add (additive): chips, suggestions, tips. OFF = plain input.
+  const [smartOn, setSmartOn] = useState(() => isSmartTypingEnabled());
+  const [tipSeen, setTipSeen] = useState(() => hasSeenSmartTip());
+  const [smartParse, setSmartParse] = useState(EMPTY_SMART_PARSE);
+  const [dismissedTokens, setDismissedTokens] = useState<Set<string>>(() => new Set());
+  const [suggest, setSuggest] = useState<{
+    trigger: TriggerChar;
+    query: string;
+    start: number;
+    index: number;
+  } | null>(null);
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
+
   // Done group: completed tasks collapse under a "Done (n)" header (collapsed by default)
   // View key resets the group back to collapsed when the viewed list/folder changes
   // (state adjusted during render — the recommended pattern over a reset effect).
@@ -282,6 +328,139 @@ export function TaskPane({
   const scrollRef = useRef<HTMLDivElement>(null);  const newSectionInputRef = useRef<HTMLInputElement>(null);
   const editSectionInputRef = useRef<HTMLInputElement>(null);
   const sectionTaskInputRef = useRef<HTMLInputElement>(null);
+
+  // ---- Smart quick-add derived data + behavior (additive, submit-safe) ----
+  const listSummaries: ListSummary[] = useMemo(
+    () => lists.map((l) => ({ id: l.id, name: l.name, isInbox: l.isInbox })),
+    [lists]
+  );
+  const tagNames = useMemo(() => tags.map((t) => t.name), [tags]);
+  const listNames = useMemo(() => listSummaries.map((l) => l.name), [listSummaries]);
+
+  const suggestItems = useMemo(
+    () =>
+      smartOn && suggest
+        ? filterSuggestions(suggest.trigger, suggest.query, tagNames, listNames)
+        : [],
+    [smartOn, suggest, tagNames, listNames]
+  );
+  const clampedSuggestIndex = suggest
+    ? Math.min(suggest.index, Math.max(suggestItems.length - 1, 0))
+    : 0;
+
+  // Full local parse via @todo/shared (lazy chunk) → chips. Additive only:
+  // the backend /parse preview badges and the submit path are untouched.
+  useEffect(() => {
+    if (!smartOn || !newTitle.trim()) {
+      setSmartParse(EMPTY_SMART_PARSE);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      loadSharedParse()
+        .then((m) => {
+          if (cancelled) return;
+          try {
+            const parsed = m.parseNaturalLanguage(newTitle, listSummaries, safeTimezone());
+            if (!cancelled) {
+              setSmartParse(buildSmartParse(newTitle, parsed.tokens, listSummaries, dismissedTokens));
+            }
+          } catch {
+            if (!cancelled) setSmartParse(EMPTY_SMART_PARSE);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setSmartParse(EMPTY_SMART_PARSE);
+        });
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [newTitle, smartOn, listSummaries, dismissedTokens]);
+
+  // Cycle placeholder examples while the input sits empty.
+  useEffect(() => {
+    if (!smartOn || newTitle.trim()) return;
+    const id = setInterval(
+      () => setPlaceholderIdx((i) => (i + 1) % PLACEHOLDER_EXAMPLES.length),
+      4000
+    );
+    return () => clearInterval(id);
+  }, [smartOn, newTitle]);
+
+  const focusInputAt = (pos: number | null) => {
+    const el = quickAddInputRef.current;
+    if (!el) return;
+    el.focus();
+    if (pos !== null) {
+      const p = Math.max(0, Math.min(pos, el.value.length));
+      requestAnimationFrame(() => {
+        try {
+          el.setSelectionRange(p, p);
+        } catch {
+          // Non-text input edge — focus alone is enough.
+        }
+      });
+    }
+  };
+
+  const updateSuggest = (value: string, caret: number | null) => {
+    if (!smartOn || caret === null) {
+      setSuggest(null);
+      return;
+    }
+    const t = getActiveTrigger(value, caret);
+    setSuggest(t ? { trigger: t.trigger, query: t.query, start: t.start, index: 0 } : null);
+  };
+
+  const handleRemoveChip = (chip: ParsedChip) => {
+    const { text, caret } = removeChipFromText(newTitle, chip);
+    setDismissedTokens((prev) => new Set(prev).add(chip.raw.trim().toLowerCase()));
+    setNewTitle(text);
+    if (!text.trim()) setParsedPreview(null);
+    focusInputAt(caret);
+  };
+
+  const handleResolveHour = (chip: ParsedChip, ampm: "am" | "pm") => {
+    const hour = smartParse.ambiguousHour?.hour;
+    if (hour === undefined || hour === null) return;
+    const { text, caret } = resolveHourText(newTitle, chip, hour, ampm);
+    setNewTitle(text);
+    focusInputAt(caret);
+  };
+
+  const handleSelectSuggestion = (item: SuggestItem) => {
+    const el = quickAddInputRef.current;
+    const caret = el?.selectionStart ?? newTitle.length;
+    const start = suggest?.start ?? caret;
+    const { text, caret: next } = applySuggestion(newTitle, caret, start, item.insert);
+    setNewTitle(text);
+    setSuggest(null);
+    focusInputAt(next);
+  };
+
+  const handleDismissTip = () => {
+    markSmartTipSeen();
+    setTipSeen(true);
+  };
+
+  const handleToggleSmart = () => {
+    const next = !smartOn;
+    setSmartOn(next);
+    setSmartTypingEnabled(next);
+    if (!next) {
+      setSuggest(null);
+      setSmartParse(EMPTY_SMART_PARSE);
+    }
+  };
+
+  const handleFillExample = (example: string) => {
+    setDismissedTokens(new Set());
+    setNewTitle(example);
+    setIsQuickAddFocused(true);
+    focusInputAt(example.length);
+  };
 
   const listTitles: Record<string, string> = {
     today: "Today",
@@ -313,6 +492,11 @@ export function TaskPane({
   const effectiveDueDate: string =
     selectedDueDateOverride ??
     (activeList === "today" ? "Today" : activeList === "upcoming" ? "Tomorrow" : "");
+
+  const quickAddPlaceholder =
+    smartOn && !newTitle.trim()
+      ? PLACEHOLDER_EXAMPLES[placeholderIdx % PLACEHOLDER_EXAMPLES.length]
+      : `+ Add task to ${resolvedTitle}... (Press Enter)`;
 
   // Click outside listener to collapse quick-add and close open pickers
   useEffect(() => {
@@ -645,6 +829,8 @@ export function TaskPane({
 
     setNewTitle("");
     setParsedPreview(null);
+    setSuggest(null);
+    setDismissedTokens(new Set());
     setSelectedDueDateOverride(null);
     setSelectedFolderOverride(null);
     setOpenPicker(null);
@@ -677,6 +863,28 @@ export function TaskPane({
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Suggest menu owns Up/Down/Enter/Tab/Escape while open.
+    if (smartOn && suggest && suggestItems.length > 0) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const dir = e.key === "ArrowDown" ? 1 : -1;
+        setSuggest((s) =>
+          s ? { ...s, index: (s.index + dir + suggestItems.length) % suggestItems.length } : s
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const item = suggestItems[clampedSuggestIndex];
+        if (item) handleSelectSuggestion(item);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSuggest(null);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleCreateTask();
@@ -684,6 +892,17 @@ export function TaskPane({
       setOpenPicker(null);
       setIsQuickAddFocused(false);
       quickAddInputRef.current?.blur();
+    } else if (e.key === "Backspace" && smartOn && !suggest) {
+      // Backspace at a chip's end boundary removes the chip (words stay).
+      const start = e.currentTarget.selectionStart;
+      const end = e.currentTarget.selectionEnd;
+      if (start !== null && start === end) {
+        const chip = smartParse.chips.find((c) => c.end === start);
+        if (chip) {
+          e.preventDefault();
+          handleRemoveChip(chip);
+        }
+      }
     }
   };
 
@@ -1152,7 +1371,7 @@ export function TaskPane({
           )}
         >
           {/* Top Line: Input prompt with Plus icon and Enter badge */}
-          <div className="flex items-center gap-2">
+          <div className="relative flex items-center gap-2">
             <Plus
               className={cn(
                 "h-4 w-4 shrink-0 transition-colors",
@@ -1171,10 +1390,14 @@ export function TaskPane({
                 setNewTitle(val);
                 if (!val.trim()) {
                   setParsedPreview(null);
+                  setDismissedTokens(new Set());
                 }
+                updateSuggest(val, e.target.selectionStart);
               }}
+              onSelect={(e) => updateSuggest(e.currentTarget.value, e.currentTarget.selectionStart)}
+              onClick={(e) => updateSuggest(e.currentTarget.value, e.currentTarget.selectionStart)}
               onKeyDown={handleInputKeyDown}
-              placeholder={`+ Add task to ${resolvedTitle}... (Press Enter)`}
+              placeholder={quickAddPlaceholder}
               className="flex-1 bg-transparent py-0.5 text-xs sm:text-sm font-medium text-[#0B1220] placeholder:text-[#5B6478]/60 focus:outline-none dark:text-white dark:placeholder:text-[#9BB0D3]/60"
             />
             {!isQuickAddFocused && newTitle.trim().length === 0 && (
@@ -1194,7 +1417,41 @@ export function TaskPane({
                 <span className="hidden sm:inline">Template</span>
               </button>
             )}
+            {smartOn && suggest && suggestItems.length > 0 && (
+              <div className="absolute inset-x-0 top-full z-30 mt-1">
+                <SuggestMenu
+                  items={suggestItems}
+                  activeIndex={clampedSuggestIndex}
+                  onSelect={handleSelectSuggestion}
+                  onHover={(i) => setSuggest((s) => (s ? { ...s, index: i } : s))}
+                />
+              </div>
+            )}
           </div>
+
+          {/* Smart chips + one-time tip (additive display, submit-safe) */}
+          {smartOn &&
+            (smartParse.chips.length > 0 ||
+              smartParse.unknownListQuery ||
+              smartParse.ambiguousHour) && (
+              <div className="mt-2">
+                <ParsedChips
+                  chips={smartParse.chips}
+                  unknownListQuery={smartParse.unknownListQuery}
+                  ambiguousHour={smartParse.ambiguousHour}
+                  onRemoveChip={handleRemoveChip}
+                  onResolveHour={handleResolveHour}
+                />
+              </div>
+            )}
+          {smartOn && !tipSeen && newTitle.trim().length > 0 && smartParse.chips.length > 0 && (
+            <div className="mt-1.5">
+              <FirstTip
+                summary={summarizeChips(smartParse.chips)}
+                onDismiss={handleDismissTip}
+              />
+            </div>
+          )}
 
           {/* Natural Language Token Preview Badges */}
           {newTitle.trim().length > 0 && parsedPreview && (parsedPreview.tags?.length > 0 || parsedPreview.dueAt || parsedPreview.estimateMin || parsedPreview.recurrence || (parsedPreview.priority && parsedPreview.priority > 1) || parsedPreview.list) && (
@@ -1407,6 +1664,28 @@ export function TaskPane({
 
               {/* Right Side: Esc hint + Add Button */}
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={smartOn}
+                  aria-label="Toggle smart typing"
+                  title="Smart typing: detect dates, tags and estimates as you type"
+                  onClick={handleToggleSmart}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors cursor-pointer focus-ring-pink",
+                    smartOn
+                      ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/40 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
+                      : "border-[#E4E8F2] text-[#5B6478]/60 dark:border-[#132E74] dark:text-[#9BB0D3]/50"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 rounded-full",
+                      smartOn ? "bg-current" : "bg-current opacity-40"
+                    )}
+                  />
+                  Smart
+                </button>
                 <span className="hidden sm:inline text-[11px] text-[#5B6478]/70 dark:text-[#9BB0D3]/60 font-mono">
                   Esc to cancel
                 </span>
@@ -1506,10 +1785,17 @@ export function TaskPane({
               actionLabel="Reset filters"
             />
           ) : (
-            <EmptyState
-              activeList={activeList}
-              activeFolder={activeFolder}
-              onAction={() => {
+            <>
+              {smartOn &&
+                !searchQuery.trim() &&
+                statusFilter === "all" &&
+                priorityFilter === "all" && (
+                  <InboxExamples examples={EMPTY_INBOX_EXAMPLES} onFill={handleFillExample} />
+                )}
+              <EmptyState
+                activeList={activeList}
+                activeFolder={activeFolder}
+                onAction={() => {
                 const input = document.querySelector<HTMLInputElement>(
                   "input[placeholder*='Add task']"
                 );
@@ -1523,6 +1809,7 @@ export function TaskPane({
                   : "Create a task"
               }
             />
+            </>
           )
         ) : effectiveSections.length === 0 ? (
           /* Render Flat Task List when no sections exist */
