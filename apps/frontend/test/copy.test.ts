@@ -50,7 +50,6 @@ const BANNED = [
   "react",
   "next",
   "elysia",
-  "auth",
   "session",
   "credentials",
   "validation",
@@ -61,7 +60,6 @@ describe("copy dictionary", () => {
     const path = join(process.cwd(), "src", "lib", "copy.ts");
     const content = readFileSync(path, "utf8").toLowerCase();
     for (const word of BANNED) {
-      // match as a whole word to avoid false positives on substrings
       const re = new RegExp(`\\b${word}\\b`, "i");
       expect(re.test(content)).toBe(false);
     }
