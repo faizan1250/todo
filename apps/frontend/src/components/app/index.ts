@@ -20,3 +20,4 @@ export * from "./bulk-action-toolbar";
 export * from "./trash-modal";
 export * from "./templates-modal";
 export * from "./app-workspace";
+export * from "./complete-subtasks-dialog";

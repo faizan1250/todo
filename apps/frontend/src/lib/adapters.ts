@@ -314,6 +314,7 @@ export function backendTaskToTaskItem(
     listId: task.listId,
     sectionId: task.sectionId,
     parentId: task.parentId,
+    listName: (task as BackendTask & { listName?: string | null }).listName ?? null,
     position: task.position,
     version: task.version,
     rawStatus: task.status,

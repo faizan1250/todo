@@ -61,6 +61,7 @@ interface TaskPaneProps {
   }) => void;
   onQuickAddTask?: (text: string) => Promise<void> | void;
   isLoading?: boolean;
+  showListName?: boolean;
   selectedTaskIds?: Set<string>;
   onToggleSelectTask?: (id: string, shiftKey?: boolean, visibleTaskIds?: string[]) => void;
   hasMore?: boolean;
@@ -82,6 +83,7 @@ export function TaskPane({
   onAddTask,
   onQuickAddTask,
   isLoading = false,
+  showListName = false,
   selectedTaskIds,
   onToggleSelectTask,
   hasMore = false,
@@ -956,6 +958,7 @@ export function TaskPane({
                 isSelected={selectedTaskId === task.id}
                 isBulkSelected={selectedTaskIds?.has(task.id)}
                 hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+                showListName={showListName}
                 onSelect={onSelectTask}
                 onToggleComplete={onToggleComplete}
                 onDelete={onDeleteTask}
@@ -992,6 +995,7 @@ export function TaskPane({
                       isSelected={selectedTaskId === task.id}
                       isBulkSelected={selectedTaskIds?.has(task.id)}
                       hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+                      showListName={showListName}
                       onSelect={onSelectTask}
                       onToggleComplete={onToggleComplete}
                       onDelete={onDeleteTask}
@@ -1212,6 +1216,7 @@ export function TaskPane({
                               isSelected={selectedTaskId === task.id}
                               isBulkSelected={selectedTaskIds?.has(task.id)}
                               hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+                              showListName={showListName}
                               onSelect={onSelectTask}
                               onToggleComplete={onToggleComplete}
                               onDelete={onDeleteTask}

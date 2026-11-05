@@ -8,6 +8,7 @@ import { CalendarView } from "./calendar-view";
 import { PlannerView } from "./planner-view";
 import { BoardView } from "./board-view";
 import { TaskDetailPanel } from "./task-detail-panel";
+import { CompleteSubtasksDialog } from "./complete-subtasks-dialog";
 import { StreakCelebration } from "./streak-celebration";
 import { CommandPalette } from "./command-palette";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
@@ -81,7 +82,7 @@ import {
 } from "@/lib/adapters";
 import { getListTasks } from "@/lib/data/queries/list";
 import { dexieRowsToTaskItems } from "@/lib/data/adapters";
-import type { TaskItem, ListId, FolderId, Priority, ViewMode } from "./types";
+import type { TaskItem, ListId, FolderId, Priority, ViewMode, HierarchicalSubtask } from "./types";
 
 const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
 
@@ -93,15 +94,42 @@ const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
 // sync pull brings server truth back).
 async function persistTaskComplete(
   userId: string | null,
-  id: string
+  id: string,
+  completeSubtasks = false
 ): Promise<TaskCompletionResult | null> {
-  if (!userId) return completeTask(id);
+  if (!userId) return completeTask(id, completeSubtasks ? true : undefined);
   try {
-    await mutate(userId, { entity: "tasks", op: "complete", entityId: id, patch: {} });
+    await mutate(userId, {
+      entity: "tasks",
+      op: "complete",
+      entityId: id,
+      patch: completeSubtasks ? { completeSubtasks: true } : {},
+    });
     return null;
   } catch {
-    return completeTask(id);
+    return completeTask(id, completeSubtasks ? true : undefined);
   }
+}
+
+// Count open (incomplete) subtasks recursively through the hierarchy tree.
+function countOpenSubtasks(subtasks: HierarchicalSubtask[]): number {
+  let count = 0;
+  for (const s of subtasks) {
+    if (!s.completed) count += 1;
+    if (s.subtasks && s.subtasks.length > 0) {
+      count += countOpenSubtasks(s.subtasks);
+    }
+  }
+  return count;
+}
+
+// Optimistically mark a subtask tree done (used when completing with subtasks).
+function markSubtasksDone(subtasks: HierarchicalSubtask[]): HierarchicalSubtask[] {
+  return subtasks.map((s) => ({
+    ...s,
+    completed: true,
+    subtasks: s.subtasks ? markSubtasksDone(s.subtasks) : [],
+  }));
 }
 
 async function persistTaskReopen(
@@ -432,6 +460,12 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   // Bulk Selection State
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set());
   const [isBulkSubmitting, setIsBulkSubmitting] = useState(false);
+
+  // Complete-with-open-subtasks confirm state (asked once per toggle action)
+  const [pendingSubtasksComplete, setPendingSubtasksComplete] = useState<{
+    id: string;
+    openCount: number;
+  } | null>(null);
 
   // Library Modals State
   const [isTrashOpen, setIsTrashOpen] = useState(false);
@@ -1428,15 +1462,26 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   }, [tasks, activeList, activeListId, activeFolder]);
 
   // Task Handlers
-  const handleToggleComplete = useCallback(
-    (id: string) => {
+  // runToggleComplete performs the actual toggle; handleToggleComplete below
+  // gates completion of a parent with open subtasks behind a one-time confirm.
+  const runToggleComplete = useCallback(
+    (id: string, withSubtasks: boolean) => {
       const target = tasks.find((t) => t.id === id);
       if (!target) return;
 
       const willComplete = !target.completed;
 
       setTasks((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, completed: willComplete, updatedAt: "Just now" } : t))
+        prev.map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                completed: willComplete,
+                subtasks: willComplete && withSubtasks ? markSubtasksDone(t.subtasks) : t.subtasks,
+                updatedAt: "Just now",
+              }
+            : t
+        )
       );
 
       if (willComplete) {
@@ -1519,7 +1564,9 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         // the persist helpers). A null echo means the local write was
         // accepted; the optimistic state above stands until sync pull.
         const apiCall: Promise<TaskCompletionResult | BackendTask | null> =
-          willComplete ? persistTaskComplete(userId, id) : persistTaskReopen(userId, id);
+          willComplete
+            ? persistTaskComplete(userId, id, withSubtasks)
+            : persistTaskReopen(userId, id);
         apiCall
           .then((updated) => {
             if (updated === null) return;
@@ -1563,6 +1610,25 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       }
     },
     [tasks, isAuthenticated, userId, toast]
+  );
+
+  // Gate: completing a parent with open subtasks asks once whether to
+  // complete the sub-tasks too. Reopening never prompts. Row keyboard
+  // (Space) funnels through here as well, so one gate covers every path.
+  const handleToggleComplete = useCallback(
+    (id: string) => {
+      const target = tasks.find((t) => t.id === id);
+      if (!target) return;
+      if (!target.completed) {
+        const openCount = countOpenSubtasks(target.subtasks);
+        if (openCount > 0) {
+          setPendingSubtasksComplete({ id, openCount });
+          return;
+        }
+      }
+      runToggleComplete(id, false);
+    },
+    [tasks, runToggleComplete]
   );
 
   const handleSkipTask = useCallback(
@@ -2822,6 +2888,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             onAddTask={handleAddTask}
             onQuickAddTask={handleQuickAddTask}
             isLoading={activeFilterId ? isLoadingFilter : (isLoadingTasks || isLoadingView)}
+            showListName={PHASE4_VIEWS.has(activeList) || activeFilterId !== null}
             hasMore={activeFilterId ? filterHasMore : viewHasMore}
             isLoadingMore={activeFilterId ? isLoadingFilter : isLoadingView}
             onLoadMore={activeFilterId ? handleLoadMoreFilter : handleLoadMoreView}
@@ -2950,6 +3017,23 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onClose={() => setIsTrashOpen(false)}
         onItemRestored={handleItemRestored}
         userId={userId}
+      />
+
+      {/* Complete-with-subtasks confirm (asked once per toggle action) */}
+      <CompleteSubtasksDialog
+        isOpen={pendingSubtasksComplete !== null}
+        openCount={pendingSubtasksComplete?.openCount ?? 0}
+        onConfirmAll={() => {
+          const pending = pendingSubtasksComplete;
+          setPendingSubtasksComplete(null);
+          if (pending) runToggleComplete(pending.id, true);
+        }}
+        onConfirmSingle={() => {
+          const pending = pendingSubtasksComplete;
+          setPendingSubtasksComplete(null);
+          if (pending) runToggleComplete(pending.id, false);
+        }}
+        onClose={() => setPendingSubtasksComplete(null)}
       />
 
       {/* Templates Modal */}

@@ -81,6 +81,7 @@ export interface TaskItem {
   listId?: string;
   sectionId?: string | null;
   parentId?: string | null;
+  listName?: string | null;
   position?: string;
   version?: number;
   rawStatus?: "todo" | "in_progress" | "done" | "cancelled";
