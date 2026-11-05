@@ -168,7 +168,7 @@ export const syncRoutes = new Elysia({ prefix: "/api/v1/sync" })
     async ({ user, body, request }) => {
       const deviceId =
         request.headers.get("x-device-id") ?? body.deviceId ?? null;
-      const results = processMutations(
+      const results = await processMutations(
         user.id,
         deviceId,
         body.mutations
