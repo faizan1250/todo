@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { syncNow as runSync } from "@/lib/sync/client";
+import { connectSyncSocket } from "@/lib/sync/socket";
 import { getLastSyncAt } from "@/lib/sync/meta";
 import { LOCAL_WRITE_EVENT } from "@/lib/sync/mutate";
 
@@ -60,8 +61,10 @@ export function useSync(): UseSyncReturn {
     const interval = setInterval(() => {
       void trigger();
     }, POLL_INTERVAL_MS);
+    const disconnect = connectSyncSocket(() => void trigger());
 
     return () => {
+      disconnect();
       window.removeEventListener("online", onOnline);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener(LOCAL_WRITE_EVENT, onLocalWrite);
