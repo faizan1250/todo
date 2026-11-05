@@ -1,5 +1,5 @@
 import { Elysia, t } from "elysia";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
@@ -67,11 +67,91 @@ export const syncRoutes = new Elysia({ prefix: "/api/v1/sync" })
           );
       }
 
+      const limit = query.limit ?? 500;
+
+      const entities: { entity: string; table: any; isUser: boolean }[] = [
+        { entity: "folders", table: schema.folders, isUser: false },
+        { entity: "lists", table: schema.lists, isUser: false },
+        { entity: "sections", table: schema.sections, isUser: false },
+        { entity: "tasks", table: schema.tasks, isUser: false },
+        { entity: "checklistItems", table: schema.checklistItems, isUser: false },
+        { entity: "tags", table: schema.tags, isUser: false },
+        { entity: "templates", table: schema.templates, isUser: false },
+        { entity: "reminders", table: schema.reminders, isUser: false },
+        { entity: "recurrences", table: schema.recurrences, isUser: false },
+        { entity: "places", table: schema.places, isUser: false },
+        { entity: "savedFilters", table: schema.savedFilters, isUser: false },
+        { entity: "timeBlocks", table: schema.timeBlocks, isUser: false },
+        { entity: "user", table: schema.users, isUser: true },
+      ];
+
+      const result = await db.transaction(async (tx) => {
+        type Collected = { entity: string; row: any; seq: number };
+        const collected: Collected[] = [];
+
+        for (const e of entities) {
+          const table = e.table;
+          const conditions: any[] = [];
+          if (e.isUser) {
+            conditions.push(eq(table.id, user.id));
+          } else {
+            conditions.push(eq(table.userId, user.id));
+          }
+          conditions.push(gt(table.seq, seq));
+          if (seq === 0 && table?.deletedAt) {
+            conditions.push(isNull(table.deletedAt));
+          }
+          const rows = await tx
+            .select()
+            .from(table)
+            .where(and(...conditions))
+            .orderBy(asc(table.seq))
+            .limit(501);
+          for (const row of rows) {
+            collected.push({ entity: e.entity, row, seq: row.seq });
+          }
+        }
+
+        collected.sort((a, b) => a.seq - b.seq);
+        const taken = collected.slice(0, limit);
+        const hasMore = collected.length > limit;
+
+        const changes: Record<string, any[]> = {};
+        for (const item of taken) {
+          if (!changes[item.entity]) changes[item.entity] = [];
+          changes[item.entity].push(item.row);
+        }
+
+        // embed tagIds for tasks
+        const taskRows = changes.tasks;
+        if (taskRows && taskRows.length) {
+          const taskIds = taskRows.map((r: any) => r.id);
+          const tagRows = await tx
+            .select()
+            .from(schema.taskTags)
+            .where(inArray(schema.taskTags.taskId, taskIds));
+          const map: Record<string, string[]> = {};
+          for (const tr of tagRows) {
+            if (!map[tr.taskId]) map[tr.taskId] = [];
+            map[tr.taskId].push(tr.tagId);
+          }
+          for (const row of taskRows) {
+            row.tagIds = map[row.id] ?? [];
+          }
+        }
+
+        const newCursorSeq = taken.length
+          ? taken[taken.length - 1].seq
+          : seq;
+
+        return { hasMore, changes, newCursorSeq };
+      });
+
       return {
-        cursor: `${epoch}:${seq}`,
-        hasMore: false,
+        cursor: `${epoch}:${result.newCursorSeq}`,
+        hasMore: result.hasMore,
         serverTime: Date.now(),
-        changes: {},
+        changes: result.changes,
       };
     },
     {
