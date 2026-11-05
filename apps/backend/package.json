@@ -25,6 +25,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/luxon": "^3.7.6",
-    "drizzle-kit": "^0.31.11"
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^7.0.2"
   }
 }
