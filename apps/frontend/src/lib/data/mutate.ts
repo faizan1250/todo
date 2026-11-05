@@ -26,8 +26,13 @@
 
 import { v7 as uuidv7 } from "uuid";
 import type { Table } from "dexie";
-import { generateKeyBetween } from "fractional-indexing";
 import { getDB, type OutboxEntry, type SyncRow } from "../db/schema";
+import { appendPosition, movePosition, type Scope } from "../tasks/position";
+import {
+  assertTextFields,
+  assertValidParent,
+  localDescendants,
+} from "../tasks/validate";
 
 // Backend rejects mutations dated more than 5 minutes in the future.
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
@@ -88,15 +93,6 @@ const OPS = new Set<string>([
   "setTags",
 ]);
 
-const TITLE_MAX: Record<string, number> = { tasks: 500, templates: 255 };
-const NAME_TABLES = new Set([
-  "lists",
-  "folders",
-  "sections",
-  "tags",
-  "places",
-  "savedFilters",
-]);
 // Patch keys that steer server behavior but are not row fields.
 const CONTROL_KEYS = new Set(["afterId", "beforeId", "completeSubtasks"]);
 
@@ -104,218 +100,6 @@ function singular(entity: string): string {
   if (entity === "tasks") return "Task";
   if (entity === "checklistItems") return "Checklist item";
   return entity;
-}
-
-function norm(v: unknown): unknown {
-  return v === undefined ? null : v;
-}
-
-// ---------------------------------------------------------------------------
-// Local text validation (mirrors backend REST limits: title <= 500,
-// name <= 100, checklist text <= 500; backend trims before validating).
-// ---------------------------------------------------------------------------
-
-function checkText(
-  patch: Record<string, unknown>,
-  op: MutateOp,
-  key: string,
-  max: number,
-  label: string
-): void {
-  const v = patch[key];
-  if (v === undefined) {
-    if (op === "create") throw new Error(`${label} is required`);
-    return;
-  }
-  if (typeof v !== "string" || !v.trim()) {
-    throw new Error(`${label} is required`);
-  }
-  if (v.trim().length > max) {
-    throw new Error(`${label} must be ${max} characters or fewer`);
-  }
-  patch[key] = v.trim();
-}
-
-function assertTextFields(
-  entity: string,
-  op: MutateOp,
-  patch: Record<string, unknown>
-): void {
-  const titleMax = TITLE_MAX[entity];
-  if (titleMax !== undefined) checkText(patch, op, "title", titleMax, "Title");
-  if (NAME_TABLES.has(entity)) checkText(patch, op, "name", 100, "Name");
-  if (entity === "checklistItems") checkText(patch, op, "text", 500, "Text");
-}
-
-// ---------------------------------------------------------------------------
-// Hierarchy: local ancestor walk + descendant BFS (mirrors backend
-// validateSubtaskHierarchy: root = depth 1, max 3 levels, no cycles).
-// ---------------------------------------------------------------------------
-
-async function localDescendants(
-  table: Table<SyncRow, string>,
-  rootId: string,
-  includeDeleted = false
-): Promise<{ ids: Set<string>; maxDepth: number }> {
-  const ids = new Set<string>();
-  let frontier = [rootId];
-  let depth = 0;
-  let maxDepth = 0;
-  while (frontier.length > 0) {
-    depth += 1;
-    const next: string[] = [];
-    for (const pid of frontier) {
-      const kids = await table.where("parentId").equals(pid).toArray();
-      for (const k of kids) {
-        const id = k["id"] as string;
-        if (typeof id !== "string" || ids.has(id)) continue;
-        if (!includeDeleted && (k["deleted"] === 1 || k["deletedAt"] != null)) {
-          continue;
-        }
-        ids.add(id);
-        next.push(id);
-      }
-    }
-    if (next.length > 0) maxDepth = depth;
-    frontier = next;
-    if (depth > 32) break;
-  }
-  return { ids, maxDepth };
-}
-
-async function assertValidParent(
-  table: Table<SyncRow, string>,
-  taskId: string,
-  newParentId: unknown
-): Promise<SyncRow | null> {
-  if (newParentId == null || newParentId === "") return null;
-  if (typeof newParentId !== "string" || !newParentId) {
-    throw new Error("Invalid parent");
-  }
-  if (newParentId === taskId) {
-    throw new Error("A task cannot be its own parent");
-  }
-  const { ids, maxDepth } = await localDescendants(table, taskId);
-  if (ids.has(newParentId)) {
-    throw new Error("A task cannot have one of its descendants as a parent");
-  }
-  let cur: unknown = newParentId;
-  let depth = 0;
-  let parentRow: SyncRow | undefined;
-  const seen = new Set<string>();
-  while (typeof cur === "string" && cur) {
-    if (cur === taskId || seen.has(cur)) {
-      throw new Error("A task cannot have one of its descendants as a parent");
-    }
-    seen.add(cur);
-    const row = await table.get(cur);
-    if (!row || row["deleted"] === 1 || row["deletedAt"] != null) {
-      throw new Error("Parent task not found");
-    }
-    if (depth === 0) parentRow = row;
-    cur = (row["parentId"] as string | null | undefined) ?? null;
-    depth += 1;
-    if (depth > 32) {
-      throw new Error("A task cannot have one of its descendants as a parent");
-    }
-  }
-  if (depth + 1 + maxDepth > 3) {
-    throw new Error("Subtasks can be nested up to 3 levels maximum");
-  }
-  return parentRow ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// Positions: minimal client mirror of backend positionBetween. New rows
-// append at end: generateKeyBetween(lastPos, null). Moves with
-// afterId/beforeId resolve locally; failures fall back (server recomputes
-// authoritatively from afterId/beforeId since we never ship computed
-// positions for moves).
-// ---------------------------------------------------------------------------
-
-interface Scope {
-  listId?: string;
-  taskId?: string;
-  parentId?: string | null;
-  sectionId?: string | null;
-}
-
-interface Sibling {
-  id: string;
-  position: string;
-}
-
-async function siblingEntries(
-  table: Table<SyncRow, string>,
-  entity: string,
-  scope: Scope,
-  excludeId: string
-): Promise<Sibling[]> {
-  let rows: SyncRow[];
-  if (entity === "tasks" && typeof scope.listId === "string") {
-    rows = await table.where("listId").equals(scope.listId).toArray();
-  } else if (entity === "sections" && typeof scope.listId === "string") {
-    rows = await table.where("listId").equals(scope.listId).toArray();
-  } else if (
-    entity === "checklistItems" &&
-    typeof scope.taskId === "string"
-  ) {
-    rows = await table.where("taskId").equals(scope.taskId).toArray();
-  } else {
-    rows = await table.toArray();
-  }
-  const out: Sibling[] = [];
-  for (const r of rows) {
-    if (r["id"] === excludeId) continue;
-    if (r["deleted"] === 1 || r["deletedAt"] != null) continue;
-    if (typeof r["position"] !== "string") continue;
-    if (entity === "tasks") {
-      if (r["listId"] !== scope.listId) continue;
-      if (norm(r["parentId"]) !== norm(scope.parentId)) continue;
-      if (norm(r["sectionId"]) !== norm(scope.sectionId)) continue;
-    } else if (entity === "sections") {
-      if (r["listId"] !== scope.listId) continue;
-    } else if (entity === "checklistItems") {
-      if (r["taskId"] !== scope.taskId) continue;
-    }
-    out.push({ id: r["id"] as string, position: r["position"] as string });
-  }
-  out.sort((a, b) => (a.position < b.position ? -1 : a.position > b.position ? 1 : 0));
-  return out;
-}
-
-async function appendPosition(
-  table: Table<SyncRow, string>,
-  entity: string,
-  scope: Scope,
-  excludeId: string
-): Promise<string> {
-  const siblings = await siblingEntries(table, entity, scope, excludeId);
-  const last = siblings.length > 0 ? siblings[siblings.length - 1].position : null;
-  return generateKeyBetween(last, null);
-}
-
-async function movePosition(
-  table: Table<SyncRow, string>,
-  entity: string,
-  scope: Scope,
-  afterId: unknown,
-  beforeId: unknown,
-  excludeId: string
-): Promise<string | null> {
-  const siblings = await siblingEntries(table, entity, scope, excludeId);
-  const byId = new Map(siblings.map((s) => [s.id, s.position]));
-  const a =
-    typeof afterId === "string" && afterId ? (byId.get(afterId) ?? null) : null;
-  const b =
-    typeof beforeId === "string" && beforeId
-      ? (byId.get(beforeId) ?? null)
-      : null;
-  try {
-    return generateKeyBetween(a, b);
-  } catch {
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------------------
