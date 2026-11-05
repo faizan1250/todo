@@ -10,8 +10,7 @@ export type SyncState =
   | "pulling"
   | "offline"
   | "backoff"
-  | "resyncing"
-  | "updateRequired";
+  | "resyncing";
 
 export interface SyncStatus {
   state: SyncState;
