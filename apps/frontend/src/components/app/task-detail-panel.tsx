@@ -20,7 +20,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatEstimate, formatDateWithTime } from "@/lib/adapters";
+import { formatEstimate } from "@/lib/adapters";
 import { formatWhen } from "@/lib/dates/formatWhen";
 import { DateChip, DatePopover, type DateSelection } from "@/components/dates";
 import { v7 as uuidv7 } from "uuid";
@@ -47,6 +47,13 @@ import type {
 } from "./types";
 import { TaskSubtasksSection } from "./task-subtasks-section";
 import { TagPickerPopover } from "./tag-picker-popover";
+import {
+  ReminderBanner,
+  ReminderList,
+  ReminderPicker,
+  REMINDER_CAP_MESSAGE,
+  REMINDER_LIMIT,
+} from "@/components/reminders";
 import { MarkdownNotesEditor } from "./markdown-notes-editor";
 import { TaskActionsMenu } from "./task-actions-menu";
 import { SaveTemplateModal } from "./save-template-modal";
@@ -204,7 +211,6 @@ export function TaskDetailPanel({
   const [customRrule, setCustomRrule] = useState("");
   const [customMinutes, setCustomMinutes] = useState("");
   const [isAddingReminder, setIsAddingReminder] = useState(false);
-  const [newReminderCustomTime, setNewReminderCustomTime] = useState("");
   const pillsBarRef = useRef<HTMLDivElement>(null);
 
   // Close open picker on click outside
@@ -562,6 +568,37 @@ export function TaskDetailPanel({
     if (!isBackendTaskId || isLocalReminderId(reminderId)) return;
     const doRestSnooze = () => {
       snoozeReminder(reminderId, targetTime.getTime()).catch((err) => {
+        console.error("Failed to snooze reminder on backend:", err);
+      });
+    };
+    if (userId) {
+      mutate(userId, {
+        entity: "reminders",
+        op: "update",
+        entityId: reminderId,
+        patch: { remindAt: targetIso, firedAt: null },
+      }).catch(doRestSnooze);
+    } else {
+      doRestSnooze();
+    }
+  };
+
+  // Absolute-time snooze (SnoozeSheet tomorrow-9AM / pick-a-time).
+  // Same persist path as the minute presets: optimistic mutate + REST fallback.
+  const handleSnoozeReminderToTime = (reminderId: string, time: Date) => {
+    const currentReminders = task.reminders || [];
+    const targetIso = time.toISOString();
+    onUpdateTask({
+      ...task,
+      reminders: currentReminders.map((r) =>
+        r.id === reminderId ? { ...r, remindAt: targetIso, firedAt: null } : r
+      ),
+      updatedAt: "Just now",
+    });
+
+    if (!isBackendTaskId || isLocalReminderId(reminderId)) return;
+    const doRestSnooze = () => {
+      snoozeReminder(reminderId, time.getTime()).catch((err) => {
         console.error("Failed to snooze reminder on backend:", err);
       });
     };
@@ -1432,145 +1469,35 @@ export function TaskDetailPanel({
             </button>
           </div>
 
-          {/* Add Reminder Form */}
+          {/* Add Reminder Menu */}
           {isAddingReminder && (
-            <div className="rounded-xl border border-[#E4E8F2] bg-[#F2F5FC]/60 p-2.5 space-y-2 dark:border-[#132E74] dark:bg-[#082363]/50">
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                Preset Reminder
-              </label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {[
-                  { label: "At due time", offset: 0 },
-                  { label: "10m before", offset: -10 },
-                  { label: "1h before", offset: -60 },
-                  { label: "1d before", offset: -1440 },
-                ].map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => {
-                      handleAddReminder({
-                        kind: "relative",
-                        relativeTo: "due",
-                        offsetMin: preset.offset,
-                      });
-                    }}
-                    className="rounded bg-white border border-[#E4E8F2] px-2 py-1 text-xs text-center text-[#5B6478] hover:border-[#09318D] hover:text-[#09318D] transition-colors cursor-pointer dark:bg-[#051A4D] dark:border-[#132E74] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC]"
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] flex items-center gap-2">
-                <input
-                  type="datetime-local"
-                  value={newReminderCustomTime}
-                  onChange={(e) => setNewReminderCustomTime(e.target.value)}
-                  className="flex-1 rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-white"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (newReminderCustomTime) {
-                      handleAddReminder({
-                        kind: "absolute",
-                        remindAt: new Date(newReminderCustomTime).toISOString(),
-                      });
-                      setNewReminderCustomTime("");
-                    }
-                  }}
-                  className="rounded bg-[#09318D] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#0B3EA8] dark:bg-[#FD91CC] dark:text-[#051A4D] cursor-pointer"
-                >
-                  Set
-                </button>
-              </div>
-            </div>
+            <>
+              <ReminderPicker
+                hasDueDate={Boolean(task.dueAt)}
+                atCap={(task.reminders?.length ?? 0) >= REMINDER_LIMIT}
+                onAdd={handleAddReminder}
+              />
+              {(task.reminders?.length ?? 0) >= REMINDER_LIMIT && (
+                <p className="text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
+                  {REMINDER_CAP_MESSAGE}
+                </p>
+              )}
+            </>
           )}
+
+          <ReminderBanner reminderCount={task.reminders?.length ?? 0} />
 
           {/* Active Reminders List */}
-          {task.reminders && task.reminders.length > 0 ? (
-            <div className="space-y-1.5">
-              {task.reminders.map((reminder) => {
-                const isFired = Boolean(reminder.firedAt);
-                const displayTime = reminder.remindAt
-                  ? formatDateWithTime(reminder.remindAt)
-                  : reminder.offsetMin !== undefined
-                  ? `${Math.abs(reminder.offsetMin || 0)}m ${
-                      (reminder.offsetMin || 0) < 0 ? "before" : "after"
-                    } ${reminder.relativeTo || "due"}`
-                  : "Reminder";
-
-                return (
-                  <div
-                    key={reminder.id}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-[#E4E8F2] bg-white px-3 py-2 text-xs transition-colors dark:border-[#132E74] dark:bg-[#082363]"
-                  >
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <Bell
-                        className={cn(
-                          "h-3.5 w-3.5 shrink-0",
-                          isFired
-                            ? "text-[#5B6478]/50 dark:text-[#9BB0D3]/40"
-                            : "text-[#09318D] dark:text-[#FD91CC]"
-                        )}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p
-                          className={cn(
-                            "truncate font-medium",
-                            isFired && "line-through text-[#5B6478]/70 dark:text-[#9BB0D3]/60"
-                          )}
-                        >
-                          {displayTime}
-                        </p>
-                        {isFired && (
-                          <span className="text-[10px] text-amber-600 dark:text-amber-400 font-mono">
-                            Fired / Dismissed
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-1 shrink-0">
-                      {!isFired && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => handleSnoozeReminder(reminder.id, 15)}
-                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#051A4D] cursor-pointer"
-                            title="Snooze 15 minutes"
-                          >
-                            +15m
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDismissReminder(reminder.id)}
-                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/40 cursor-pointer"
-                            title="Dismiss reminder"
-                          >
-                            Dismiss
-                          </button>
-                        </>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteReminder(reminder.id)}
-                        className="flex h-6 w-6 items-center justify-center rounded text-[#5B6478] hover:text-rose-600 hover:bg-rose-50 transition-colors dark:text-[#9BB0D3] dark:hover:text-rose-400 dark:hover:bg-rose-950/40 cursor-pointer"
-                        title="Delete reminder"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="text-xs text-[#5B6478]/70 dark:text-[#9BB0D3]/60 italic">
-              No reminders set for this task.
-            </p>
-          )}
+          <ReminderList
+            reminders={task.reminders ?? []}
+            dueAt={task.dueAt}
+            startAt={task.startAt}
+            deadlineAt={task.deadlineAt}
+            onSnooze={handleSnoozeReminder}
+            onSnoozeAt={handleSnoozeReminderToTime}
+            onDismiss={handleDismissReminder}
+            onDelete={handleDeleteReminder}
+          />
         </div>
 
         {/* 4. Markdown Notes Editor */}
