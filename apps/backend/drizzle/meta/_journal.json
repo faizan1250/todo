@@ -29,6 +29,13 @@
       "when": 1793850000000,
       "tag": "0003_saved_filters_time_blocks_fts",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793887622164,
+      "tag": "0004_phase5_sync",
+      "breakpoints": true
     }
   ]
 }
