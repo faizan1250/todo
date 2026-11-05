@@ -22,14 +22,22 @@ import {
   Repeat,
   Clock,
   Bookmark,
+  MoreHorizontal,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { v7 as uuidv7 } from "uuid";
+import { mutate } from "@/lib/data/mutate";
+import { copy } from "@/lib/copy";
+import { depthOfTask, planIndent, planOutdent } from "@/lib/tasks/indent";
+import { useToast } from "./toast-system";
+import { TaskContextMenu } from "./task-context-menu";
 import {
   getSections,
   createSection,
   updateSection,
   deleteSection,
+  restoreTrash,
   parseNaturalLanguageText,
   type BackendSection,
   type BackendFolder,
@@ -61,6 +69,11 @@ interface TaskPaneProps {
     dueDate?: string | null;
   }) => void;
   onQuickAddTask?: (text: string) => Promise<void> | void;
+  userId?: string | null;
+  onUpdateTask?: (task: TaskItem) => void;
+  onDuplicateTask?: (id: string) => void;
+  onArchiveTask?: (id: string) => void;
+  onMoveTask?: (taskId: string, listId: string, sectionId: string | null) => void;
   isLoading?: boolean;
   showListName?: boolean;
   selectedTaskIds?: Set<string>;
@@ -84,6 +97,11 @@ export function TaskPane({
   onDeleteTask,
   onAddTask,
   onQuickAddTask,
+  userId = null,
+  onUpdateTask,
+  onDuplicateTask,
+  onArchiveTask,
+  onMoveTask,
   isLoading = false,
   showListName = false,
   selectedTaskIds,
@@ -108,6 +126,12 @@ export function TaskPane({
   const [isAddingSection, setIsAddingSection] = useState(false);
   const [newSectionName, setNewSectionName] = useState("");
   const [isSectionSubmitting, setIsSectionSubmitting] = useState(false);
+  const [openSectionMenuId, setOpenSectionMenuId] = useState<string | null>(null);
+
+  // Right-click / Shift+F10 context menu anchor (taskId + viewport position)
+  const [menuState, setMenuState] = useState<{ taskId: string; x: number; y: number } | null>(null);
+
+  const { toast, success } = useToast();
 
   // Section-targeted quick add state
   const [activeSectionForNewTask, setActiveSectionForNewTask] = useState<string | null>(null);
@@ -447,64 +471,247 @@ export function TaskPane({
     });
   };
 
-  // Add Section Submit
+  // Add Section Submit (offline-first: mutate create, REST fallback)
   const handleAddSectionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeListId) return;
     const trimmed = newSectionName.trim();
     if (!trimmed) return;
 
+    const optimistic: BackendSection = {
+      id: uuidv7(),
+      userId: userId ?? "",
+      listId: activeListId,
+      name: trimmed,
+      position: "",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      version: 0,
+    };
+
     setIsSectionSubmitting(true);
+    setSections((prev) => [...prev, optimistic]);
+    setNewSectionName("");
+    setIsAddingSection(false);
     try {
-      const created = await createSection(activeListId, trimmed);
-      setSections((prev) => [...prev, created]);
-      setNewSectionName("");
-      setIsAddingSection(false);
-    } catch (err) {
-      console.error("Failed to create section:", err);
+      if (userId) {
+        await mutate(userId, {
+          entity: "sections",
+          op: "create",
+          entityId: optimistic.id,
+          patch: { name: trimmed, listId: activeListId },
+        });
+      } else {
+        const created = await createSection(activeListId, trimmed);
+        setSections((prev) => prev.map((s) => (s.id === optimistic.id ? created : s)));
+      }
+      success(`Created section "${trimmed}"`);
+    } catch {
+      // mutate failed (unknown local row, etc.) — REST is the fallback
+      try {
+        const created = await createSection(activeListId, trimmed);
+        setSections((prev) => prev.map((s) => (s.id === optimistic.id ? created : s)));
+        success(`Created section "${trimmed}"`);
+      } catch (restErr) {
+        console.error("Failed to create section:", restErr);
+        setSections((prev) => prev.filter((s) => s.id !== optimistic.id));
+        toast({
+          title: "Could not create section",
+          message: restErr instanceof Error ? restErr.message : "Please try again",
+          type: "error",
+        });
+      }
     } finally {
       setIsSectionSubmitting(false);
     }
   };
 
-  // Rename Section Submit
+  // Rename Section Submit (offline-first: mutate update, REST fallback)
   const handleRenameSectionSubmit = async (sectionId: string, e?: React.FormEvent) => {
     e?.preventDefault();
     const trimmed = editSectionName.trim();
+    const previous = sections.find((s) => s.id === sectionId);
     if (!trimmed) {
       setEditingSectionId(null);
       return;
     }
+    if (!previous || previous.name === trimmed) {
+      setEditingSectionId(null);
+      return;
+    }
 
     setIsSectionSubmitting(true);
+    setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, name: trimmed } : s)));
+    setEditingSectionId(null);
     try {
-      const updated = await updateSection(sectionId, trimmed);
-      setSections((prev) => prev.map((s) => (s.id === sectionId ? updated : s)));
-      setEditingSectionId(null);
-    } catch (err) {
-      console.error("Failed to rename section:", err);
+      if (userId) {
+        await mutate(userId, {
+          entity: "sections",
+          op: "update",
+          entityId: sectionId,
+          patch: { name: trimmed },
+        });
+      } else {
+        const updated = await updateSection(sectionId, trimmed);
+        setSections((prev) => prev.map((s) => (s.id === sectionId ? updated : s)));
+      }
+    } catch {
+      try {
+        const updated = await updateSection(sectionId, trimmed);
+        setSections((prev) => prev.map((s) => (s.id === sectionId ? updated : s)));
+      } catch (restErr) {
+        console.error("Failed to rename section:", restErr);
+        setSections((prev) =>
+          prev.map((s) => (s.id === sectionId ? { ...s, name: previous.name } : s))
+        );
+        toast({
+          title: "Could not rename section",
+          message: restErr instanceof Error ? restErr.message : "Please try again",
+          type: "error",
+        });
+      }
     } finally {
       setIsSectionSubmitting(false);
     }
   };
 
-  // Delete Section Handler
+  // Delete Section (no confirm — Undo toast restores via mutate/REST)
   const handleDeleteSection = async (section: BackendSection) => {
-    if (
-      !window.confirm(
-        `Delete section "${section.name}"? Tasks inside will become unsectioned.`
-      )
-    ) {
-      return;
+    const snapshot = sections;
+    setSections((prev) => prev.filter((s) => s.id !== section.id));
+    setOpenSectionMenuId(null);
+
+    const doRestDelete = async () => {
+      await deleteSection(section.id);
+    };
+    try {
+      if (userId) {
+        await mutate(userId, { entity: "sections", op: "delete", entityId: section.id });
+      } else {
+        await doRestDelete();
+      }
+    } catch {
+      try {
+        await doRestDelete();
+      } catch (restErr) {
+        console.error("Failed to delete section:", restErr);
+        setSections(snapshot);
+        toast({
+          title: "Could not delete section",
+          message: restErr instanceof Error ? restErr.message : "Please try again",
+          type: "error",
+        });
+        return;
+      }
     }
 
-    try {
-      await deleteSection(section.id);
-      setSections((prev) => prev.filter((s) => s.id !== section.id));
-    } catch (err) {
-      console.error("Failed to delete section:", err);
+    const restore = async () => {
+      setSections(snapshot);
+      try {
+        if (userId) {
+          await mutate(userId, { entity: "sections", op: "restore", entityId: section.id, patch: {} });
+        } else {
+          await restoreTrash("section", section.id);
+        }
+      } catch (err) {
+        console.error("Failed to restore section:", err);
+        try {
+          await restoreTrash("section", section.id);
+          setSections(snapshot);
+        } catch {
+          // Leave the optimistic state; the list refetches on next view change.
+        }
+      }
+    };
+    toast({
+      title: "Section deleted",
+      message: `"${section.name}" removed. Its tasks are now unsectioned.`,
+      actionLabel: "Undo",
+      onAction: () => {
+        restore().catch((err) => console.error("Failed to restore section:", err));
+      },
+    });
+  };
+
+  // Nesting depth per task (for the subtle row indent + Tab planning).
+  const taskDepthMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const t of tasks) map.set(t.id, depthOfTask(tasks, t.id));
+    return map;
+  }, [tasks]);
+
+  // Tab / Shift+Tab on a focused row: indent under the row above, or lift
+  // back up. Persists through the shared update path (offline-first mutate
+  // + REST fallback inside the workspace handler).
+  const handleIndentTask = (id: string, direction: "indent" | "outdent", ordered: TaskItem[]) => {
+    const task = tasks.find((t) => t.id === id);
+    if (!task || !onUpdateTask) return;
+    if (direction === "indent") {
+      const plan = planIndent(ordered, tasks, id);
+      if (!plan.ok) {
+        if (plan.reason === "depth") {
+          toast({ title: "Cannot indent further", message: copy.tasks.subtaskDepthLimit, type: "error" });
+        }
+        return;
+      }
+      onUpdateTask({ ...task, parentId: plan.parentId, updatedAt: "Just now" });
+    } else {
+      const plan = planOutdent(tasks, id);
+      if (!plan.ok) return;
+      onUpdateTask({ ...task, parentId: plan.parentId, updatedAt: "Just now" });
+    }
+    // Keep keyboard focus on the row across the re-render.
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(id)}"]`)?.focus();
+    });
+  };
+
+  // Context-menu "Move to…" between sections of the current list.
+  const handleMoveToSection = (taskId: string, sectionId: string | null) => {
+    if (!activeListId) return;
+    if (onMoveTask) {
+      onMoveTask(taskId, activeListId, sectionId);
+      return;
+    }
+    const task = tasks.find((t) => t.id === taskId);
+    if (task && onUpdateTask) {
+      onUpdateTask({ ...task, sectionId, updatedAt: "Just now" });
     }
   };
+
+  const handleContextMenuTask = (task: TaskItem, anchor: { x: number; y: number }) => {
+    setMenuState({ taskId: task.id, x: anchor.x, y: anchor.y });
+  };
+
+  // Shared row renderer so every container gets menu + keyboard plumbing.
+  const renderTaskRow = (task: TaskItem, ordered: TaskItem[]) => (
+    <TaskRow
+      key={task.id}
+      task={task}
+      depth={taskDepthMap.get(task.id) ?? 1}
+      isSelected={selectedTaskId === task.id}
+      isBulkSelected={selectedTaskIds?.has(task.id)}
+      hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
+      showListName={showListName}
+      onSelect={onSelectTask}
+      onToggleComplete={onToggleComplete}
+      onDelete={onDeleteTask}
+      onContextMenuTask={handleContextMenuTask}
+      onIndentTask={onUpdateTask ? (id, dir) => handleIndentTask(id, dir, ordered) : undefined}
+      onToggleBulkSelect={
+        onToggleSelectTask
+          ? (id, shiftKey) =>
+              onToggleSelectTask(
+                id,
+                shiftKey,
+                filteredTasks.map((t) => t.id)
+              )
+          : undefined
+      }
+    />
+  );
+
+  const menuTask = menuState ? tasks.find((t) => t.id === menuState.taskId) ?? null : null;
 
   // Collapsed-by-default "Done (n)" group for completed tasks in the current view.
   // Expand animates only when motion is allowed (motion-safe:* = instant otherwise).
@@ -533,29 +740,7 @@ export function TaskPane({
         </button>
         {isDoneExpanded && (
           <div className="border-t border-[#E4E8F2] motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-top-1 motion-safe:duration-200 dark:border-[#132E74]">
-            {doneTasks.map((task) => (
-              <TaskRow
-                key={task.id}
-                task={task}
-                isSelected={selectedTaskId === task.id}
-                isBulkSelected={selectedTaskIds?.has(task.id)}
-                hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-                showListName={showListName}
-                onSelect={onSelectTask}
-                onToggleComplete={onToggleComplete}
-                onDelete={onDeleteTask}
-                onToggleBulkSelect={
-                  onToggleSelectTask
-                    ? (id, shiftKey) =>
-                        onToggleSelectTask(
-                          id,
-                          shiftKey,
-                          filteredTasks.map((t) => t.id)
-                        )
-                    : undefined
-                }
-              />
-            ))}
+            {doneTasks.map((task) => renderTaskRow(task, doneTasks))}
           </div>
         )}
       </div>
@@ -1044,29 +1229,7 @@ export function TaskPane({
           <div className="space-y-3">
             {tasksForGrouping.length > 0 && (
               <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-                {tasksForGrouping.map((task) => (
-                  <TaskRow
-                    key={task.id}
-                    task={task}
-                    isSelected={selectedTaskId === task.id}
-                    isBulkSelected={selectedTaskIds?.has(task.id)}
-                    hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-                    showListName={showListName}
-                    onSelect={onSelectTask}
-                    onToggleComplete={onToggleComplete}
-                    onDelete={onDeleteTask}
-                    onToggleBulkSelect={
-                      onToggleSelectTask
-                        ? (id, shiftKey) =>
-                            onToggleSelectTask(
-                              id,
-                              shiftKey,
-                              filteredTasks.map((t) => t.id)
-                            )
-                        : undefined
-                    }
-                  />
-                ))}
+                {tasksForGrouping.map((task) => renderTaskRow(task, tasksForGrouping))}
               </div>
             )}
             {renderDoneGroup()}
@@ -1084,29 +1247,7 @@ export function TaskPane({
                   </span>
                 </div>
                 <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-                  {unsectionedTasks.map((task) => (
-                    <TaskRow
-                      key={task.id}
-                      task={task}
-                      isSelected={selectedTaskId === task.id}
-                      isBulkSelected={selectedTaskIds?.has(task.id)}
-                      hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-                      showListName={showListName}
-                      onSelect={onSelectTask}
-                      onToggleComplete={onToggleComplete}
-                      onDelete={onDeleteTask}
-                      onToggleBulkSelect={
-                        onToggleSelectTask
-                          ? (id, shiftKey) =>
-                              onToggleSelectTask(
-                                id,
-                                shiftKey,
-                                filteredTasks.map((t) => t.id)
-                              )
-                          : undefined
-                      }
-                    />
-                  ))}
+                  {unsectionedTasks.map((task) => renderTaskRow(task, unsectionedTasks))}
                 </div>
               </div>
             )}
@@ -1211,30 +1352,61 @@ export function TaskPane({
                         <span className="hidden sm:inline">Add task</span>
                       </button>
 
-                      {/* Rename Section Button */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingSectionId(section.id);
-                          setEditSectionName(section.name);
-                        }}
-                        className="flex h-7 w-7 items-center justify-center rounded-md text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] transition-colors dark:text-[#9BB0D3] dark:hover:bg-[#051A4D] cursor-pointer"
-                        title="Rename section"
-                        aria-label={`Rename section ${section.name}`}
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </button>
-
-                      {/* Delete Section Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteSection(section)}
-                        className="flex h-7 w-7 items-center justify-center rounded-md text-red-500 hover:bg-red-50 transition-colors dark:hover:bg-red-950/40 cursor-pointer"
-                        title="Delete section"
-                        aria-label={`Delete section ${section.name}`}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
+                      {/* Section Options Menu (rename / delete) */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setOpenSectionMenuId(openSectionMenuId === section.id ? null : section.id)
+                          }
+                          aria-label={`Section options for ${section.name}`}
+                          aria-expanded={openSectionMenuId === section.id}
+                          aria-haspopup="menu"
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-[#5B6478] hover:bg-[#F2F5FC] hover:text-[#0B1220] transition-colors dark:text-[#9BB0D3] dark:hover:bg-[#051A4D] cursor-pointer"
+                        >
+                          <MoreHorizontal className="h-3.5 w-3.5" />
+                        </button>
+                        {openSectionMenuId === section.id && (
+                          <>
+                            <button
+                              type="button"
+                              aria-hidden="true"
+                              tabIndex={-1}
+                              onClick={() => setOpenSectionMenuId(null)}
+                              className="fixed inset-0 z-40 cursor-default"
+                            />
+                            <div
+                              role="menu"
+                              aria-label={`Section options for ${section.name}`}
+                              className="absolute right-0 top-full z-50 mt-1 w-44 rounded-xl border border-[#E4E8F2] bg-white p-1 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] animate-in fade-in zoom-in-95 duration-100"
+                            >
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setOpenSectionMenuId(null);
+                                  setEditingSectionId(section.id);
+                                  setEditSectionName(section.name);
+                                }}
+                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[#0B1220] hover:bg-[#F2F5FC] transition-colors cursor-pointer dark:text-[#E4E8F2] dark:hover:bg-[#082363]"
+                              >
+                                <Pencil className="h-3.5 w-3.5 text-[#5B6478] dark:text-[#9BB0D3]" />
+                                <span>Rename section</span>
+                              </button>
+                              <hr className="my-1 border-[#E4E8F2] dark:border-[#132E74]" />
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => handleDeleteSection(section)}
+                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer dark:text-rose-400 dark:hover:bg-rose-950/40"
+                              >
+                                <Trash2 className="h-3.5 w-3.5 text-rose-500" />
+                                <span>Delete section</span>
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -1305,29 +1477,7 @@ export function TaskPane({
                         </div>
                       ) : (
                         <div className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden">
-                          {sectionTasks.map((task) => (
-                            <TaskRow
-                              key={task.id}
-                              task={task}
-                              isSelected={selectedTaskId === task.id}
-                              isBulkSelected={selectedTaskIds?.has(task.id)}
-                              hasBulkSelection={(selectedTaskIds?.size ?? 0) > 0}
-                              showListName={showListName}
-                              onSelect={onSelectTask}
-                              onToggleComplete={onToggleComplete}
-                              onDelete={onDeleteTask}
-                              onToggleBulkSelect={
-                                onToggleSelectTask
-                                  ? (id, shiftKey) =>
-                                      onToggleSelectTask(
-                                        id,
-                                        shiftKey,
-                                        filteredTasks.map((t) => t.id)
-                                      )
-                                  : undefined
-                              }
-                            />
-                          ))}
+                          {sectionTasks.map((task) => renderTaskRow(task, sectionTasks))}
                         </div>
                       )}
                     </div>
@@ -1366,6 +1516,25 @@ export function TaskPane({
           </div>
         )}
       </div>
+
+      {/* Right-click / Shift+F10 task context menu */}
+      {menuTask && menuState && (
+        <TaskContextMenu
+          task={menuTask}
+          anchor={{ x: menuState.x, y: menuState.y }}
+          sections={effectiveSections}
+          userId={userId}
+          onClose={() => setMenuState(null)}
+          onOpen={(t) => onSelectTask(t)}
+          onDuplicate={onDuplicateTask}
+          onArchive={onArchiveTask}
+          onDelete={onDeleteTask}
+          onUpdateTask={onUpdateTask}
+          onMoveToSection={
+            activeListId ? (taskId, sectionId) => handleMoveToSection(taskId, sectionId) : undefined
+          }
+        />
+      )}
     </div>
   );
 }
