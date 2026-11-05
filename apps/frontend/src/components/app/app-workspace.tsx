@@ -20,6 +20,8 @@ import {
   getLists,
   getFolders,
   getTasks,
+  getViewsCounts,
+  getViewItems,
   createTask,
   quickAddTask,
   updateTask,
@@ -43,6 +45,7 @@ import {
   type BackendList,
   type BackendFolder,
   type BackendTask,
+  type BackendViewCountsResponse,
 } from "@/lib/api";
 import {
   backendTaskToTaskItem,
@@ -280,6 +283,10 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const [userFolders, setUserFolders] = useState<BackendFolder[]>([]);
   const [activeListId, setActiveListId] = useState<string | null>(null);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
+  const [viewCounts, setViewCounts] = useState<BackendViewCountsResponse | null>(null);
+  const [viewCursor, setViewCursor] = useState<string | null>(null);
+  const [viewHasMore, setViewHasMore] = useState(false);
+  const [isLoadingView, setIsLoadingView] = useState(false);
   const [selectedListOverride, setSelectedListOverride] = useState<ListId | null>(null);
 
   // Modals state for Lists & Folders
@@ -494,6 +501,22 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     };
   }, [isAuthenticated]);
 
+  // Fetch smart view counts
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let isMounted = true;
+    getViewsCounts()
+      .then((res) => {
+        if (isMounted) setViewCounts(res);
+      })
+      .catch((err) => {
+        if (isMounted) console.error("Failed to load view counts:", err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, tasks.length]);
+
   // Fetch tasks for active list or active smart view
   const loadTasks = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -523,6 +546,43 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       });
     }
   }, [isAuthenticated, activeListId, toast]);
+
+  const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
+
+  // Load items for Phase 4 smart views via getViewItems
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (!PHASE4_VIEWS.has(activeList)) return;
+    let isMounted = true;
+    setIsLoadingView(true);
+    getViewItems(activeList, { limit: 50 })
+      .then((res) => {
+        if (!isMounted) return;
+        const mapped = res.items.map((t) =>
+          backendTaskToTaskItem(t as any, { listOverride: activeList as ListId })
+        );
+        setTasks(mapped);
+        setViewCursor(res.nextCursor);
+        setViewHasMore(res.hasMore);
+        setIsLoadingView(false);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.error("Failed to load view items:", err);
+        setIsLoadingView(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, activeList]);
+
+  // Reload all tasks when leaving a Phase 4 view to a normal smart view
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (PHASE4_VIEWS.has(activeList)) return;
+    if (activeListId !== null) return;
+    void loadTasks();
+  }, [isAuthenticated, activeList, activeListId, loadTasks]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -845,10 +905,14 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   // Compute counts
   const listCounts = useMemo(() => {
     const counts: Record<string, number> = {
-      today: tasks.filter((t) => t.list === "today").length,
-      upcoming: tasks.filter((t) => t.list === "upcoming").length,
+      today: viewCounts?.counts?.today ?? tasks.filter((t) => t.list === "today").length,
+      upcoming: viewCounts?.counts?.upcoming ?? tasks.filter((t) => t.list === "upcoming").length,
       backlog: tasks.filter((t) => t.list === "backlog").length,
-      completed: tasks.filter((t) => t.completed).length,
+      completed: viewCounts?.counts?.completed ?? tasks.filter((t) => t.completed).length,
+      overdue: viewCounts?.counts?.overdue ?? 0,
+      priority: viewCounts?.counts?.priority ?? 0,
+      "no-date": viewCounts?.counts?.["no-date"] ?? 0,
+      all: viewCounts?.counts?.all ?? tasks.length,
     };
 
     for (const list of userLists) {
@@ -856,7 +920,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     }
 
     return counts;
-  }, [tasks, userLists]);
+  }, [tasks, userLists, viewCounts]);
 
   const folderCounts = useMemo(() => {
     const counts: Record<string, number> = {
@@ -1642,6 +1706,24 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     [isAuthenticated, selectedTaskId]
   );
 
+  const handleLoadMoreView = useCallback(async () => {
+    if (!viewCursor || !viewHasMore) return;
+    setIsLoadingView(true);
+    try {
+      const res = await getViewItems(activeList, { cursor: viewCursor, limit: 50 });
+      const mapped = res.items.map((t) =>
+        backendTaskToTaskItem(t as any, { listOverride: activeList as ListId })
+      );
+      setTasks((prev) => [...prev, ...mapped]);
+      setViewCursor(res.nextCursor);
+      setViewHasMore(res.hasMore);
+    } catch (err) {
+      console.error("Failed to load more view items:", err);
+    } finally {
+      setIsLoadingView(false);
+    }
+  }, [activeList, viewCursor, viewHasMore]);
+
   // Cycle folders for mobile nav
   const handleCycleFolder = useCallback(() => {
     const folders: (FolderId | null)[] = [null, "engineering", "design", "personal"];
@@ -1702,7 +1784,10 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onDeleteTask={handleDeleteTask}
         onAddTask={handleAddTask}
         onQuickAddTask={handleQuickAddTask}
-        isLoading={isLoadingTasks}
+        isLoading={isLoadingTasks || isLoadingView}
+        hasMore={viewHasMore}
+        isLoadingMore={isLoadingView}
+        onLoadMore={handleLoadMoreView}
       />
 
       {/* Collapsible Task Detail Panel */}
