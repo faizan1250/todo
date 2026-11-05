@@ -20,7 +20,10 @@ import { FilterDialog } from "./filter-dialog";
 import { BulkActionToolbar } from "./bulk-action-toolbar";
 import { TrashModal } from "./trash-modal";
 import { TemplatesModal } from "./templates-modal";
+import { TagsModal } from "./tags-modal";
 import { useAuth } from "@/components/auth";
+import { useLiveQuery } from "dexie-react-hooks";
+import { getDB } from "@/lib/db/schema";
 import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
 import { inverseOf, pushUndo, popUndo } from "@/lib/tasks/undo";
@@ -58,6 +61,7 @@ import {
   deleteList,
   archiveList,
   deleteFolder,
+  getTags,
   getFilters,
   createFilter,
   updateFilter,
@@ -69,6 +73,7 @@ import {
   type BackendList,
   type BackendFolder,
   type BackendTask,
+  type BackendTag,
   type BackendViewTask,
   type BackendViewCountsResponse,
   type TaskCompletionResult,
@@ -471,6 +476,16 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   // Library Modals State
   const [isTrashOpen, setIsTrashOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+  const [isTagsOpen, setIsTagsOpen] = useState(false);
+
+  // Tags state: workspace-owned list (REST), tag-filtered view, and
+  // Dexie-first per-tag open-task counts for the sidebar + tags modal.
+  const [userTags, setUserTags] = useState<BackendTag[]>([]);
+  const [activeTag, setActiveTag] = useState<BackendTag | null>(null);
+  const [tagTasks, setTagTasks] = useState<TaskItem[]>([]);
+  const [tagCursor, setTagCursor] = useState<string | null>(null);
+  const [tagHasMore, setTagHasMore] = useState(false);
+  const [isLoadingTag, setIsLoadingTag] = useState(false);
 
   // Streak State
   const [streakCount, setStreakCount] = useState(5);
@@ -718,6 +733,52 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       isMounted = false;
     };
   }, [isAuthenticated]);
+
+  // Fetch tags for the sidebar section + tags modal (REST-owned list).
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let isMounted = true;
+    getTags()
+      .then((res) => {
+        if (isMounted) setUserTags(res);
+      })
+      .catch((err) => {
+        if (isMounted) console.error("Failed to load tags:", err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated]);
+
+  const reloadTags = useCallback(async () => {
+    try {
+      const res = await getTags();
+      setUserTags(res);
+    } catch (err) {
+      console.error("Failed to reload tags:", err);
+    }
+  }, []);
+
+  // Dexie-first per-tag open-task counts (alive, unarchived, not done).
+  // Degrades to {} when there is no userId or Dexie throws.
+  const tagCounts = useLiveQuery(async () => {
+    const counts: Record<string, number> = {};
+    if (!userId) return counts;
+    try {
+      const rows = await getDB(userId).tasks.toArray();
+      for (const r of rows) {
+        if (r["deleted"] === 1 || r["deletedAt"] != null) continue;
+        if (r["archivedAt"] != null) continue;
+        const status = r["status"];
+        if (status === "done" || status === "cancelled") continue;
+        const ids = (r["tagIds"] as string[] | undefined) ?? [];
+        for (const id of ids) counts[id] = (counts[id] ?? 0) + 1;
+      }
+    } catch {
+      return {};
+    }
+    return counts;
+  }, [userId]) ?? {};
 
   // Fetch smart view counts
   useEffect(() => {
@@ -1418,6 +1479,8 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const handleSelectFilter = useCallback(
     async (id: string) => {
       setActiveFilterId(id);
+      setActiveTag(null);
+      setTagTasks([]);
       setIsLoadingFilter(true);
       try {
         const res = await getFilterTasks(id, { limit: 50 });
@@ -1450,6 +1513,59 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       setIsLoadingFilter(false);
     }
   }, [activeFilterId, filterCursor, filterHasMore]);
+
+  // Tag-filtered view: mirrors the saved-filter mechanism but sources tasks
+  // via getTasks({ tag }) (no saved-filter id exists for tags). Selecting the
+  // active tag again toggles back to the list view.
+  const handleSelectTag = useCallback(
+    async (tag: { id: string; name: string }) => {
+      if (activeTag?.id === tag.id) {
+        setActiveTag(null);
+        setTagTasks([]);
+        setTagCursor(null);
+        setTagHasMore(false);
+        return;
+      }
+      setActiveFilterId(null);
+      setFilterTasks([]);
+      setActiveTag({ id: tag.id, name: tag.name } as BackendTag);
+      setIsLoadingTag(true);
+      try {
+        const res = await getTasks({ tag: tag.name, include: "subtasks,checklist,tags", limit: 50 });
+        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+        setTagTasks(mapped);
+        setTagCursor(res.nextCursor);
+        setTagHasMore(res.hasMore);
+      } catch (err) {
+        console.error("Failed to load tag tasks:", err);
+        setTagTasks([]);
+        toast({
+          title: "Failed to load tag",
+          message: err instanceof Error ? err.message : "Network error",
+          type: "error",
+        });
+      } finally {
+        setIsLoadingTag(false);
+      }
+    },
+    [activeTag, toast]
+  );
+
+  const handleLoadMoreTag = useCallback(async () => {
+    if (!activeTag || !tagCursor || !tagHasMore) return;
+    setIsLoadingTag(true);
+    try {
+      const res = await getTasks({ tag: activeTag.name, include: "subtasks,checklist,tags", cursor: tagCursor, limit: 50 });
+      const mapped = res.items.map((t) => backendTaskToTaskItem(t));
+      setTagTasks((prev) => [...prev, ...mapped]);
+      setTagCursor(res.nextCursor);
+      setTagHasMore(res.hasMore);
+    } catch (err) {
+      console.error("Failed to load more tag tasks:", err);
+    } finally {
+      setIsLoadingTag(false);
+    }
+  }, [activeTag, tagCursor, tagHasMore]);
 
   const handleFilterSuccess = useCallback(
     (saved: BackendSavedFilter) => {
@@ -2926,6 +3042,11 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onEditFilter={handleEditFilter}
         onDeleteFilter={handleDeleteFilter}
         onMoveFilter={handleMoveFilter}
+        tags={userTags}
+        tagCounts={tagCounts}
+        activeTagId={activeTag?.id ?? null}
+        onSelectTag={handleSelectTag}
+        onOpenTags={() => setIsTagsOpen(true)}
         className="hidden md:flex"
       />
 
@@ -2985,10 +3106,10 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
           />
         ) : (
           <TaskPane
-            tasks={activeFilterId ? filterTasks : tasks}
+            tasks={activeFilterId ? filterTasks : activeTag ? tagTasks : tasks}
             activeList={activeList}
             activeListId={activeListId}
-            activeListName={activeFilterId ? (savedFilters.find((f) => f.id === activeFilterId)?.name) : activeListName}
+            activeListName={activeFilterId ? (savedFilters.find((f) => f.id === activeFilterId)?.name) : activeTag ? `# ${activeTag.name}` : activeListName}
             activeFolder={activeFolder}
             folders={userFolders}
             selectedTaskId={selectedTaskId}
@@ -3006,11 +3127,11 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
             onArchiveTask={handleArchiveTask}
             onMoveTask={handleMovePanelTask}
             onReorderTask={handleReorderTask}
-            isLoading={activeFilterId ? isLoadingFilter : (isLoadingTasks || isLoadingView)}
-            showListName={PHASE4_VIEWS.has(activeList) || activeFilterId !== null}
-            hasMore={activeFilterId ? filterHasMore : viewHasMore}
-            isLoadingMore={activeFilterId ? isLoadingFilter : isLoadingView}
-            onLoadMore={activeFilterId ? handleLoadMoreFilter : handleLoadMoreView}
+            isLoading={activeFilterId ? isLoadingFilter : activeTag ? isLoadingTag : (isLoadingTasks || isLoadingView)}
+            showListName={PHASE4_VIEWS.has(activeList) || activeFilterId !== null || activeTag !== null}
+            hasMore={activeFilterId ? filterHasMore : activeTag ? tagHasMore : viewHasMore}
+            isLoadingMore={activeFilterId ? isLoadingFilter : activeTag ? isLoadingTag : isLoadingView}
+            onLoadMore={activeFilterId ? handleLoadMoreFilter : activeTag ? handleLoadMoreTag : handleLoadMoreView}
           />
         )}
       </div>
@@ -3164,6 +3285,18 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         lists={userLists}
         defaultListId={activeListId}
         onTemplateInstantiated={handleTemplateInstantiated}
+      />
+
+      {/* Tags Modal */}
+      <TagsModal
+        isOpen={isTagsOpen}
+        onClose={() => setIsTagsOpen(false)}
+        tags={userTags}
+        tagCounts={tagCounts}
+        userId={userId}
+        activeTagId={activeTag?.id ?? null}
+        onSelectTag={handleSelectTag}
+        onTagsChanged={reloadTags}
       />
     </div>
   );
