@@ -54,6 +54,7 @@ import { copy } from "@/lib/copy";
 import { depthOfTask, planIndent, planOutdent } from "@/lib/tasks/indent";
 import { useToast } from "./toast-system";
 import { TaskContextMenu } from "./task-context-menu";
+import { sortTasksByDueDate, type ListSortMode } from "@/lib/tasks/sort";
 import {
   getSections,
   createSection,
@@ -267,6 +268,9 @@ export function TaskPane({
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "completed">("all");
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
+  const [sortMode, setSortMode] = useState<ListSortMode>("manual");
+  const dragDisabled = sortMode !== "manual";
+  const reorderHandler = dragDisabled ? undefined : onReorderTask;
 
   // Natural Language Parsed Preview State
   const [parsedPreview, setParsedPreview] = useState<ParsedTaskResult | null>(null);
@@ -669,11 +673,16 @@ export function TaskPane({
     () => (statusFilter === "all" ? filteredTasks.filter((t) => !t.completed) : filteredTasks),
     [filteredTasks, statusFilter]
   );
+  // Due-date order is display-only: dated first (earliest first), undated last.
+  const orderedTasks = useMemo(
+    () => (sortMode === "due" ? sortTasksByDueDate(tasksForGrouping) : tasksForGrouping),
+    [tasksForGrouping, sortMode]
+  );
   const showDoneGroup = statusFilter === "all" && doneTasks.length > 0;
 
   const { unsectionedTasks, sectionTasksMap } = useMemo(() => {
     if (effectiveSections.length === 0) {
-      return { unsectionedTasks: tasksForGrouping, sectionTasksMap: new Map<string, TaskItem[]>() };
+      return { unsectionedTasks: orderedTasks, sectionTasksMap: new Map<string, TaskItem[]>() };
     }
 
     const map = new Map<string, TaskItem[]>();
@@ -683,7 +692,7 @@ export function TaskPane({
 
     const unsectioned: TaskItem[] = [];
 
-    for (const task of tasksForGrouping) {
+    for (const task of orderedTasks) {
       if (task.sectionId && map.has(task.sectionId)) {
         map.get(task.sectionId)!.push(task);
       } else {
@@ -692,7 +701,7 @@ export function TaskPane({
     }
 
     return { unsectionedTasks: unsectioned, sectionTasksMap: map };
-  }, [tasksForGrouping, effectiveSections]);
+  }, [orderedTasks, effectiveSections]);
 
   // ---- Drag-reorder (dnd-kit) ----
   // One sortable container per group: "flat" when no sections exist, otherwise
@@ -700,7 +709,7 @@ export function TaskPane({
   const containers = useMemo(() => {
     const map = new Map<string, TaskItem[]>();
     if (effectiveSections.length === 0) {
-      map.set(FLAT_CONTAINER, tasksForGrouping);
+      map.set(FLAT_CONTAINER, orderedTasks);
     } else {
       map.set(UNSECTIONED_CONTAINER, unsectionedTasks);
       for (const s of effectiveSections) {
@@ -708,7 +717,7 @@ export function TaskPane({
       }
     }
     return map;
-  }, [effectiveSections, tasksForGrouping, unsectionedTasks, sectionTasksMap]);
+  }, [effectiveSections, orderedTasks, unsectionedTasks, sectionTasksMap]);
 
   const taskContainer = useMemo(() => {
     const map = new Map<string, string>();
@@ -734,9 +743,9 @@ export function TaskPane({
   // Virtualize long flat lists (fixed 56px rows). Grouped lists keep a normal
   // render — headers stay sticky-friendly and section drops stay measurable.
   const shouldVirtualize =
-    effectiveSections.length === 0 && tasksForGrouping.length > VIRTUALIZE_AFTER;
+    effectiveSections.length === 0 && orderedTasks.length > VIRTUALIZE_AFTER;
   const rowVirtualizer = useVirtualizer({
-    count: tasksForGrouping.length,
+    count: orderedTasks.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => VIRTUAL_ROW_PX,
     overscan: 8,
@@ -781,7 +790,7 @@ export function TaskPane({
     setActiveId(null);
     setDropMark(null);
     keyboardDrag.current = false;
-    if (!onReorderTask) return;
+    if (!reorderHandler) return;
     const overId = event.over ? String(event.over.id) : null;
     if (!overId) {
       setAnnouncement("Reorder cancelled.");
@@ -801,7 +810,7 @@ export function TaskPane({
     const { afterId, beforeId, toIndex } = moveNeighbors(res.resultIds, id);
     const sectionId =
       sourceContainer === res.containerId ? undefined : containerSectionId(res.containerId);
-    onReorderTask(id, { sectionId, afterId, beforeId });
+    reorderHandler(id, { sectionId, afterId, beforeId });
     const title = tasks.find((t) => t.id === id)?.title ?? "task";
     const sectionName =
       res.containerId.startsWith("section:")
@@ -1150,6 +1159,7 @@ export function TaskPane({
   };
 
   // Shared row renderer. Sortable when the workspace provided onReorderTask
+  // and the list is in My-order mode (date order disables drag handles).
   // (done-group rows stay plain — completed items don't reorder).
   const renderTaskRow = (
     task: TaskItem,
@@ -1183,7 +1193,7 @@ export function TaskPane({
         }
       />
     );
-    if (!onReorderTask || !containerId) return row;
+    if (!reorderHandler || !containerId) return row;
     const mark =
       dropMark && dropMark.containerId === containerId && dropMark.overTaskId === task.id
         ? dropMark.placeBefore
@@ -1355,7 +1365,41 @@ export function TaskPane({
                 </button>
               ))}
             </div>
+
+          {/* Sort Menu */}
+          <div
+            className="flex items-center gap-1 rounded-lg border border-[#E4E8F2] bg-[#F2F5FC] p-0.5 dark:border-[#132E74] dark:bg-[#082363]"
+            role="group"
+            aria-label={copy.scheduling.sort.label}
+          >
+            {(
+              [
+                { id: "manual" as const, label: copy.scheduling.sort.myOrder },
+                { id: "due" as const, label: copy.scheduling.sort.dueDate },
+              ]
+            ).map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => setSortMode(o.id)}
+                aria-pressed={sortMode === o.id}
+                className={cn(
+                  "rounded-md px-3 py-1 text-xs font-semibold transition-all cursor-pointer",
+                  sortMode === o.id
+                    ? "bg-white text-[#09318D] shadow-xs dark:bg-[#0D41B4] dark:text-white"
+                    : "text-[#5B6478] hover:text-[#0B1220] dark:text-[#9BB0D3] dark:hover:text-white"
+                )}
+              >
+                {o.label}
+              </button>
+            ))}
           </div>
+          </div>
+          {dragDisabled && (
+            <p className="mt-2 text-[11px] italic text-[#5B6478]/80 dark:text-[#9BB0D3]/70">
+              {copy.scheduling.sort.dragDisabledNote}
+            </p>
+          )}
         </div>
 
       {/* Main Workspace Body */}
@@ -1814,13 +1858,13 @@ export function TaskPane({
         ) : effectiveSections.length === 0 ? (
           /* Render Flat Task List when no sections exist */
           <div className="space-y-3">
-            {tasksForGrouping.length > 0 && (
+            {orderedTasks.length > 0 && (
               <EndDropZone
                 containerId={FLAT_CONTAINER}
                 className="rounded-xl border border-[#E4E8F2] bg-white shadow-xs dark:border-[#132E74] dark:bg-[#082363]/50 overflow-hidden"
               >
                 <SortableContext
-                  items={tasksForGrouping.map((t) => t.id)}
+                  items={orderedTasks.map((t) => t.id)}
                   strategy={verticalListSortingStrategy}
                 >
                   {shouldVirtualize ? (
@@ -1831,9 +1875,9 @@ export function TaskPane({
                       }}
                     >
                       {rowVirtualizer.getVirtualItems().map((vi) => {
-                        const task = tasksForGrouping[vi.index];
+                        const task = orderedTasks[vi.index];
                         if (!task) return null;
-                        return renderTaskRow(task, tasksForGrouping, FLAT_CONTAINER, {
+                        return renderTaskRow(task, orderedTasks, FLAT_CONTAINER, {
                           position: "absolute",
                           top: 0,
                           left: 0,
@@ -1847,8 +1891,8 @@ export function TaskPane({
                     </div>
                   ) : (
                     <>
-                      {tasksForGrouping.map((task) =>
-                        renderTaskRow(task, tasksForGrouping, FLAT_CONTAINER)
+                      {orderedTasks.map((task) =>
+                        renderTaskRow(task, orderedTasks, FLAT_CONTAINER)
                       )}
                       {dropMark?.containerId === FLAT_CONTAINER && !dropMark.overTaskId && (
                         <InsertionLine />
