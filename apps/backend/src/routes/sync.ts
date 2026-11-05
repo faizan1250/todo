@@ -161,4 +161,16 @@ export const syncRoutes = new Elysia({ prefix: "/api/v1/sync" })
         limit: t.Number({ default: 500 }),
       }),
     }
+  )
+  .post(
+    "/push",
+    async () => {
+      return { results: [] };
+    },
+    {
+      auth: true,
+      body: t.Object({
+        mutations: t.Array(t.Any()),
+      }),
+    }
   );
