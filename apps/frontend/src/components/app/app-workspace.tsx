@@ -68,6 +68,8 @@ import {
   priorityUiToBackend,
   taskItemToBackendUpdateInput,
 } from "@/lib/adapters";
+import { getListTasks } from "@/lib/data/queries/list";
+import { dexieRowsToTaskItems } from "@/lib/data/adapters";
 import type { TaskItem, ListId, FolderId, Priority, ViewMode } from "./types";
 
 const PHASE4_VIEWS = new Set(["overdue", "priority", "no-date", "all"]);
@@ -294,7 +296,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
   const { toast, success } = useToast();
   const auth = useAuth();
   const { isAuthenticated, user } = auth;
-  void user;
+  const userId = user?.id ?? null;
 
   const [tasks, setTasks] = useState<TaskItem[]>(INITIAL_WORKSPACE_TASKS);
   const [userLists, setUserLists] = useState<BackendList[]>([]);
@@ -694,6 +696,10 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
     void loadTasks();
   }, [isAuthenticated, activeList, activeListId, loadTasks]);
 
+  // Dexie-first list read (Phase 5 cutover 6b): when the per-user local DB
+  // already holds rows for this list, render from Dexie and skip REST.
+  // Empty local store (pre-first-sync) or any Dexie error falls back to the
+  // intact REST path below. Writes stay on REST (untouched).
   useEffect(() => {
     if (!isAuthenticated) return;
     let isMounted = true;
@@ -705,35 +711,61 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
       queryParams.listId = activeListId;
     }
 
-    getTasks(queryParams)
-      .then((res) => {
-        if (!isMounted) return;
-        const mapped = res.items.map((t) => backendTaskToTaskItem(t));
-        setTasks(mapped);
-        if (mapped.length > 0) {
-          setSelectedTaskId((prev) =>
-            prev && mapped.some((t) => t.id === prev) ? prev : mapped[0].id
-          );
-        } else {
-          setSelectedTaskId(null);
-        }
-        setIsLoadingTasks(false);
-      })
-      .catch((err) => {
-        if (!isMounted) return;
-        console.error("Failed to load tasks:", err);
-        toast({
-          title: "Failed to load tasks",
-          message: err instanceof Error ? err.message : "Network error",
-          type: "error",
+    const applyItems = (mapped: TaskItem[]) => {
+      if (!isMounted) return;
+      setTasks(mapped);
+      if (mapped.length > 0) {
+        setSelectedTaskId((prev) =>
+          prev && mapped.some((t) => t.id === prev) ? prev : mapped[0].id
+        );
+      } else {
+        setSelectedTaskId(null);
+      }
+      setIsLoadingTasks(false);
+    };
+
+    const loadViaRest = () => {
+      getTasks(queryParams)
+        .then((res) => {
+          if (!isMounted) return;
+          applyItems(res.items.map((t) => backendTaskToTaskItem(t)));
+        })
+        .catch((err) => {
+          if (!isMounted) return;
+          console.error("Failed to load tasks:", err);
+          toast({
+            title: "Failed to load tasks",
+            message: err instanceof Error ? err.message : "Network error",
+            type: "error",
+          });
+          setIsLoadingTasks(false);
         });
-        setIsLoadingTasks(false);
-      });
+    };
+
+    const run = async () => {
+      if (userId && activeListId) {
+        try {
+          const local = await getListTasks(userId, activeListId);
+          if (!isMounted) return;
+          if (local.length > 0) {
+            applyItems(await dexieRowsToTaskItems(userId, local));
+            return;
+          }
+          // No local rows yet (pre-first-sync): fall through to REST.
+        } catch (err) {
+          console.error("Dexie list read failed, falling back to REST:", err);
+        }
+        if (!isMounted) return;
+      }
+      loadViaRest();
+    };
+
+    void run();
 
     return () => {
       isMounted = false;
     };
-  }, [isAuthenticated, activeListId, toast]);
+  }, [isAuthenticated, activeListId, userId, toast]);
 
   // Bulk Selection Handlers
   const handleToggleSelectTask = useCallback(
