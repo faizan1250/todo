@@ -1410,3 +1410,36 @@ export async function previewFilter(data: {
     body: JSON.stringify(data),
   });
 }
+
+// -------------------------------------------------------------
+// Search API (/api/v1/search)
+// -------------------------------------------------------------
+
+export async function search(params: {
+  q?: string;
+  types?: string;
+  list_id?: string;
+  status?: string;
+  tag?: string;
+  archived?: boolean;
+  scope?: string;
+  limit?: number;
+}): Promise<BackendSearchResponse> {
+  const query = new URLSearchParams();
+  if (params?.q) query.set("q", params.q);
+  if (params?.types) query.set("types", params.types);
+  if (params?.list_id) query.set("list_id", params.list_id);
+  if (params?.status) query.set("status", params.status);
+  if (params?.tag) query.set("tag", params.tag);
+  if (params?.archived !== undefined) query.set("archived", String(params.archived));
+  if (params?.scope) query.set("scope", params.scope);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<BackendSearchResponse>(`/api/v1/search${qs ? `?${qs}` : ""}`);
+}
+
+export async function rebuildSearchIndex(): Promise<{ success: boolean; message: string; timestamp: string }> {
+  return apiFetch<{ success: boolean; message: string; timestamp: string }>("/api/v1/search/rebuild", {
+    method: "POST",
+  });
+}
