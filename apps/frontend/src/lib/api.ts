@@ -1443,3 +1443,24 @@ export async function rebuildSearchIndex(): Promise<{ success: boolean; message:
     method: "POST",
   });
 }
+
+// -------------------------------------------------------------
+// Calendar API (/api/v1/calendar)
+// -------------------------------------------------------------
+
+export async function getCalendar(params: {
+  from: string;
+  to: string;
+  list_id?: string;
+  include_done?: boolean;
+  tz?: string;
+}): Promise<BackendCalendarResponse> {
+  const query = new URLSearchParams();
+  query.set("from", params.from);
+  query.set("to", params.to);
+  if (params.list_id) query.set("list_id", params.list_id);
+  if (params.include_done !== undefined) query.set("include_done", String(params.include_done));
+  if (params.tz) query.set("tz", params.tz);
+  const qs = query.toString();
+  return apiFetch<BackendCalendarResponse>(`/api/v1/calendar?${qs}`);
+}
