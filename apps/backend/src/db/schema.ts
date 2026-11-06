@@ -477,8 +477,8 @@ export const notificationPrefs = sqliteTable("notification_prefs", {
   digestDailyEnabled: bool("digest_daily_enabled").notNull().default(false),
   digestTime: text("digest_time").notNull().default("08:00"),
   weeklyEnabled: bool("weekly_enabled").notNull().default(false),
-  weeklyDay: integer("weekly_day").notNull().default(1),
-  weeklyTime: text("weekly_time").notNull().default("09:00"),
+  weeklyDay: integer("weekly_day").notNull().default(0), // 0=Sun..6=Sat; default Sunday
+  weeklyTime: text("weekly_time").notNull().default("17:00"),
   createdAt: ts("created_at").notNull().$defaultFn(() => new Date()),
   updatedAt: ts("updated_at")
     .notNull()

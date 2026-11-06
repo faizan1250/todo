@@ -50,6 +50,13 @@
       "when": 1793960000000,
       "tag": "0006_phase6-notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1793970000000,
+      "tag": "0007_digest-weekly-default",
+      "breakpoints": true
     }
   ]
 }
