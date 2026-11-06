@@ -121,10 +121,14 @@ describe("scheduler tick", () => {
     expect(r.firedAt).not.toBeNull();
     expect(r.outcome).toBe("sent");
 
-    // Realtime hint published on user topic.
-    expect(published).toHaveLength(1);
-    expect(published[0].topic).toBe(`user:${userId}`);
-    expect(JSON.parse(published[0].data)).toEqual({ t: "notification", id: notifs[0].id });
+    // Realtime hint published on user topic. Filter to notification hints:
+    // the shared mock also collects debounced `{t:"changed"}` sync hints
+    // from schedulePublish timers armed by earlier tests (100ms fuse can
+    // expire inside this test when files run back-to-back).
+    const hints = published.filter((p) => JSON.parse(p.data).t === "notification");
+    expect(hints).toHaveLength(1);
+    expect(hints[0].topic).toBe(`user:${userId}`);
+    expect(JSON.parse(hints[0].data)).toEqual({ t: "notification", id: notifs[0].id });
 
     const second = await runTick(T0 + 30_000);
     expect(second.claimed).toBe(0);
