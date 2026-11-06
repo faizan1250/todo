@@ -112,10 +112,15 @@ export function digestLocal(nowMs: number, tz: string): DigestLocal {
 }
 
 /** True when local time has passed today's `timeStr` but is still inside the grace window. */
-function isDue(local: DigestLocal, nowMs: number, timeStr: unknown): boolean {
+function isDue(local: DigestLocal, nowMs: number, tz: string, timeStr: unknown): boolean {
   const mins = parseHhMm(timeStr);
   if (mins === null) return false;
-  const scheduled = local.startMs + mins * 60_000;
+  // Wall-clock construction (not midnight + N ms): on DST transitions a
+  // "day" is not 24h, so 08:00 must mean 08:00 on the clock.
+  const scheduled = zoned(nowMs, tz)
+    .startOf("day")
+    .set({ hour: Math.floor(mins / 60), minute: mins % 60, second: 0, millisecond: 0 })
+    .toMillis();
   return nowMs >= scheduled && nowMs - scheduled <= DIGEST_GRACE_MS;
 }
 
@@ -483,7 +488,7 @@ async function tickUser(
   const tz = user.timezone || "UTC";
   const local = digestLocal(nowMs, tz);
 
-  if (prefs.digestDailyEnabled && isDue(local, nowMs, prefs.digestTime)) {
+  if (prefs.digestDailyEnabled && isDue(local, nowMs, tz, prefs.digestTime)) {
     if (!claimDigestSlot(user.id, "daily", local.localDate, nowMs)) {
       stats.duplicates += 1;
     } else {
@@ -499,7 +504,7 @@ async function tickUser(
     }
   }
 
-  if (prefs.weeklyEnabled && local.weekdaySun0 === prefs.weeklyDay && isDue(local, nowMs, prefs.weeklyTime)) {
+  if (prefs.weeklyEnabled && local.weekdaySun0 === prefs.weeklyDay && isDue(local, nowMs, tz, prefs.weeklyTime)) {
     if (!claimDigestSlot(user.id, "weekly", local.localDate, nowMs)) {
       stats.duplicates += 1;
     } else {
