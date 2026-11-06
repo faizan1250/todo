@@ -71,6 +71,20 @@ export function flushPublish(userId?: string) {
 }
 
 /**
+ * Fire-and-forget realtime hint after a notification row commits.
+ * Separate from the coalesced `changed` sync publish: inbox UIs listen for
+ * `{ t: "notification", id }` on `user:{id}` to refresh badges/lists.
+ */
+export function publishNotification(userId: string, notificationId: string): void {
+  if (!server) return;
+  try {
+    server.publish(`user:${userId}`, JSON.stringify({ t: "notification", id: notificationId }));
+  } catch {
+    // Notification must never break the write path.
+  }
+}
+
+/**
  * Notify other devices after a REST (non-sync-push) write. Reads the
  * current global seq (bumped by DB triggers on every write) and schedules
  * a coalesced `changed` publish. Origin device is unknown here, so all

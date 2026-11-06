@@ -14,17 +14,20 @@
     "@elysiajs/cors": "^1.2.0",
     "@elysiajs/cron": "^1.4.2",
     "@elysiajs/swagger": "^1.2.0",
+    "@sinclair/typebox": "^0.34.52",
     "better-auth": "^1.7.16",
     "chrono-node": "^2.10.3",
     "drizzle-orm": "^0.45.4",
     "elysia": "^1.2.10",
     "fractional-indexing": "^4.0.0",
     "luxon": "^3.7.2",
-    "rrule": "^2.8.1"
+    "rrule": "^2.8.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/luxon": "^3.7.6",
+    "@types/web-push": "^3.6.4",
     "drizzle-kit": "^0.31.11",
     "fast-check": "^4.10.2",
     "typescript": "^7.0.2"

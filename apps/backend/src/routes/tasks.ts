@@ -11,6 +11,7 @@ import { recomputeTaskReminders, firePendingTaskReminders, calculateRelativeRemi
 import { spawnNextRecurrenceInstance } from "../services/recurrence";
 import { parseNaturalLanguage, type ParsedTaskResult } from "../utils/parser";
 import { notifyUserChanged } from "../utils/sync-publisher";
+import { cancelPendingDeliveries } from "../utils/notify-worker";
 
 /**
  * Normalizes notes string:
@@ -430,7 +431,23 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         return status(400, { error: "ids array contains duplicate IDs" });
       }
 
-      return await db.transaction(async (tx) => {
+      // Descendant expansion for cancel hooks (getTaskDescendants only sees
+      // non-deleted rows, so this must run before the mutation below).
+      let cancelIds: string[] = [];
+      if (action === "complete" || action === "archive" || action === "delete") {
+        const cascade =
+          action === "archive" ||
+          action === "delete" ||
+          (action === "complete" && Boolean(payload?.completeSubtasks));
+        cancelIds = [...ids];
+        if (cascade) {
+          for (const tid of ids) {
+            for (const d of getTaskDescendants(tid, user.id)) cancelIds.push(d.id);
+          }
+        }
+      }
+
+      const result = await db.transaction(async (tx) => {
         // Query all matching tasks
         const existingTasks = await tx
           .select()
@@ -837,6 +854,15 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
             return status(400, { error: "Unsupported bulk action" });
         }
       });
+      if (
+        cancelIds.length > 0 &&
+        result !== null &&
+        typeof result === "object" &&
+        (result as { success?: boolean }).success === true
+      ) {
+        cancelPendingDeliveries({ taskIds: cancelIds });
+      }
+      return result;
     },
     {
       auth: true,
@@ -1399,6 +1425,12 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
 
       const [withIncludes] = await attachTaskIncludes([updated], null, user.id);
       notifyUserChanged(user.id);
+      const becameTerminal =
+        (nextStatus === "done" || nextStatus === "cancelled") && existing.status !== nextStatus;
+      const becameArchived = nextArchivedAt != null && existing.archivedAt == null;
+      if (becameTerminal || becameArchived) {
+        cancelPendingDeliveries({ taskId: id });
+      }
       return withIncludes;
     },
     {
@@ -1462,6 +1494,8 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
       const now = new Date();
       const nowMs = now.getTime();
 
+      const descendantIds = getTaskDescendants(id, user.id).map((d) => d.id);
+
       sqlite.run(
         `WITH RECURSIVE sub(id) AS (
           SELECT id FROM tasks WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
@@ -1492,6 +1526,7 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
       }
 
       notifyUserChanged(user.id);
+      cancelPendingDeliveries({ taskIds: [id, ...descendantIds] });
       return { success: true };
     },
     {
@@ -1856,6 +1891,12 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         await runCompleteHooks(updatedTask.task);
       }
 
+      cancelPendingDeliveries({
+        taskIds: body?.completeSubtasks
+          ? [id, ...getTaskDescendants(id, user.id).map((d) => d.id)]
+          : [id],
+      });
+
       return {
         ...updatedTask.task,
         nextTask: updatedTask.nextTask,
@@ -1938,6 +1979,8 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         return status(400, { error: "Task could not be skipped" });
       }
 
+      cancelPendingDeliveries({ taskId: id });
+
       return {
         ...result.task,
         nextTask: result.nextTask,
@@ -2017,6 +2060,8 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
       const now = new Date();
       const nowMs = now.getTime();
 
+      const descendantIds = getTaskDescendants(id, user.id).map((d) => d.id);
+
       sqlite.run(
         `WITH RECURSIVE sub(id) AS (
           SELECT id FROM tasks WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
@@ -2028,6 +2073,8 @@ export const taskRoutes = new Elysia({ prefix: "/api/v1/tasks" })
         WHERE id IN (SELECT id FROM sub) AND (id = ?1 OR archived_at IS NULL);`,
         [id, user.id, nowMs]
       );
+
+      cancelPendingDeliveries({ taskIds: [id, ...descendantIds] });
 
       const [updated] = await db
         .select()

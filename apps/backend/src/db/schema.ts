@@ -125,12 +125,22 @@ export const devices = sqliteTable(
       endpoint: string;
       keys: { p256dh: string; auth: string };
     }>(),
+    pushEnabled: bool("push_enabled").notNull().default(true),
+    pushStatus: text("push_status", { enum: ["active", "expired", "disabled"] })
+      .notNull()
+      .default("active"),
+    pushFailures: integer("push_failures").notNull().default(0),
+    lastPushAt: ts("last_push_at"),
+    pushEndpointHash: text("push_endpoint_hash"),
     lastSeenAt: ts("last_seen_at"),
     lastSyncSeq: integer("last_sync_seq"),
     lastSyncAt: ts("last_sync_at"),
     createdAt: ts("created_at").notNull().$defaultFn(() => new Date()),
   },
-  (t) => [index("device_user_idx").on(t.userId)]
+  (t) => [
+    index("device_user_idx").on(t.userId),
+    uniqueIndex("device_push_endpoint_hash_unique").on(t.pushEndpointHash),
+  ]
 );
 
 export const invites = sqliteTable("invites", {
@@ -369,6 +379,7 @@ export const reminders = sqliteTable(
     offsetMin: integer("offset_min"), // negative = before
     remindAt: ts("remind_at").notNull(), // resolved fire time; snooze = update this + clear firedAt
     firedAt: ts("fired_at"),
+    outcome: text("outcome"), // Phase 6: e.g. "notified" | "suppressed" | "skipped"
   },
   (t) => [
     index("reminder_due_idx").on(t.firedAt, t.remindAt), // scheduler scan
@@ -382,15 +393,139 @@ export const notifications = sqliteTable(
   {
     ...base(),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    // Legacy Phase 3 columns (kept for backward compat; prefer entityType/entityId below).
     taskId: text("task_id").references(() => tasks.id, { onDelete: "set null" }),
     type: text("type").notNull().default("location_trigger"),
     title: text("title").notNull(),
     body: text("body"),
     read: bool("read").notNull().default(false),
     triggeredAt: ts("triggered_at").notNull().$defaultFn(() => new Date()),
+    // Phase 6 columns.
+    url: text("url"),
+    entityType: text("entity_type"),
+    entityId: text("entity_id"),
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>(),
+    priority: text("priority", { enum: ["normal", "high"] }).notNull().default("normal"),
+    groupKey: text("group_key"),
+    dedupeKey: text("dedupe_key"),
+    readAt: ts("read_at"),
+    expiresAt: ts("expires_at"),
   },
-  (t) => [index("notification_user_idx").on(t.userId)]
+  (t) => [
+    index("notification_user_idx").on(t.userId),
+    uniqueIndex("notifications_user_dedupe_unique").on(t.userId, t.dedupeKey),
+    index("notifications_user_created_idx").on(t.userId, t.createdAt),
+    index("notifications_user_read_idx").on(t.userId, t.readAt),
+  ]
 );
+
+/* =====================================================
+   PHASE 6: NOTIFICATIONS
+   ===================================================== */
+export const notificationDeliveries = sqliteTable(
+  "notification_deliveries",
+  {
+    id: uuid(),
+    notificationId: text("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    channel: text("channel", { enum: ["web_push", "fcm", "email"] }).notNull(),
+    deviceId: text("device_id"),
+    status: text("status", {
+      enum: ["pending", "sending", "retry", "sent", "failed", "cancelled", "suppressed"],
+    })
+      .notNull()
+      .default("pending"),
+    reason: text("reason"),
+    notBefore: ts("not_before"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: ts("next_attempt_at"),
+    leaseUntil: ts("lease_until"),
+    providerId: text("provider_id"),
+    errorCode: text("error_code"),
+    sentAt: ts("sent_at"),
+    createdAt: ts("created_at").notNull().$defaultFn(() => new Date()),
+    updatedAt: ts("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date())
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    index("delivery_status_next_idx").on(t.status, t.nextAttemptAt),
+    index("delivery_notification_idx").on(t.notificationId),
+  ]
+);
+
+export type NotificationTypePreference = {
+  webPush?: boolean;
+  email?: boolean;
+};
+
+export const notificationPrefs = sqliteTable("notification_prefs", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  types: text("types", { mode: "json" })
+    .$type<Record<string, NotificationTypePreference>>()
+    .notNull()
+    .default({}),
+  quietEnabled: bool("quiet_enabled").notNull().default(false),
+  quietStart: text("quiet_start").notNull().default("22:00"),
+  quietEnd: text("quiet_end").notNull().default("07:00"),
+  urgentBreaksQuiet: bool("urgent_breaks_quiet").notNull().default(false),
+  pausedUntil: ts("paused_until"),
+  hideContent: bool("hide_content").notNull().default(false),
+  digestDailyEnabled: bool("digest_daily_enabled").notNull().default(false),
+  digestTime: text("digest_time").notNull().default("08:00"),
+  weeklyEnabled: bool("weekly_enabled").notNull().default(false),
+  weeklyDay: integer("weekly_day").notNull().default(0), // 0=Sun..6=Sat; default Sunday
+  weeklyTime: text("weekly_time").notNull().default("17:00"),
+  createdAt: ts("created_at").notNull().$defaultFn(() => new Date()),
+  updatedAt: ts("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date())
+    .$onUpdate(() => new Date()),
+});
+
+export const listNotificationRules = sqliteTable(
+  "list_notification_rules",
+  {
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    listId: text("list_id").notNull().references(() => lists.id, { onDelete: "cascade" }),
+    mode: text("mode", { enum: ["all", "silent", "off"] }).notNull().default("all"),
+    createdAt: ts("created_at").notNull().$defaultFn(() => new Date()),
+    updatedAt: ts("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date())
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.listId] })]
+);
+
+export const digestLog = sqliteTable(
+  "digest_log",
+  {
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["daily", "weekly"] }).notNull(),
+    localDate: text("local_date").notNull(), // YYYY-MM-DD in user's timezone
+    sentAt: ts("sent_at").notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.kind, t.localDate] })]
+);
+
+export const emailSuppressions = sqliteTable("email_suppressions", {
+  email: text("email").primaryKey(),
+  reason: text("reason"),
+  createdAt: ts("created_at").notNull().$defaultFn(() => new Date()),
+});
+
+export const schedulerState = sqliteTable("scheduler_state", {
+  key: text("key").primaryKey(),
+  value: text("value"),
+  updatedAt: ts("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date())
+    .$onUpdate(() => new Date()),
+});
 
 /* =====================================================
    PHASE 4: VIEWS, FILTERS & TIME BLOCKING

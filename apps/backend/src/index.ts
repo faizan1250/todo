@@ -3,6 +3,11 @@ import { cors } from "@elysiajs/cors";
 import { swagger } from "@elysiajs/swagger";
 import { auth, trustedOrigins } from "./auth";
 import { meRoutes } from "./routes/me";
+import { notificationPrefsRoutes } from "./routes/notification-prefs";
+import { notificationRoutes } from "./routes/notifications";
+import { digestRoutes } from "./routes/digest";
+import { pushRoutes } from "./routes/push";
+import { emailRoutes } from "./routes/email";
 import { inviteRoutes } from "./routes/invite";
 import { folderRoutes } from "./routes/folders";
 import { listRoutes } from "./routes/lists";
@@ -25,10 +30,13 @@ import { calendarRoutes } from "./routes/calendar";
 import { boardRoutes } from "./routes/board";
 import { plannerRoutes } from "./routes/planner";
 import { syncRoutes } from "./routes/sync";
-import { adminRoutes } from "./routes/admin";
+import { adminRoutes, notificationsHealthRoutes } from "./routes/admin";
 import { wsRoutes } from "./routes/ws";
 import { cron } from "@elysiajs/cron";
-import { purgeOldSoftDeleted } from "./utils/purge";
+import { purgeOldSoftDeleted, purgeNotificationRetention } from "./utils/purge";
+import { runTick } from "./utils/notify-scheduler";
+import { runDigestTick } from "./utils/notify-digest";
+import { runWorkerOnce } from "./utils/notify-worker";
 import { setServer } from "./utils/sync-publisher";
 
 export const app = new Elysia()
@@ -95,7 +103,13 @@ export const app = new Elysia()
   .use(boardRoutes)
   .use(plannerRoutes)
   .use(syncRoutes)
+  .use(notificationPrefsRoutes)
+  .use(notificationRoutes)
+  .use(digestRoutes)
+  .use(pushRoutes)
+  .use(emailRoutes)
   .use(adminRoutes)
+  .use(notificationsHealthRoutes)
   .use(wsRoutes)
   .get(
     "/health",
@@ -121,6 +135,62 @@ if (process.env.NODE_ENV !== "test") {
       },
     })
   );
+  // Reminder scheduler: every 30s. `protect` (croner) plus the in-flight
+  // guard in runTick() prevent overlapping ticks.
+  app.use(
+    cron({
+      name: "notify",
+      pattern: "*/30 * * * * *",
+      protect: true,
+      run: () => {
+        void runTick().catch((err) => {
+          console.error("[notify] tick failed", err);
+        });
+      },
+    })
+  );
+  // Digest scheduler: every minute. In-flight guard in runDigestTick() plus
+  // the digest_log PK claim keep overlapping runs idempotent. Fires within
+  // the 3h grace window, so a late tick also covers post-downtime catch-up.
+  app.use(
+    cron({
+      name: "digest",
+      pattern: "* * * * *",
+      protect: true,
+      run: () => {
+        void runDigestTick().catch((err) => {
+          console.error("[notify] digest tick failed", err);
+        });
+      },
+    })
+  );
+  // Notification retention: daily, off-peak. `protect` (croner) plus the
+  // batched deletes in purgeNotificationRetention() keep overlapping runs safe.
+  app.use(
+    cron({
+      name: "notify-retention",
+      pattern: "0 4 * * *",
+      protect: true,
+      run: async () => {
+        await purgeNotificationRetention();
+      },
+    })
+  );
+  // Delivery worker: every 5s. In-flight guard in runWorkerOnce() plus
+  // atomic claims keep overlapping runs safe. Also runs fire-and-forget
+  // at the end of every scheduler tick.
+  app.use(
+    cron({
+      name: "notify-worker",
+      pattern: "*/5 * * * * *",
+      protect: true,
+      run: () => {
+        void runWorkerOnce().catch((err) => {
+          console.error("[notify] worker failed", err);
+        });
+      },
+    })
+  );
 }
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -129,6 +199,16 @@ if (import.meta.main) {
   app.listen(PORT);
   setServer(app.server);
   console.log(`Backend server running on http://localhost:${app.server?.port ?? PORT}`);
+  // Fire once at boot so reminders due during downtime are caught up
+  // immediately (catch-up buckets apply via last_tick_at).
+  if (process.env.NODE_ENV !== "test") {
+    void runTick().catch((err) => {
+      console.error("[notify] boot tick failed", err);
+    });
+    void runDigestTick().catch((err) => {
+      console.error("[notify] boot digest tick failed", err);
+    });
+  }
 }
 
 export type App = typeof app;

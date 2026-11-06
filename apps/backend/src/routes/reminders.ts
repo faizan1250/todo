@@ -8,6 +8,8 @@ import {
   resolveSnoozeTarget,
   parseTime,
 } from "../services/reminders";
+import { nudge } from "../utils/notify-scheduler";
+import { cancelPendingDeliveries } from "../utils/notify-worker";
 
 export const reminderRoutes = new Elysia()
   .use(authMacro)
@@ -149,6 +151,9 @@ export const reminderRoutes = new Elysia()
         })
         .returning();
 
+      // Prompt scheduler: a reminder landing within the next minute should
+      // fire without waiting for the next 30s tick.
+      nudge();
       return status(201, newReminder);
     },
     {
@@ -263,6 +268,7 @@ export const reminderRoutes = new Elysia()
         .where(eq(schema.reminders.id, id))
         .returning();
 
+      nudge();
       return updated;
     },
     {
@@ -309,6 +315,7 @@ export const reminderRoutes = new Elysia()
         })
         .where(eq(schema.reminders.id, id));
 
+      cancelPendingDeliveries({ reminderId: id });
       return { success: true };
     },
     {
@@ -373,6 +380,8 @@ export const reminderRoutes = new Elysia()
         .where(eq(schema.reminders.id, id))
         .returning();
 
+      cancelPendingDeliveries({ reminderId: id });
+      nudge();
       return updated;
     },
     {
@@ -426,6 +435,7 @@ export const reminderRoutes = new Elysia()
         .where(eq(schema.reminders.id, id))
         .returning();
 
+      cancelPendingDeliveries({ reminderId: id });
       return updated;
     },
     {
