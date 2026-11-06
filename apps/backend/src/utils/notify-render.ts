@@ -86,14 +86,14 @@ function renderTaskReminder(p: TaskReminderPayload, user: NotifyUserContext): Re
   if (diffMin <= 1 && diffMin >= -1) {
     return { title, body: "Due now", tag: p.taskId };
   }
-  if (diffMin > 1 && diffMin < 120) {
+  if (diffMin > 1 && diffMin < 60) {
     return {
       title,
       body: timeStr ? `Due in ${diffMin} minutes (${timeStr})` : `Due in ${diffMin} minutes`,
       tag: p.taskId,
     };
   }
-  if (diffMin >= 120 && diffMin < 24 * 60) {
+  if (diffMin >= 60 && diffMin < 24 * 60) {
     const hours = Math.round(diffMin / 60);
     return {
       title,
