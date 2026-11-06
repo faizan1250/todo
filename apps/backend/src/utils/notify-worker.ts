@@ -55,7 +55,7 @@ export interface WorkerStats {
   summaries: number;
 }
 
-export type ProviderOverrides = Partial<Record<Channel, NotifyProvider>>;
+export type ProviderOverrides = Partial<Record<Channel, NotifyProvider | null>>;
 
 export interface RunWorkerOptions {
   providers?: ProviderOverrides;
@@ -391,7 +391,7 @@ function markFailed(
 
 function markSuppressed(deliveryId: string, nowMs: number, reason: string): void {
   db.update(schema.notificationDeliveries)
-    .set({ status: "suppressed", reason, leaseUntil: null, updatedAt: new Date(nowMs) })
+    .set({ status: "suppressed", reason, errorCode: reason, leaseUntil: null, updatedAt: new Date(nowMs) })
     .where(eq(schema.notificationDeliveries.id, deliveryId))
     .run();
 }
@@ -502,7 +502,7 @@ async function sendOne(
             eq(schema.notificationDeliveries.userId, delivery.userId),
             eq(schema.notificationDeliveries.status, "sent"),
             inArray(schema.notificationDeliveries.channel, [...PUSH_CHANNELS]),
-            sql`${schema.notificationDeliveries.sentAt} >= ${new Date(nowMs - 3600_000)}`
+            sql`${schema.notificationDeliveries.sentAt} >= ${nowMs - 3600_000}`
           )
         )
         .all();

@@ -81,8 +81,11 @@ describe("push registration", () => {
 
     const tst = await req("POST", `/api/v1/devices/${deviceId}/push/test`, token);
     expect(tst.status).toBe(200);
-    expect(tst.json.sent).toBe(true);
+    // Day 3: real send through the worker path. No VAPID credentials in
+    // test env → fail-soft, in-app only.
+    expect(tst.json.sent).toBe(false);
     expect(tst.json.channel).toBe("web_push");
+    expect(tst.json.status).toBe("suppressed");
 
     const del = await req("DELETE", `/api/v1/devices/${deviceId}/push`, token);
     expect(del.status).toBe(200);
