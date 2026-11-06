@@ -6,6 +6,7 @@ import { getNotifyConfig } from "./notify-config";
 import { planDelivery, type ListRuleMode } from "./notify-policy";
 import { render } from "./notify-render";
 import { publishNotification } from "./sync-publisher";
+import { runWorkerOnce } from "./notify-worker";
 
 /**
  * Phase 6 reminder scheduler (Day 2).
@@ -156,7 +157,13 @@ function enforceAndLoad(tx: Tx, row: DueRow): LoadResult {
   const devices = tx
     .select()
     .from(schema.devices)
-    .where(and(eq(schema.devices.userId, reminder.userId), eq(schema.devices.pushEnabled, true)))
+    .where(
+      and(
+        eq(schema.devices.userId, reminder.userId),
+        eq(schema.devices.pushEnabled, true),
+        eq(schema.devices.pushStatus, "active")
+      )
+    )
     .all();
 
   const [suppression] = tx
@@ -289,6 +296,7 @@ function taskReminderPayload(row: DueRow, ctx: LoadedCtx): Record<string, unknow
   return {
     kind: "task_reminder",
     taskId: row.task!.id,
+    reminderId: row.reminder.id,
     taskTitle: ctx.taskTitle,
     dueAt: ctx.dueAtIso,
     listName: ctx.listName,
@@ -543,6 +551,15 @@ export async function runTick(nowMs: number = now()): Promise<TickStats> {
 
     for (const p of published) {
       publishNotification(p.userId, p.notificationId);
+    }
+    // Delivery worker: fire-and-forget after every tick. The claim
+    // compare-and-set keeps it idempotent when there is nothing to send.
+    try {
+      void runWorkerOnce().catch((err) => {
+        console.error("[notify] worker failed", err);
+      });
+    } catch (err) {
+      console.error("[notify] worker failed", err);
     }
     return stats;
   } finally {

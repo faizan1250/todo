@@ -5,7 +5,8 @@ import { db } from "../db";
 import * as schema from "../db/schema";
 import { authMacro } from "../plugins/auth-macro";
 import { getNotifyConfig } from "../utils/notify-config";
-import { NoopProvider } from "../utils/notify-providers";
+import { now } from "../utils/notify-clock";
+import { runWorkerOnce } from "../utils/notify-worker";
 
 const WebPushSubscription = t.Object({
   endpoint: t.String({ minLength: 1 }),
@@ -153,18 +154,55 @@ export const pushRoutes = new Elysia({ name: "routes-push" })
     if (!device.webPushSub && !device.fcmToken) {
       return status(400, { error: "No push subscription on this device" });
     }
-    // Day 1: Noop provider. Day 3 wires the real WebPush/FCM providers.
-    const noop = new NoopProvider(device.webPushSub ? "web_push" : "fcm");
-    const result = await noop.send(
-      {
-        notificationId: "test",
+    const channel = device.webPushSub ? "web_push" : "fcm";
+    // Real send through the worker path: enqueue a test notification, run
+    // the worker once, and return the resulting delivery status.
+    const nowMs = now();
+    const at = new Date(nowMs);
+    const [notif] = await db
+      .insert(schema.notifications)
+      .values({
         userId: user.id,
-        deviceId: device.id,
-        channel: device.webPushSub ? "web_push" : "fcm",
-        webPushSubscription: device.webPushSub ?? undefined,
-        fcmToken: device.fcmToken ?? undefined,
-      },
-      { title: "Test notification", body: "Push registration works." }
-    );
-    return { sent: result.ok, channel: noop.channel };
+        type: "test",
+        title: "Test notification",
+        body: "Push registration works.",
+        url: null,
+        entityType: "device",
+        entityId: device.id,
+        payload: { kind: "test_push", deviceId: device.id },
+        priority: "normal",
+        dedupeKey: `test:${device.id}:${nowMs}`,
+        createdAt: at,
+        updatedAt: at,
+      })
+      .returning();
+    await db.insert(schema.notificationDeliveries).values({
+      notificationId: notif.id,
+      userId: user.id,
+      channel,
+      deviceId: device.id,
+      status: "pending",
+      notBefore: null,
+      createdAt: at,
+      updatedAt: at,
+    });
+    // A scheduler-tick worker may be in flight; wait for an owned run.
+    for (let i = 0; i < 50; i++) {
+      const run = await runWorkerOnce();
+      if (run.ran) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const [delivery] = await db
+      .select()
+      .from(schema.notificationDeliveries)
+      .where(eq(schema.notificationDeliveries.notificationId, notif.id));
+    if (!delivery) {
+      return status(500, { error: "Test delivery was not created" });
+    }
+    return {
+      sent: delivery.status === "sent",
+      channel,
+      status: delivery.status,
+      errorCode: delivery.errorCode,
+    };
   }, { auth: true, params: t.Object({ id: t.String() }) });

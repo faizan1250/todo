@@ -32,6 +32,7 @@ import { wsRoutes } from "./routes/ws";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
 import { runTick } from "./utils/notify-scheduler";
+import { runWorkerOnce } from "./utils/notify-worker";
 import { setServer } from "./utils/sync-publisher";
 
 export const app = new Elysia()
@@ -136,6 +137,21 @@ if (process.env.NODE_ENV !== "test") {
       run: () => {
         void runTick().catch((err) => {
           console.error("[notify] tick failed", err);
+        });
+      },
+    })
+  );
+  // Delivery worker: every 5s. In-flight guard in runWorkerOnce() plus
+  // atomic claims keep overlapping runs safe. Also runs fire-and-forget
+  // at the end of every scheduler tick.
+  app.use(
+    cron({
+      name: "notify-worker",
+      pattern: "*/5 * * * * *",
+      protect: true,
+      run: () => {
+        void runWorkerOnce().catch((err) => {
+          console.error("[notify] worker failed", err);
         });
       },
     })
