@@ -289,9 +289,9 @@ function buildProviders(overrides?: ProviderOverrides): {
       : null,
   };
   return {
-    web_push: overrides?.web_push ?? fromCfg.web_push,
-    fcm: overrides?.fcm ?? fromCfg.fcm,
-    email: overrides?.email ?? fromCfg.email,
+    web_push: overrides && "web_push" in overrides ? (overrides.web_push ?? null) : fromCfg.web_push,
+    fcm: overrides && "fcm" in overrides ? (overrides.fcm ?? null) : fromCfg.fcm,
+    email: overrides && "email" in overrides ? (overrides.email ?? null) : fromCfg.email,
   };
 }
 
