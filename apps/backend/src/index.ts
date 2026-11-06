@@ -5,6 +5,7 @@ import { auth, trustedOrigins } from "./auth";
 import { meRoutes } from "./routes/me";
 import { notificationPrefsRoutes } from "./routes/notification-prefs";
 import { notificationRoutes } from "./routes/notifications";
+import { digestRoutes } from "./routes/digest";
 import { pushRoutes } from "./routes/push";
 import { emailRoutes } from "./routes/email";
 import { inviteRoutes } from "./routes/invite";
@@ -33,6 +34,7 @@ import { wsRoutes } from "./routes/ws";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
 import { runTick } from "./utils/notify-scheduler";
+import { runDigestTick } from "./utils/notify-digest";
 import { runWorkerOnce } from "./utils/notify-worker";
 import { setServer } from "./utils/sync-publisher";
 
@@ -101,6 +103,7 @@ export const app = new Elysia()
   .use(syncRoutes)
   .use(notificationPrefsRoutes)
   .use(notificationRoutes)
+  .use(digestRoutes)
   .use(pushRoutes)
   .use(emailRoutes)
   .use(adminRoutes)
@@ -143,6 +146,21 @@ if (process.env.NODE_ENV !== "test") {
       },
     })
   );
+  // Digest scheduler: every minute. In-flight guard in runDigestTick() plus
+  // the digest_log PK claim keep overlapping runs idempotent. Fires within
+  // the 3h grace window, so a late tick also covers post-downtime catch-up.
+  app.use(
+    cron({
+      name: "digest",
+      pattern: "* * * * *",
+      protect: true,
+      run: () => {
+        void runDigestTick().catch((err) => {
+          console.error("[notify] digest tick failed", err);
+        });
+      },
+    })
+  );
   // Delivery worker: every 5s. In-flight guard in runWorkerOnce() plus
   // atomic claims keep overlapping runs safe. Also runs fire-and-forget
   // at the end of every scheduler tick.
@@ -171,6 +189,9 @@ if (import.meta.main) {
   if (process.env.NODE_ENV !== "test") {
     void runTick().catch((err) => {
       console.error("[notify] boot tick failed", err);
+    });
+    void runDigestTick().catch((err) => {
+      console.error("[notify] boot digest tick failed", err);
     });
   }
 }

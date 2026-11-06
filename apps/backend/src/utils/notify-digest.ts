@@ -398,7 +398,7 @@ function loadTargets(userId: string, email: string): DigestTargets {
 }
 
 /** Insert the inbox row + channel deliveries for a built digest. Returns the notification id or null. */
-function enqueueDigest(
+export function enqueueDigest(
   user: typeof schema.users.$inferSelect,
   prefs: typeof schema.notificationPrefs.$inferSelect,
   content: BuiltDigest,
