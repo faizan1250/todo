@@ -3,6 +3,8 @@ import { cors } from "@elysiajs/cors";
 import { swagger } from "@elysiajs/swagger";
 import { auth, trustedOrigins } from "./auth";
 import { meRoutes } from "./routes/me";
+import { notificationPrefsRoutes } from "./routes/notification-prefs";
+import { pushRoutes } from "./routes/push";
 import { inviteRoutes } from "./routes/invite";
 import { folderRoutes } from "./routes/folders";
 import { listRoutes } from "./routes/lists";
@@ -93,6 +95,8 @@ export const app = new Elysia()
   .use(boardRoutes)
   .use(plannerRoutes)
   .use(syncRoutes)
+  .use(notificationPrefsRoutes)
+  .use(pushRoutes)
   .use(adminRoutes)
   .use(wsRoutes)
   .get(
