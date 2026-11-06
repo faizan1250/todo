@@ -4,6 +4,7 @@ import { swagger } from "@elysiajs/swagger";
 import { auth, trustedOrigins } from "./auth";
 import { meRoutes } from "./routes/me";
 import { notificationPrefsRoutes } from "./routes/notification-prefs";
+import { notificationRoutes } from "./routes/notifications";
 import { pushRoutes } from "./routes/push";
 import { inviteRoutes } from "./routes/invite";
 import { folderRoutes } from "./routes/folders";
@@ -30,6 +31,7 @@ import { adminRoutes } from "./routes/admin";
 import { wsRoutes } from "./routes/ws";
 import { cron } from "@elysiajs/cron";
 import { purgeOldSoftDeleted } from "./utils/purge";
+import { runTick } from "./utils/notify-scheduler";
 import { setServer } from "./utils/sync-publisher";
 
 export const app = new Elysia()
@@ -96,6 +98,7 @@ export const app = new Elysia()
   .use(plannerRoutes)
   .use(syncRoutes)
   .use(notificationPrefsRoutes)
+  .use(notificationRoutes)
   .use(pushRoutes)
   .use(adminRoutes)
   .use(wsRoutes)
@@ -123,6 +126,20 @@ if (process.env.NODE_ENV !== "test") {
       },
     })
   );
+  // Reminder scheduler: every 30s. `protect` (croner) plus the in-flight
+  // guard in runTick() prevent overlapping ticks.
+  app.use(
+    cron({
+      name: "notify",
+      pattern: "*/30 * * * * *",
+      protect: true,
+      run: () => {
+        void runTick().catch((err) => {
+          console.error("[notify] tick failed", err);
+        });
+      },
+    })
+  );
 }
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -131,6 +148,13 @@ if (import.meta.main) {
   app.listen(PORT);
   setServer(app.server);
   console.log(`Backend server running on http://localhost:${app.server?.port ?? PORT}`);
+  // Fire once at boot so reminders due during downtime are caught up
+  // immediately (catch-up buckets apply via last_tick_at).
+  if (process.env.NODE_ENV !== "test") {
+    void runTick().catch((err) => {
+      console.error("[notify] boot tick failed", err);
+    });
+  }
 }
 
 export type App = typeof app;
