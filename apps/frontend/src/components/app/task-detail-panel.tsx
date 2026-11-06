@@ -6,7 +6,6 @@ import {
   X,
   Check,
   Trash2,
-  Calendar,
   Flag,
   Folder,
   FolderInput,
@@ -21,11 +20,14 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatEstimate, formatDateWithTime } from "@/lib/adapters";
+import { formatEstimate } from "@/lib/adapters";
+import { formatWhen } from "@/lib/dates/formatWhen";
+import { DateChip, DatePopover, type DateSelection } from "@/components/dates";
 import { v7 as uuidv7 } from "uuid";
 import { mutate } from "@/lib/data/mutate";
 import {
   getPlaces,
+  createPlace,
   getSections,
   moveTask,
   createTaskReminder,
@@ -46,8 +48,19 @@ import type {
 } from "./types";
 import { TaskSubtasksSection } from "./task-subtasks-section";
 import { TagPickerPopover } from "./tag-picker-popover";
+import {
+  ReminderBanner,
+  ReminderList,
+  ReminderPicker,
+  REMINDER_CAP_MESSAGE,
+  REMINDER_LIMIT,
+} from "@/components/reminders";
 import { MarkdownNotesEditor } from "./markdown-notes-editor";
 import { TaskActionsMenu } from "./task-actions-menu";
+import { useToast } from "./toast-system";
+import { RepeatEditor } from "@/components/repeat/RepeatEditor";
+import { PlacePicker, SavedPlacesModal, type PlacePick } from "@/components/places";
+import { copy } from "@/lib/copy";
 import { SaveTemplateModal } from "./save-template-modal";
 
 interface TaskDetailPanelProps {
@@ -191,6 +204,8 @@ export function TaskDetailPanel({
     "due" | "priority" | "folder" | "move" | "recurrence" | "estimate" | "location" | null
   >(null);
   const [places, setPlaces] = useState<BackendPlace[]>([]);
+  const [isManagePlacesOpen, setIsManagePlacesOpen] = useState(false);
+  const [isSavingPlace, setIsSavingPlace] = useState(false);
   // Move-to menu state (list search + per-list section step)
   const [moveSearch, setMoveSearch] = useState("");
   const [moveListId, setMoveListId] = useState<string | null>(null);
@@ -200,10 +215,9 @@ export function TaskDetailPanel({
   // (every panel edit persists immediately through onUpdateTask).
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const didMountRef = useRef(true);
-  const [customRrule, setCustomRrule] = useState("");
   const [customMinutes, setCustomMinutes] = useState("");
   const [isAddingReminder, setIsAddingReminder] = useState(false);
-  const [newReminderCustomTime, setNewReminderCustomTime] = useState("");
+  const { toast, success } = useToast();
   const pillsBarRef = useRef<HTMLDivElement>(null);
 
   // Close open picker on click outside
@@ -316,100 +330,69 @@ export function TaskDetailPanel({
 
   const movePickedList = moveListId ? lists.find((l) => l.id === moveListId) || null : null;
 
-  const handleDueDateChange = (newDueDate?: string) => {
-    let dueAt: string | null = null;
-    if (newDueDate === "Today") {
-      dueAt = new Date().toISOString();
-    } else if (newDueDate === "Tomorrow") {
-      const tmr = new Date();
-      tmr.setDate(tmr.getDate() + 1);
-      dueAt = tmr.toISOString();
-    } else if (newDueDate === "Next week") {
-      const nw = new Date();
-      nw.setDate(nw.getDate() + 7);
-      dueAt = nw.toISOString();
-    } else if (newDueDate) {
-      const parsed = new Date(newDueDate);
-      if (!isNaN(parsed.getTime())) {
-        dueAt = parsed.toISOString();
-      }
-    }
-
+  const handleDatesApply = (dates: DateSelection) => {
+    // Same persistence as every other panel edit: onUpdateTask carries the
+    // full TaskItem, and the workspace persists it offline-first (mutate
+    // op:update) with a REST fallback. dueDate stays in sync as the display
+    // label so older readers of that field keep working.
+    const dueDate =
+      dates.dueAt != null
+        ? formatWhen(dates.dueAt, { allDay: dates.allDay }) ?? undefined
+        : undefined;
     onUpdateTask({
       ...task,
-      dueDate: newDueDate || undefined,
-      dueAt,
+      dueAt: dates.dueAt,
+      allDay: dates.allDay,
+      startAt: dates.startAt ?? null,
+      deadlineAt: dates.deadlineAt ?? null,
+      dueDate,
       updatedAt: "Just now",
     });
   };
 
-  const handleStartAtChange = (dateVal: string) => {
-    onUpdateTask({
-      ...task,
-      startAt: dateVal ? new Date(dateVal).toISOString() : null,
-      updatedAt: "Just now",
-    });
+  const toIsoOrNull = (
+    value: string | number | null | undefined
+  ): string | null => {
+    if (value === null || value === undefined) return null;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
   };
 
-  const handleDeadlineAtChange = (dateVal: string) => {
-    onUpdateTask({
-      ...task,
-      deadlineAt: dateVal ? new Date(dateVal).toISOString() : null,
-      updatedAt: "Just now",
-    });
-  };
-
-  const handleAllDayToggle = (allDay: boolean) => {
-    onUpdateTask({
-      ...task,
-      allDay,
-      updatedAt: "Just now",
-    });
-  };
-
-  // Recurrence Handlers
-  const handleSetRecurrencePreset = (preset: "none" | "daily" | "weekdays" | "weekly" | "monthly") => {
-    if (preset === "none") {
-      onUpdateTask({
-        ...task,
-        recurrenceId: null,
-        recurrenceRule: null,
-        updatedAt: "Just now",
-      });
-      return;
-    }
-
-    let rrule = "FREQ=DAILY;INTERVAL=1";
-    if (preset === "weekdays") rrule = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR";
-    else if (preset === "weekly") rrule = "FREQ=WEEKLY;INTERVAL=1";
-    else if (preset === "monthly") rrule = "FREQ=MONTHLY;INTERVAL=1";
-
-    const mode = task.recurrenceRule?.mode || "fixed";
+  // Recurrence Handlers — persistence stays on the existing path:
+  // onUpdateTask carries the full TaskItem and the workspace persists it.
+  const handleApplyRecurrence = (rrule: string, mode: "fixed" | "after_completion") => {
     onUpdateTask({
       ...task,
       recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
       recurrenceRule: { rrule, mode },
       updatedAt: "Just now",
     });
+    setOpenPicker(null);
   };
 
-  const handleSetRecurrenceMode = (mode: "fixed" | "after_completion") => {
-    const currentRule = task.recurrenceRule?.rrule || "FREQ=DAILY;INTERVAL=1";
+  const handleStopRepeat = () => {
+    const prevId = task.recurrenceId;
+    const prevRule = task.recurrenceRule;
+    if (!prevId && !prevRule) return;
     onUpdateTask({
       ...task,
-      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
-      recurrenceRule: { rrule: currentRule, mode },
+      recurrenceId: null,
+      recurrenceRule: null,
       updatedAt: "Just now",
     });
-  };
-
-  const handleSetCustomRRule = (customRule: string) => {
-    const mode = task.recurrenceRule?.mode || "fixed";
-    onUpdateTask({
-      ...task,
-      recurrenceId: task.recurrenceId || `rec-${new Date().getTime()}`,
-      recurrenceRule: { rrule: customRule, mode },
-      updatedAt: "Just now",
+    setOpenPicker(null);
+    toast({
+      title: "Repeat stopped",
+      message: "This task will not repeat again.",
+      actionLabel: "Undo",
+      onAction: () => {
+        onUpdateTask({
+          ...task,
+          recurrenceId: prevId,
+          recurrenceRule: prevRule,
+          updatedAt: "Just now",
+        });
+      },
     });
   };
 
@@ -436,17 +419,40 @@ export function TaskDetailPanel({
     });
   };
 
-  const handleManualLocationChange = (name: string, lat?: number | null, lng?: number | null) => {
+  const handlePickCustomSpot = (pick: PlacePick) => {
     onUpdateTask({
       ...task,
       placeId: null,
-      locationName: name || null,
-      lat: lat ?? task.lat ?? null,
-      lng: lng ?? task.lng ?? null,
-      radiusM: task.radiusM ?? 200,
+      locationName: pick.name || null,
+      lat: pick.lat,
+      lng: pick.lng,
+      radiusM: pick.radiusM,
       locationTrigger: task.locationTrigger || "arrive",
       updatedAt: "Just now",
     });
+  };
+
+  const handleSavePlace = async (pick: PlacePick) => {
+    setIsSavingPlace(true);
+    try {
+      const created = await createPlace({
+        name: pick.name,
+        lat: pick.lat,
+        lng: pick.lng,
+        radiusM: pick.radiusM,
+      });
+      setPlaces((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      handleSelectPlace(created);
+      success(copy.scheduling.places.saved);
+    } catch (err) {
+      toast({
+        title: "Could not save place",
+        message: err instanceof Error ? err.message : "Please try again",
+        type: "error",
+      });
+    } finally {
+      setIsSavingPlace(false);
+    }
   };
 
   const handleLocationTriggerChange = (trigger: "arrive" | "leave" | null) => {
@@ -584,6 +590,37 @@ export function TaskDetailPanel({
     if (!isBackendTaskId || isLocalReminderId(reminderId)) return;
     const doRestSnooze = () => {
       snoozeReminder(reminderId, targetTime.getTime()).catch((err) => {
+        console.error("Failed to snooze reminder on backend:", err);
+      });
+    };
+    if (userId) {
+      mutate(userId, {
+        entity: "reminders",
+        op: "update",
+        entityId: reminderId,
+        patch: { remindAt: targetIso, firedAt: null },
+      }).catch(doRestSnooze);
+    } else {
+      doRestSnooze();
+    }
+  };
+
+  // Absolute-time snooze (SnoozeSheet tomorrow-9AM / pick-a-time).
+  // Same persist path as the minute presets: optimistic mutate + REST fallback.
+  const handleSnoozeReminderToTime = (reminderId: string, time: Date) => {
+    const currentReminders = task.reminders || [];
+    const targetIso = time.toISOString();
+    onUpdateTask({
+      ...task,
+      reminders: currentReminders.map((r) =>
+        r.id === reminderId ? { ...r, remindAt: targetIso, firedAt: null } : r
+      ),
+      updatedAt: "Just now",
+    });
+
+    if (!isBackendTaskId || isLocalReminderId(reminderId)) return;
+    const doRestSnooze = () => {
+      snoozeReminder(reminderId, time.getTime()).catch((err) => {
         console.error("Failed to snooze reminder on backend:", err);
       });
     };
@@ -751,6 +788,7 @@ export function TaskDetailPanel({
             onDelete={() => onDeleteTask(task.id)}
             isRecurring={Boolean(task.recurrenceId || task.recurrenceRule)}
             onSkip={onSkipTask ? () => onSkipTask(task.id) : undefined}
+            onStopRepeat={handleStopRepeat}
           />
           <button
             type="button"
@@ -791,108 +829,31 @@ export function TaskDetailPanel({
         {/* Horizontal Attribute Pills Bar */}
         <div className="space-y-2">
           <div ref={pillsBarRef} className="flex flex-wrap items-center gap-2">
-            {/* 1. Dates Pill & Popover (Due Date, Start Date, Deadline Date, All-Day) */}
+            {/* 1. Dates Pill & Premium Popover (Due, Start, Deadline, All-Day) */}
             <div className="relative">
-              <button
-                type="button"
-                onClick={() => setOpenPicker(openPicker === "due" ? null : "due")}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer focus-ring-pink",
-                  task.dueDate || task.startAt || task.deadlineAt
-                    ? "border-[#09318D]/30 bg-[#09318D]/5 text-[#09318D] dark:border-[#FD91CC]/30 dark:bg-[#FD91CC]/10 dark:text-[#FFA8D7]"
-                    : "border-[#E4E8F2] bg-white text-[#5B6478] hover:bg-[#F2F5FC] dark:border-[#132E74] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                )}
-                title="Change Schedule & Dates"
-              >
-                <Calendar className="h-3.5 w-3.5 text-[#09318D] dark:text-[#FD91CC]" />
-                <span>
-                  Due: <span className="font-semibold">{task.dueDate || "None"}</span>
-                  {task.allDay && <span className="ml-1 text-[10px] opacity-75">(All day)</span>}
-                </span>
-                <ChevronDown className="h-3 w-3 opacity-60" />
-              </button>
+              <DateChip
+                dueAt={task.dueAt ?? task.dueDate ?? null}
+                allDay={task.allDay}
+                hasRepeat={Boolean(task.recurrenceId || task.recurrenceRule)}
+                hasBell={(task.reminders?.length ?? 0) > 0}
+                expanded={openPicker === "due"}
+                onOpen={() => setOpenPicker(openPicker === "due" ? null : "due")}
+              />
               {openPicker === "due" && (
-                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[210px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
-                  <div>
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Quick Due Date
-                    </label>
-                    <div className="mt-1 grid grid-cols-2 gap-1">
-                      {[
-                        { label: "None", value: "" },
-                        { label: "Today", value: "Today" },
-                        { label: "Tomorrow", value: "Tomorrow" },
-                        { label: "Next week", value: "Next week" },
-                      ].map((opt) => (
-                        <button
-                          key={opt.label}
-                          type="button"
-                          onClick={() => {
-                            handleDueDateChange(opt.value);
-                          }}
-                          className={cn(
-                            "rounded px-2 py-1 text-xs text-center cursor-pointer transition-colors",
-                            (task.dueDate || "") === opt.value
-                              ? "bg-[#09318D] font-bold text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                              : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                          )}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] space-y-2">
-                    <div>
-                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                        Due Date
-                      </label>
-                      <input
-                        type="date"
-                        value={task.dueAt ? new Date(task.dueAt).toISOString().split("T")[0] : ""}
-                        onChange={(e) => {
-                          handleDueDateChange(e.target.value);
-                        }}
-                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                        Start Date
-                      </label>
-                      <input
-                        type="date"
-                        value={task.startAt ? new Date(task.startAt).toISOString().split("T")[0] : ""}
-                        onChange={(e) => handleStartAtChange(e.target.value)}
-                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                        Deadline Date
-                      </label>
-                      <input
-                        type="date"
-                        value={task.deadlineAt ? new Date(task.deadlineAt).toISOString().split("T")[0] : ""}
-                        onChange={(e) => handleDeadlineAtChange(e.target.value)}
-                        className="mt-0.5 w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                      />
-                    </div>
-
-                    <label className="flex items-center justify-between text-xs font-medium text-[#5B6478] dark:text-[#9BB0D3] cursor-pointer pt-1">
-                      <span>All-day event</span>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(task.allDay)}
-                        onChange={(e) => handleAllDayToggle(e.target.checked)}
-                        className="h-4 w-4 rounded border-[#CAD5E8] text-[#09318D] focus:ring-[#FD91CC] cursor-pointer"
-                      />
-                    </label>
-                  </div>
-                </div>
+                <DatePopover
+                  initial={{
+                    dueAt: toIsoOrNull(task.dueAt),
+                    allDay: Boolean(task.allDay),
+                    startAt: toIsoOrNull(task.startAt),
+                    deadlineAt: toIsoOrNull(task.deadlineAt),
+                  }}
+                  weekStart={1}
+                  onApply={(dates) => {
+                    handleDatesApply(dates);
+                    setOpenPicker(null);
+                  }}
+                  onClose={() => setOpenPicker(null)}
+                />
               )}
             </div>
 
@@ -919,110 +880,14 @@ export function TaskDetailPanel({
                 <ChevronDown className="h-3 w-3 opacity-60" />
               </button>
               {openPicker === "recurrence" && (
-                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[210px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
-                  <div>
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Repeat Cadence
-                    </label>
-                    <div className="mt-1 space-y-1">
-                      {[
-                        { id: "none" as const, label: "Does not repeat" },
-                        { id: "daily" as const, label: "Daily" },
-                        { id: "weekdays" as const, label: "Weekdays (Mon-Fri)" },
-                        { id: "weekly" as const, label: "Weekly" },
-                        { id: "monthly" as const, label: "Monthly" },
-                      ].map((preset) => {
-                        const currentLabel = getRecurrenceLabel(task.recurrenceRule?.rrule);
-                        const isMatch =
-                          (preset.id === "none" && !task.recurrenceId && !task.recurrenceRule) ||
-                          (preset.id === "daily" && currentLabel === "Daily") ||
-                          (preset.id === "weekdays" && currentLabel === "Weekdays") ||
-                          (preset.id === "weekly" && currentLabel === "Weekly") ||
-                          (preset.id === "monthly" && currentLabel === "Monthly");
-                        return (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            onClick={() => {
-                              handleSetRecurrencePreset(preset.id);
-                              setOpenPicker(null);
-                            }}
-                            className={cn(
-                              "flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors",
-                              isMatch
-                                ? "bg-[#09318D]/10 font-bold text-[#09318D] dark:bg-[#FD91CC]/20 dark:text-[#FFA8D7]"
-                                : "text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#082363]"
-                            )}
-                          >
-                            <span>{preset.label}</span>
-                            {isMatch && <Check className="h-3.5 w-3.5" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Mode Selector */}
-                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]">
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Series Mode
-                    </label>
-                    <div className="mt-1 flex gap-1">
-                      <button
-                        type="button"
-                        onClick={() => handleSetRecurrenceMode("fixed")}
-                        className={cn(
-                          "flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer",
-                          (task.recurrenceRule?.mode || "fixed") === "fixed"
-                            ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                            : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                        )}
-                      >
-                        Fixed
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSetRecurrenceMode("after_completion")}
-                        className={cn(
-                          "flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer",
-                          task.recurrenceRule?.mode === "after_completion"
-                            ? "bg-[#09318D] text-white dark:bg-[#FD91CC] dark:text-[#051A4D]"
-                            : "bg-[#F2F5FC] text-[#5B6478] hover:bg-[#E4E8F2] dark:bg-[#082363] dark:text-[#9BB0D3]"
-                        )}
-                      >
-                        After Done
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Custom RRULE input */}
-                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]">
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Custom RRULE
-                    </label>
-                    <div className="mt-1 flex gap-1">
-                      <input
-                        type="text"
-                        placeholder="e.g. FREQ=DAILY;INTERVAL=2"
-                        value={customRrule}
-                        onChange={(e) => setCustomRrule(e.target.value)}
-                        className="flex-1 rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (customRrule.trim()) {
-                            handleSetCustomRRule(customRrule.trim());
-                            setCustomRrule("");
-                            setOpenPicker(null);
-                          }
-                        }}
-                        className="rounded bg-[#09318D] px-2 py-1 text-xs font-semibold text-white hover:bg-[#0B3EA8] dark:bg-[#FD91CC] dark:text-[#051A4D] cursor-pointer"
-                      >
-                        Set
-                      </button>
-                    </div>
-                  </div>
+                <div className="absolute left-0 top-full mt-1.5 z-30 w-[264px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D]">
+                  <RepeatEditor
+                    initialRrule={task.recurrenceRule?.rrule ?? null}
+                    initialMode={task.recurrenceRule?.mode || "fixed"}
+                    anchorIso={toIsoOrNull(task.dueAt)}
+                    onApply={handleApplyRecurrence}
+                    onRemove={handleStopRepeat}
+                  />
                 </div>
               )}
             </div>
@@ -1144,12 +1009,21 @@ export function TaskDetailPanel({
                 <ChevronDown className="h-3 w-3 opacity-60" />
               </button>
               {openPicker === "location" && (
-                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[220px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
+                <div className="absolute left-0 top-full mt-1.5 z-30 min-w-[260px] max-w-[300px] rounded-xl border border-[#E4E8F2] bg-white p-2.5 shadow-lg dark:border-[#132E74] dark:bg-[#051A4D] space-y-2.5">
                   {places.length > 0 && (
                     <div>
-                      <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                        Saved Places
-                      </label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
+                          Saved Places
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setIsManagePlacesOpen(true)}
+                          className="text-[11px] font-semibold text-emerald-700 hover:underline dark:text-emerald-400 cursor-pointer"
+                        >
+                          {copy.scheduling.places.managePlaces}
+                        </button>
+                      </div>
                       <div className="mt-1 space-y-1 max-h-28 overflow-y-auto">
                         {places.map((place) => (
                           <button
@@ -1174,16 +1048,18 @@ export function TaskDetailPanel({
                     </div>
                   )}
 
-                  <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] space-y-1.5">
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                      Location Name
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Office, Grocery Store"
-                      value={task.locationName || ""}
-                      onChange={(e) => handleManualLocationChange(e.target.value)}
-                      className="w-full rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#082363] dark:text-white"
+                  <div className={cn(places.length > 0 && "border-t border-[#E4E8F2] pt-2 dark:border-[#132E74]")}>
+                    <PlacePicker
+                      initialName={task.locationName}
+                      initialLat={task.lat}
+                      initialLng={task.lng}
+                      initialRadiusM={task.radiusM}
+                      onPick={(pick) => {
+                        handlePickCustomSpot(pick);
+                        setOpenPicker(null);
+                      }}
+                      onSave={handleSavePlace}
+                      isSaving={isSavingPlace}
                     />
 
                     <div className="grid grid-cols-2 gap-1.5 pt-1">
@@ -1531,145 +1407,35 @@ export function TaskDetailPanel({
             </button>
           </div>
 
-          {/* Add Reminder Form */}
+          {/* Add Reminder Menu */}
           {isAddingReminder && (
-            <div className="rounded-xl border border-[#E4E8F2] bg-[#F2F5FC]/60 p-2.5 space-y-2 dark:border-[#132E74] dark:bg-[#082363]/50">
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-[#5B6478] dark:text-[#9BB0D3]">
-                Preset Reminder
-              </label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {[
-                  { label: "At due time", offset: 0 },
-                  { label: "10m before", offset: -10 },
-                  { label: "1h before", offset: -60 },
-                  { label: "1d before", offset: -1440 },
-                ].map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => {
-                      handleAddReminder({
-                        kind: "relative",
-                        relativeTo: "due",
-                        offsetMin: preset.offset,
-                      });
-                    }}
-                    className="rounded bg-white border border-[#E4E8F2] px-2 py-1 text-xs text-center text-[#5B6478] hover:border-[#09318D] hover:text-[#09318D] transition-colors cursor-pointer dark:bg-[#051A4D] dark:border-[#132E74] dark:text-[#9BB0D3] dark:hover:border-[#FD91CC]"
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="border-t border-[#E4E8F2] pt-2 dark:border-[#132E74] flex items-center gap-2">
-                <input
-                  type="datetime-local"
-                  value={newReminderCustomTime}
-                  onChange={(e) => setNewReminderCustomTime(e.target.value)}
-                  className="flex-1 rounded border border-[#E4E8F2] bg-white px-2 py-1 text-xs text-[#0B1220] focus:outline-none focus:ring-1 focus:ring-[#FD91CC] dark:border-[#132E74] dark:bg-[#051A4D] dark:text-white"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (newReminderCustomTime) {
-                      handleAddReminder({
-                        kind: "absolute",
-                        remindAt: new Date(newReminderCustomTime).toISOString(),
-                      });
-                      setNewReminderCustomTime("");
-                    }
-                  }}
-                  className="rounded bg-[#09318D] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#0B3EA8] dark:bg-[#FD91CC] dark:text-[#051A4D] cursor-pointer"
-                >
-                  Set
-                </button>
-              </div>
-            </div>
+            <>
+              <ReminderPicker
+                hasDueDate={Boolean(task.dueAt)}
+                atCap={(task.reminders?.length ?? 0) >= REMINDER_LIMIT}
+                onAdd={handleAddReminder}
+              />
+              {(task.reminders?.length ?? 0) >= REMINDER_LIMIT && (
+                <p className="text-[11px] text-[#5B6478] dark:text-[#9BB0D3]">
+                  {REMINDER_CAP_MESSAGE}
+                </p>
+              )}
+            </>
           )}
+
+          <ReminderBanner reminderCount={task.reminders?.length ?? 0} />
 
           {/* Active Reminders List */}
-          {task.reminders && task.reminders.length > 0 ? (
-            <div className="space-y-1.5">
-              {task.reminders.map((reminder) => {
-                const isFired = Boolean(reminder.firedAt);
-                const displayTime = reminder.remindAt
-                  ? formatDateWithTime(reminder.remindAt)
-                  : reminder.offsetMin !== undefined
-                  ? `${Math.abs(reminder.offsetMin || 0)}m ${
-                      (reminder.offsetMin || 0) < 0 ? "before" : "after"
-                    } ${reminder.relativeTo || "due"}`
-                  : "Reminder";
-
-                return (
-                  <div
-                    key={reminder.id}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-[#E4E8F2] bg-white px-3 py-2 text-xs transition-colors dark:border-[#132E74] dark:bg-[#082363]"
-                  >
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <Bell
-                        className={cn(
-                          "h-3.5 w-3.5 shrink-0",
-                          isFired
-                            ? "text-[#5B6478]/50 dark:text-[#9BB0D3]/40"
-                            : "text-[#09318D] dark:text-[#FD91CC]"
-                        )}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p
-                          className={cn(
-                            "truncate font-medium",
-                            isFired && "line-through text-[#5B6478]/70 dark:text-[#9BB0D3]/60"
-                          )}
-                        >
-                          {displayTime}
-                        </p>
-                        {isFired && (
-                          <span className="text-[10px] text-amber-600 dark:text-amber-400 font-mono">
-                            Fired / Dismissed
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-1 shrink-0">
-                      {!isFired && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => handleSnoozeReminder(reminder.id, 15)}
-                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-[#5B6478] hover:bg-[#F2F5FC] dark:text-[#9BB0D3] dark:hover:bg-[#051A4D] cursor-pointer"
-                            title="Snooze 15 minutes"
-                          >
-                            +15m
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDismissReminder(reminder.id)}
-                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/40 cursor-pointer"
-                            title="Dismiss reminder"
-                          >
-                            Dismiss
-                          </button>
-                        </>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteReminder(reminder.id)}
-                        className="flex h-6 w-6 items-center justify-center rounded text-[#5B6478] hover:text-rose-600 hover:bg-rose-50 transition-colors dark:text-[#9BB0D3] dark:hover:text-rose-400 dark:hover:bg-rose-950/40 cursor-pointer"
-                        title="Delete reminder"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="text-xs text-[#5B6478]/70 dark:text-[#9BB0D3]/60 italic">
-              No reminders set for this task.
-            </p>
-          )}
+          <ReminderList
+            reminders={task.reminders ?? []}
+            dueAt={task.dueAt}
+            startAt={task.startAt}
+            deadlineAt={task.deadlineAt}
+            onSnooze={handleSnoozeReminder}
+            onSnoozeAt={handleSnoozeReminderToTime}
+            onDismiss={handleDismissReminder}
+            onDelete={handleDeleteReminder}
+          />
         </div>
 
         {/* 4. Markdown Notes Editor */}
@@ -1723,6 +1489,15 @@ export function TaskDetailPanel({
         defaultName={task.title}
         onClose={() => setIsSaveTemplateOpen(false)}
         onSave={handleSaveTemplate}
+      />
+
+      {/* Saved Places Management */}
+      <SavedPlacesModal
+        isOpen={isManagePlacesOpen}
+        onClose={() => setIsManagePlacesOpen(false)}
+        places={places}
+        onChanged={setPlaces}
+        onSelect={handleSelectPlace}
       />
     </aside>
   );

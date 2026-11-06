@@ -922,6 +922,28 @@ export async function deletePlace(id: string): Promise<{ success: boolean }> {
   });
 }
 
+export async function updatePlace(
+  id: string,
+  data: Partial<{ name: string; lat: number; lng: number; radiusM: number }>
+): Promise<BackendPlace> {
+  return apiFetch<BackendPlace>(`/api/v1/places/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export interface GeocodeResult {
+  name: string;
+  lat: number;
+  lng: number;
+}
+
+export async function searchGeocode(q: string): Promise<GeocodeResult[]> {
+  const trimmed = q.trim();
+  if (trimmed.length < 2) return [];
+  return apiFetch<GeocodeResult[]>(`/api/v1/geocode?q=${encodeURIComponent(trimmed)}`);
+}
+
 export async function getGeofences(): Promise<BackendTask[]> {
   return apiFetch<BackendTask[]>("/api/v1/geofences");
 }

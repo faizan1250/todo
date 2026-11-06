@@ -54,7 +54,7 @@ export async function signIn(page: Page, user: TestUser): Promise<void> {
 
 /** Switch from landing to the app workspace if needed; wait for quick-add. */
 export async function ensureWorkspace(page: Page): Promise<void> {
-  const quickAdd = page.getByPlaceholder(/Add task/);
+  const quickAdd = page.getByTestId("quick-add-input");
   try {
     await expect(quickAdd.first()).toBeVisible({ timeout: 5_000 });
     return;
@@ -71,7 +71,7 @@ export function taskRow(page: Page, title: string) {
 
 /** Create a task via quick-add and wait until it renders locally. */
 export async function quickAddTask(page: Page, title: string): Promise<void> {
-  const input = page.getByPlaceholder(/Add task/).first();
+  const input = page.getByTestId("quick-add-input").first();
   await expect(input).toBeVisible({ timeout: 20_000 });
   await input.fill(title);
   await input.press("Enter");

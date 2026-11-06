@@ -129,6 +129,58 @@ export const copy = {
     deleteListConfirm: (name: string): string =>
       `"${name}" is now in Trash. You can bring it back.`,
   },
+  // Scheduling words for repeat, reminders, estimates, and place alerts.
+  scheduling: {
+    repeat: "Repeat",
+    repeatAfterDone: "When I finish it",
+    noSpecificTime: "No specific time",
+    oneHourBefore: "1 hour before",
+    estimatePrompt: "How long will it take?",
+    remindLater: "Remind me later",
+    arrive: "When I arrive",
+    leave: "When I leave",
+    skipThisTime: "Skip this time",
+    overdue: "Overdue",
+    overdueByDays: (n: number): string =>
+      n === 1 ? "Overdue by 1 day" : `Overdue by ${n} days`,
+    places: {
+      searchLabel: "Search for a place",
+      searchPlaceholder: "Type a name or address",
+      useCurrentLocation: "Use current location",
+      locating: "Finding your spot…",
+      locationDenied: "We could not read your spot. Check the browser permission and try again.",
+      locationPermission: "Your spot is only read when you tap the button above.",
+      webNote:
+        "Place reminders work in the phone app. The web version saves the spot but does not watch for arrival.",
+      privacy: "Your spots stay on this device. We never share them.",
+      savePlace: "Save this place",
+      useSpot: "Use this spot",
+      placeNameLabel: "Place name",
+      radiusLabel: "Alert area",
+      radiusValue: (m: number): string =>
+        m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m} m`,
+      managePlaces: "Manage saved places",
+      noSavedPlaces: "No saved places yet.",
+      usePlace: "Use",
+      removePlace: "Remove",
+      renamePlace: "Name",
+      removePlaceConfirm: (name: string): string =>
+        `Remove "${name}" from your saved places?`,
+      saved: "Saved.",
+    },
+    sort: {
+      label: "Sort",
+      myOrder: "My order",
+      dueDate: "Due date",
+      dragDisabledNote: "Switch to My order to drag.",
+    },
+    timezone: {
+      mismatch: (device: string, account: string): string =>
+        `Your device is in ${device}, but your account uses ${account}. Times may look off.`,
+      useDevice: "Use device time",
+      keepAccount: "Keep account time",
+    },
+  },
   // Save status wording. Short lines a young reader can follow.
   sync: {
     allSaved: "All changes saved",
