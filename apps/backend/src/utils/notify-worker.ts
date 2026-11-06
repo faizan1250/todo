@@ -11,6 +11,7 @@ import {
   type NotifyProvider,
   type SendResult,
 } from "./notify-providers";
+import { ResendProvider } from "./notify-email";
 import { publishNotification } from "./sync-publisher";
 
 /**
@@ -25,7 +26,8 @@ import { publishNotification } from "./sync-publisher";
  *   4. send with concurrency 5, 10s timeout, task-still-open recheck,
  *      hourly rate cap, backoff retries honoring Retry-After
  *
- * Email-channel rows are NOT touched here — a later day owns email sending.
+ * Email-channel rows go through the Resend provider (fail-soft without
+ * credentials, suppressed when the address is suppressed).
  */
 
 export const WORKER_BATCH_LIMIT = 50;
@@ -64,6 +66,7 @@ export interface RunWorkerOptions {
 }
 
 const PUSH_CHANNELS = ["web_push", "fcm"] as const;
+const ALL_CHANNELS = ["web_push", "fcm", "email"] as const;
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -86,7 +89,7 @@ const IDLE_STATS: WorkerStats = {
 
 function readyPredicate(nowDate: Date) {
   return and(
-    inArray(schema.notificationDeliveries.channel, [...PUSH_CHANNELS]),
+    inArray(schema.notificationDeliveries.channel, [...ALL_CHANNELS]),
     or(
       eq(schema.notificationDeliveries.status, "pending"),
       and(
@@ -258,34 +261,37 @@ function claimReady(tx: Tx, nowMs: number, batchLimit: number): DeliveryRow[] {
 function buildProviders(overrides?: ProviderOverrides): {
   web_push: NotifyProvider | null;
   fcm: NotifyProvider | null;
+  email: NotifyProvider | null;
 } {
-  if (overrides && (overrides.web_push !== undefined || overrides.fcm !== undefined)) {
-    const cfg = getNotifyConfig();
-    return {
-      web_push:
-        overrides.web_push ??
-        (cfg.webPush
-          ? new WebPushProvider({
-              publicKey: cfg.webPush.publicKey,
-              privateKey: cfg.webPush.privateKey,
-              subject: cfg.webPush.subject,
-            })
-          : null),
-      fcm:
-        overrides.fcm ??
-        (cfg.fcm
-          ? new FcmProvider({
-              projectId: cfg.fcm.projectId,
-              clientEmail: cfg.fcm.clientEmail,
-              privateKey: cfg.fcm.privateKey,
-            })
-          : null),
-    };
-  }
   const cfg = getNotifyConfig();
+  const fromCfg = {
+    web_push: cfg.webPush
+      ? new WebPushProvider({
+          publicKey: cfg.webPush.publicKey,
+          privateKey: cfg.webPush.privateKey,
+          subject: cfg.webPush.subject,
+        })
+      : null,
+    fcm: cfg.fcm
+      ? new FcmProvider({
+          projectId: cfg.fcm.projectId,
+          clientEmail: cfg.fcm.clientEmail,
+          privateKey: cfg.fcm.privateKey,
+        })
+      : null,
+    email: cfg.email
+      ? new ResendProvider({
+          apiKey: cfg.email.apiKey,
+          from: cfg.email.from,
+          appUrl: cfg.appUrl,
+          actionSecret: cfg.actionTokenSecret,
+        })
+      : null,
+  };
   return {
-    web_push: overrides?.web_push ?? (cfg.webPush ? new WebPushProvider({ ...cfg.webPush }) : null),
-    fcm: overrides?.fcm ?? (cfg.fcm ? new FcmProvider({ ...cfg.fcm }) : null),
+    web_push: overrides?.web_push ?? fromCfg.web_push,
+    fcm: overrides?.fcm ?? fromCfg.fcm,
+    email: overrides?.email ?? fromCfg.email,
   };
 }
 
@@ -448,7 +454,7 @@ function bumpDeviceFailure(deviceId: string): void {
 async function sendOne(
   delivery: DeliveryRow,
   nowMs: number,
-  providers: { web_push: NotifyProvider | null; fcm: NotifyProvider | null },
+  providers: { web_push: NotifyProvider | null; fcm: NotifyProvider | null; email: NotifyProvider | null },
   hourlySent: Map<string, number>
 ): Promise<SendOutcome> {
   const notification = db
@@ -479,6 +485,44 @@ async function sendOne(
       markCancelled(delivery.id, nowMs, "task_closed");
       return { kind: "cancelled" };
     }
+  }
+
+  // Email rows have no device: resolve the address, honor the suppressions
+  // list, and read hide_content here instead of the push-device path below.
+  let emailAddr: string | null = null;
+  let emailHideContent = false;
+  if (delivery.channel === "email") {
+    const [user] = db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, delivery.userId))
+      .all();
+    if (!user) {
+      markCancelled(delivery.id, nowMs, "user_gone");
+      return { kind: "cancelled" };
+    }
+    emailAddr = user.email;
+    const lower = user.email.toLowerCase();
+    const [suppression] = db
+      .select({ email: schema.emailSuppressions.email })
+      .from(schema.emailSuppressions)
+      .where(
+        inArray(
+          schema.emailSuppressions.email,
+          lower === user.email ? [user.email] : [user.email, lower]
+        )
+      )
+      .all();
+    if (suppression) {
+      markSuppressed(delivery.id, nowMs, "email_suppressed");
+      return { kind: "suppressed" };
+    }
+    const [prefs] = db
+      .select()
+      .from(schema.notificationPrefs)
+      .where(eq(schema.notificationPrefs.userId, delivery.userId))
+      .all();
+    emailHideContent = prefs?.hideContent ?? false;
   }
 
   // Expired/disabled devices stop sending.
@@ -515,7 +559,12 @@ async function sendOne(
     }
   }
 
-  const provider = delivery.channel === "web_push" ? providers.web_push : providers.fcm;
+  const provider =
+    delivery.channel === "web_push"
+      ? providers.web_push
+      : delivery.channel === "fcm"
+        ? providers.fcm
+        : providers.email;
   if (!provider) {
     // Fail-soft: no credentials for this channel — inbox row already exists.
     markSuppressed(delivery.id, nowMs, "provider_disabled");
@@ -529,16 +578,26 @@ async function sendOne(
     channel: delivery.channel,
     webPushSubscription: device?.webPushSub ?? undefined,
     fcmToken: device?.fcmToken ?? undefined,
+    email: emailAddr ?? undefined,
+    deliveryId: delivery.id,
     ttlSeconds: ttlFor(notification.type),
     urgency: notification.priority === "high" ? "high" : "normal",
     topic: topicFor(notification.id),
   };
-  const message = {
-    title: notification.title,
-    body: notification.body ?? "",
-    url: notification.url ?? undefined,
-    tag: notification.id,
-  };
+  // hide_content redacts email send-time: generic subject, no task details.
+  const message = emailHideContent
+    ? {
+        title: "You have a new notification",
+        body: "Details are hidden by your notification settings. Open the app to view.",
+        url: notification.url ?? undefined,
+        tag: notification.id,
+      }
+    : {
+        title: notification.title,
+        body: notification.body ?? "",
+        url: notification.url ?? undefined,
+        tag: notification.id,
+      };
 
   let result: SendResult;
   try {

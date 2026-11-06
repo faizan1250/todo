@@ -19,6 +19,7 @@ const NotifyConfigSchema = Type.Object({
   FCM_PRIVATE_KEY: Type.Optional(Type.String()),
   RESEND_API_KEY: Type.Optional(Type.String()),
   RESEND_FROM: Type.Optional(Type.String()),
+  RESEND_WEBHOOK_SECRET: Type.Optional(Type.String()),
   ACTION_TOKEN_SECRET: Type.Optional(Type.String()),
   NOTIFY_TICK_SECONDS: Type.Optional(Type.Number()),
 });
@@ -52,6 +53,7 @@ function readRawEnv(e: NodeJS.ProcessEnv): RawConfig {
     FCM_PRIVATE_KEY: e.FCM_PRIVATE_KEY?.replace(/\\n/g, "\n") || undefined,
     RESEND_API_KEY: e.RESEND_API_KEY || undefined,
     RESEND_FROM: e.RESEND_FROM || undefined,
+    RESEND_WEBHOOK_SECRET: e.RESEND_WEBHOOK_SECRET || undefined,
     ACTION_TOKEN_SECRET: e.ACTION_TOKEN_SECRET || undefined,
     NOTIFY_TICK_SECONDS: parseNumber(e.NOTIFY_TICK_SECONDS),
   };
@@ -64,6 +66,7 @@ export interface NotifyConfig {
   webPush: { publicKey: string; privateKey: string; subject: string } | null;
   fcm: { projectId: string; clientEmail: string; privateKey: string } | null;
   email: { apiKey: string; from: string } | null;
+  webhookSecret: string | null;
   actionTokenSecret: string | null;
 }
 
@@ -116,6 +119,7 @@ function toNotifyConfig(raw: RawConfig): NotifyConfig {
         }
       : null,
     email: hasEmail ? { apiKey: raw.RESEND_API_KEY!, from: raw.RESEND_FROM! } : null,
+    webhookSecret: raw.RESEND_WEBHOOK_SECRET ?? null,
     actionTokenSecret: raw.ACTION_TOKEN_SECRET ?? null,
   };
 }

@@ -6,6 +6,7 @@ import { meRoutes } from "./routes/me";
 import { notificationPrefsRoutes } from "./routes/notification-prefs";
 import { notificationRoutes } from "./routes/notifications";
 import { pushRoutes } from "./routes/push";
+import { emailRoutes } from "./routes/email";
 import { inviteRoutes } from "./routes/invite";
 import { folderRoutes } from "./routes/folders";
 import { listRoutes } from "./routes/lists";
@@ -101,6 +102,7 @@ export const app = new Elysia()
   .use(notificationPrefsRoutes)
   .use(notificationRoutes)
   .use(pushRoutes)
+  .use(emailRoutes)
   .use(adminRoutes)
   .use(wsRoutes)
   .get(

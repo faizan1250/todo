@@ -25,6 +25,8 @@ export interface DeliveryInput {
   };
   fcmToken?: string;
   email?: string;
+  /** Outbox row id. Used as the Resend idempotency key + delivery tag. */
+  deliveryId?: string | null;
   /** Push TTL in seconds. Reminders 6h, digests 24h. */
   ttlSeconds?: number;
   /** Push urgency. High iff the notification priority is high (task priority 4). */
