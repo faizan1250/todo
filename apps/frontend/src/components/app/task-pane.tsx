@@ -1427,6 +1427,7 @@ export function TaskPane({
             <input
               ref={quickAddInputRef}
               type="text"
+              data-testid="quick-add-input"
               value={newTitle}
               onFocus={() => setIsQuickAddFocused(true)}
               onChange={(e) => {
@@ -1841,7 +1842,7 @@ export function TaskPane({
                 activeFolder={activeFolder}
                 onAction={() => {
                 const input = document.querySelector<HTMLInputElement>(
-                  "input[placeholder*='Add task']"
+                  "input[data-testid='quick-add-input']"
                 );
                 input?.focus();
               }}
@@ -2106,6 +2107,7 @@ export function TaskPane({
                           <input
                             ref={sectionTaskInputRef}
                             type="text"
+                            data-testid="section-quick-add-input"
                             value={sectionTaskTitle}
                             onChange={(e) => setSectionTaskTitle(e.target.value)}
                             placeholder={`Task in "${section.name}"...`}

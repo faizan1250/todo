@@ -2170,7 +2170,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         !e.altKey
       ) {
         e.preventDefault();
-        const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
+        const input = document.querySelector<HTMLInputElement>("input[data-testid='quick-add-input']");
         input?.focus();
         return;
       }
@@ -3119,7 +3119,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onOpenShortcuts={handleOpenShortcuts}
         onNewTask={() => {
           // Focus or select add task
-          const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
+          const input = document.querySelector<HTMLInputElement>("input[data-testid='quick-add-input']");
           input?.focus();
         }}
         onCreateList={handleCreateList}
@@ -3275,7 +3275,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onSelectList={setActiveList}
         onSelectFolder={setActiveFolder}
         onNewTask={() => {
-          const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
+          const input = document.querySelector<HTMLInputElement>("input[data-testid='quick-add-input']");
           input?.focus();
         }}
         onToggleTheme={onToggleTheme}
@@ -3301,7 +3301,7 @@ function AppWorkspaceInner({ onOpenAuth, onToggleTheme, onOpenShortcuts: externa
         onCycleFolder={handleCycleFolder}
         onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
         onNewTask={() => {
-          const input = document.querySelector<HTMLInputElement>("input[placeholder*='Add task']");
+          const input = document.querySelector<HTMLInputElement>("input[data-testid='quick-add-input']");
           input?.focus();
         }}
         onToggleTheme={onToggleTheme}
