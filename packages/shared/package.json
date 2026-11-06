@@ -12,7 +12,11 @@
     "./recurrence": "./src/recurrence.ts",
     "./reminders": "./src/reminders.ts",
     "./dayBounds": "./src/dayBounds.ts",
-    "./validate": "./src/validate.ts"
+    "./validate": "./src/validate.ts",
+    "./filter": "./src/filter.ts",
+    "./occurrences": "./src/occurrences.ts",
+    "./planner": "./src/planner.ts",
+    "./views": "./src/views.ts"
   },
   "scripts": {
     "test": "bun test",

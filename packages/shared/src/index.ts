@@ -3,3 +3,7 @@ export * from "./recurrence";
 export * from "./reminders";
 export * from "./dayBounds";
 export * from "./validate";
+export * from "./filter";
+export * from "./occurrences";
+export * from "./planner";
+export * from "./views";
