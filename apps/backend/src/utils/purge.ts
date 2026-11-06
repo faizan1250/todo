@@ -183,3 +183,93 @@ export async function purgeOldSoftDeleted(
     syncConflicts,
   };
 }
+
+export interface NotificationRetentionResult {
+  notifications: number;
+  deliveries: number;
+  digestLogs: number;
+}
+
+/**
+ * Phase 6 notification retention (Day 6).
+ *
+ * Batched hard-deletes, oldest first:
+ *   notifications >90d (FK cascade removes their deliveries),
+ *   deliveries >30d (by createdAt),
+ *   digest_log >1yr (by sentAt).
+ */
+export async function purgeNotificationRetention(
+  nowDate: Date = new Date(),
+  batchSize: number = 500
+): Promise<NotificationRetentionResult> {
+  const notifCutoff = new Date(nowDate.getTime() - 90 * 24 * 60 * 60 * 1000);
+  const deliveryCutoff = new Date(nowDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const digestCutoff = new Date(nowDate.getTime() - 365 * 24 * 60 * 60 * 1000);
+
+  let notifications = 0;
+  while (true) {
+    const batch = await db
+      .select({ id: schema.notifications.id })
+      .from(schema.notifications)
+      .where(lt(schema.notifications.createdAt, notifCutoff))
+      .limit(batchSize);
+    if (batch.length === 0) break;
+    const ids = batch.map((r) => r.id);
+    await db.transaction(async (tx) => {
+      await tx.delete(schema.notifications).where(inArray(schema.notifications.id, ids));
+    });
+    notifications += ids.length;
+    if (ids.length < batchSize) break;
+  }
+
+  let deliveries = 0;
+  while (true) {
+    const batch = await db
+      .select({ id: schema.notificationDeliveries.id })
+      .from(schema.notificationDeliveries)
+      .where(lt(schema.notificationDeliveries.createdAt, deliveryCutoff))
+      .limit(batchSize);
+    if (batch.length === 0) break;
+    const ids = batch.map((r) => r.id);
+    await db.transaction(async (tx) => {
+      await tx.delete(schema.notificationDeliveries).where(inArray(schema.notificationDeliveries.id, ids));
+    });
+    deliveries += ids.length;
+    if (ids.length < batchSize) break;
+  }
+
+  let digestLogs = 0;
+  while (true) {
+    const batch = await db
+      .select({
+        userId: schema.digestLog.userId,
+        kind: schema.digestLog.kind,
+        localDate: schema.digestLog.localDate,
+      })
+      .from(schema.digestLog)
+      .where(lt(schema.digestLog.sentAt, digestCutoff))
+      .limit(batchSize);
+    if (batch.length === 0) break;
+    await db.transaction(async (tx) => {
+      for (const row of batch) {
+        await tx
+          .delete(schema.digestLog)
+          .where(
+            and(
+              eq(schema.digestLog.userId, row.userId),
+              eq(schema.digestLog.kind, row.kind),
+              eq(schema.digestLog.localDate, row.localDate)
+            )
+          );
+      }
+    });
+    digestLogs += batch.length;
+    if (batch.length < batchSize) break;
+  }
+
+  console.log(
+    `[Purge] Notification retention: notifications=${notifications}, deliveries=${deliveries}, digestLogs=${digestLogs}`
+  );
+
+  return { notifications, deliveries, digestLogs };
+}

@@ -671,6 +671,24 @@ export async function runWorkerOnce(
       else stats.cancelled += 1;
     }
 
+    // Structured observability: one JSON line per delivery. IDs + outcome
+    // only — never titles, bodies, or email addresses.
+    for (let i = 0; i < claimed.length; i++) {
+      const d = claimed[i];
+      console.log(
+        JSON.stringify({
+          event: "notify.delivery",
+          deliveryId: d.id,
+          notificationId: d.notificationId,
+          userId: d.userId,
+          channel: d.channel,
+          status: outcomes[i].kind,
+          attempts: d.attempts,
+          ts: new Date(nowMs).toISOString(),
+        })
+      );
+    }
+
     for (const p of published) {
       publishNotification(p.userId, p.notificationId);
     }

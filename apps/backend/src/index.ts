@@ -29,10 +29,10 @@ import { calendarRoutes } from "./routes/calendar";
 import { boardRoutes } from "./routes/board";
 import { plannerRoutes } from "./routes/planner";
 import { syncRoutes } from "./routes/sync";
-import { adminRoutes } from "./routes/admin";
+import { adminRoutes, notificationsHealthRoutes } from "./routes/admin";
 import { wsRoutes } from "./routes/ws";
 import { cron } from "@elysiajs/cron";
-import { purgeOldSoftDeleted } from "./utils/purge";
+import { purgeOldSoftDeleted, purgeNotificationRetention } from "./utils/purge";
 import { runTick } from "./utils/notify-scheduler";
 import { runDigestTick } from "./utils/notify-digest";
 import { runWorkerOnce } from "./utils/notify-worker";
@@ -107,6 +107,7 @@ export const app = new Elysia()
   .use(pushRoutes)
   .use(emailRoutes)
   .use(adminRoutes)
+  .use(notificationsHealthRoutes)
   .use(wsRoutes)
   .get(
     "/health",
@@ -158,6 +159,18 @@ if (process.env.NODE_ENV !== "test") {
         void runDigestTick().catch((err) => {
           console.error("[notify] digest tick failed", err);
         });
+      },
+    })
+  );
+  // Notification retention: daily, off-peak. `protect` (croner) plus the
+  // batched deletes in purgeNotificationRetention() keep overlapping runs safe.
+  app.use(
+    cron({
+      name: "notify-retention",
+      pattern: "0 4 * * *",
+      protect: true,
+      run: async () => {
+        await purgeNotificationRetention();
       },
     })
   );
